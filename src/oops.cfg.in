@@ -224,7 +224,7 @@ fetch_with_client_speed yes
 #acl	BADPORTS	port		[0:79],110,138,139,513,[6000:6010]
 #acl	BADDOMAIN	dstdom		baddomain1.com baddomain2.com
 #acl	BADDOMREGEX	dstdom_regex	baddomain\.((com)|(org))
-#acl	LOCAL_NETWORKS	src_ip		include:@OOPS_SYSCONFDIR@/acl_local_networks
+acl	LOCAL_NETWORKS	src_ip		include:@OOPS_SYSCONFDIR@/acl_local_networks
 #acl	BADNETWORKS	src_ip		192.168.10/24
 ## WARNING: acl dst_ip is applyed to destination hostname BEFORE
 ## any redirection used.
@@ -345,9 +345,10 @@ group	paco	{
 #       networks are ordered by masklen - longest masks(most specific networks)
 #	are checked first.
 ##
-	networks	195.114.128/19 127/8 195.5.40.93/32 ;
+#	networks	195.114.128/19 127/8 195.5.40.93/32 ;
 #	networks_acl	LOCAL_NETWORKS !BAD_NETWORKS ;
-	badports	[0:79],110,138,139,513,[6000:6010] ;
+	networks_acl	LOCAL_NETWORKS;
+	badports	[0:79],110,138,139,513,3128,[6000:6010] ;
 	miss		allow;
 ##
 # denytime - when deny access to proxy server for this group
@@ -470,7 +471,7 @@ storage {
 
 module lang {
 
-	default_charset	koi8-r
+	default_charset	utf-8
 
 	# Recode tables and other charset stuff
 	CharsetRecodeTable windows-1251 @OOPS_SYSCONFDIR@/tables/koi-win.tab
