@@ -4,22 +4,23 @@
 %n 1000
 %e 2000
 %{
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <strings.h>
-#include <errno.h>
-#include <pthread.h>
+#include "oops.h"
 
 #include "y.tab.h"
 int	atline;
 int	parser_errors;
 
-#ifdef	USE_LARGE_FILES
+#if	defined(WITH_LARGE_FILES)
+#if	defined(HAVE_ATOLL)
 #define	ATOOFF	atoll
+#elif	defined(HAVE_STRTOLL)
+#define	ATOOFF(a)	strtoll(a, (char **)NULL, 10)
+#else
+#define	ATOOFF	atoll
+#endif	/* HAVE_ATOLL, HAVE_STRTOLL */
 #else
 #define	ATOOFF	atoi
-#endif
+#endif	/* WITH_LARGE_FILES */
 %}
 
 %s	groupst peerst
@@ -76,7 +77,7 @@ local_networks	[Ll][Oo][Cc][Aa][Ll]-[Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]
 icp_timeout	[Ii][Cc][Pp]_[Tt][Ii][Mm][Ee][Oo][Uu][Tt]
 statistics	[Ss][Tt][Aa][Tt][Ii][Ss][Tt][Ii][Cc][Ss]
 module		[Mm][Oo][Dd][Uu][Ll][Ee]
-string		[^ \t\n\{\}\;\[\]\:\,]+
+string		[^ \t\n\{\}\;\[\]\,]+
 line		[^\n]+
 %%
 

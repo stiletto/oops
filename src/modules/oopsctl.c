@@ -1,29 +1,24 @@
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/un.h>
-#include	<sys/wait.h>
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-#include	<netinet/in.h>
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-#include	"../config.h"
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
+#define		NO_NEED_XMALLOC 1
+#include	"../oops.h"
 
 char		path[MAXPATHLEN];
 char		cpath[MAXPATHLEN];
@@ -106,7 +101,7 @@ char 			cmdarg[1024];
 	child = fork();
 	switch(child) {
 	case(-1):
-		printf("oopsctl: Can't start child: %s\n", strerror(errno));
+		printf("oopsctl: Can't start child: %s\n", strerror(ERRNO));
 		exit(1);
 	case(0):
 		i = 4;
@@ -116,7 +111,7 @@ char 			cmdarg[1024];
 		 printf ("\n");
 		}
 		execv(cmdpath, command+1);
-		printf("oopsctl: Can't execute: %s\n", strerror(errno));
+		printf("oopsctl: Can't execute: %s\n", strerror(ERRNO));
 	default:
 		exit(0);
 	}
@@ -128,7 +123,7 @@ char 			cmdarg[1024];
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
 	execv(cmdpath, command+1);
-	printf("oopsctl: Can't execute: %s\n", strerror(errno));
+	printf("oopsctl: Can't execute: %s\n", strerror(ERRNO));
     }
     if ( !strcasecmp(*command, "reconfigure") ) {
 	char	cmdpath[1024], cmdarg[1024];
@@ -143,11 +138,11 @@ char 			cmdarg[1024];
 	child = fork();
 	switch (child) {
 	case -1:
-		printf("oopsctl: Can't start child: %s\n", strerror(errno));
+		printf("oopsctl: Can't start child: %s\n", strerror(ERRNO));
 		exit(1);
 	case 0:
 		execv(cmdpath, command+1);
-		printf("oopsctl: Can't execute: %s\n", strerror(errno));
+		printf("oopsctl: Can't execute: %s\n", strerror(ERRNO));
 	default:
 		/* wait for child */
 		waitpid((pid_t)-1, &stat, 0);
@@ -170,14 +165,14 @@ srv_conn:
      /* connecting to server */
      oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
      if ( oopsctl_so == -1 ) {
-	printf("oopsctl: socket(): %s\n", strerror(errno));
+	printf("oopsctl: socket(): %s\n", strerror(ERRNO));
 	exit(1);
      }
      bzero(&sun_addr, sizeof(sun_addr));
      sun_addr.sun_family = AF_UNIX;
      strncpy(sun_addr.sun_path, path, sizeof(sun_addr.sun_path)-1);
      if ( connect(oopsctl_so, (struct sockaddr*)&sun_addr, sizeof(sun_addr)) ) {
- 	printf("oopsctl: connect(): %s\n", strerror(errno));
+ 	printf("oopsctl: connect(): %s\n", strerror(ERRNO));
 	exit(1);
      }
      write(oopsctl_so, *command, strlen(*command));

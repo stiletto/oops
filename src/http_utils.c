@@ -17,33 +17,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include        <stdio.h>
-#include        <stdlib.h>
-#include        <fcntl.h>
-#include        <errno.h>
-#include        <stdarg.h>
-#include        <string.h>
-#include        <strings.h>
-#include        <netdb.h>
-#include        <unistd.h>
-#include        <ctype.h>
-#include        <signal.h>
-#include	<time.h>
-
-#include        <sys/param.h>
-#include        <sys/socket.h>
-#include        <sys/types.h>
-#include        <sys/stat.h>
-#include        <sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#include        <netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
 #include	"modules.h"
 
@@ -128,11 +101,13 @@ char			*meth, *source;
 struct timeval		start_tv, stop_tv;
 struct server_answ	answ_state;
 int			delta_tv;
-int			have_code = 0, sent = 0;
+int			have_code = 0;
+unsigned int		sent = 0;
 struct mem_obj		*obj;
 int			header_size = 0;
 int			recode_request = FALSE, recode_answer = FALSE;
 char			*table = NULL;
+ERRBUF ;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -165,9 +140,9 @@ char			*table = NULL;
 
     set_socket_options(server_so);
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
 
     answer = parent_port?build_parent_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER):
 		         build_direct_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER);
@@ -188,7 +163,8 @@ char			*table = NULL;
 	r = writet(server_so, answer, strlen(answer), READ_ANSW_TIMEOUT);
     free(answer); answer = NULL;
     if ( r < 0 ) {
-	say_bad_request(so, "Can't send", strerror(errno), ERR_TRANSFER, rq);
+	say_bad_request(so, "Can't send", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq);
 	goto done;
     }
     answer = xmalloc(ANSW_SIZE+1, "send_not_cached(): 1");
@@ -232,7 +208,7 @@ char			*table = NULL;
 	    if ( r <= 0 )
 		goto done;
 	}
-#ifdef	LINUX
+#if	defined(LINUX)
 	/* at least redhat 6.02 have such feature: close() for the
 	   socket with unread data reset connection (send RST flag).
 	   This confuse browsers. So read any pending data (actually
@@ -242,12 +218,13 @@ char			*table = NULL;
 	    int rc = readt(so, answer, ANSW_SIZE, 10);
 	    if ( rc <= 0 ) goto done;
 	}
-#endif
+#endif /* LINUX */
     }
-    while(1) {
+    forever() {
 	r = readt(server_so, answer, ANSW_SIZE, READ_ANSW_TIMEOUT);
 	if ( r < 0 ) {
-	    if ( !sent ) say_bad_request(so, "Can't read", strerror(errno), ERR_TRANSFER,rq);
+	    if ( !sent ) say_bad_request(so, "Can't read", STRERROR_R(ERRNO, ERRBUFS),
+					 ERR_TRANSFER, rq);
 	    goto done;
 	}
         if ( r == 0 ) /*done*/
@@ -259,6 +236,12 @@ char			*table = NULL;
 	    answer[r] = 0;
 	    if ( sscanf(answer, "HTTP/%d.%d %d", &http_maj, &http_min, &code) == 3 ) {
 		have_code = code;
+	    } else {
+		/* this is not a HTTP answer, just pump it to browser */
+		writet(so, answer, r, READ_ANSW_TIMEOUT);
+		pump_data(obj, rq, so, server_so);
+		received = rq->received;
+		goto done;
 	    }
 	}
 	if ( !(answ_state.state & GOT_HDR) ) {
@@ -275,7 +258,10 @@ char			*table = NULL;
 		my_xlog(LOG_DBG|LOG_INFORM, "send_not_cached(): attach_data().\n");
 		goto done;
 	    }
-	    check_server_headers(&answ_state, obj, obj->container, rq);
+	    if ( check_server_headers(&answ_state, obj, obj->container, rq) ) {
+		my_xlog(LOG_DBG|LOG_INFORM, "send_not_cached(): check_server_headers().\n");
+		goto done;
+	    }
 	    if ( answ_state.state & GOT_HDR ) {
 		struct	av	*header;
 		struct	buff	*hdrs_to_send;
@@ -287,7 +273,8 @@ char			*table = NULL;
 		hdrs_to_send = alloc_buff(512);
 		if ( !hdrs_to_send ) goto done;
 		while(header) {
-	    	my_xlog(LOG_DBG, "send_not_cached(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
+	    	my_xlog(LOG_DBG, "send_not_cached(): Sending ready header `%s' -> `%s'.\n",
+			header->attr, header->val);
 		    if ( !is_oops_internal_header(header) ) {
 
 			if ( rq->src_charset[0] && rq->cs_to_client_table
@@ -376,8 +363,9 @@ char			*table = NULL;
 	     && (sent >= obj->container->used + obj->content_length) )
 	    goto done;
     }
+
 done:
-    if ( server_so != -1 ) close(server_so);
+    if ( server_so != -1 ) CLOSE(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
@@ -437,7 +425,7 @@ char			*origin;
 prepare_send_mem:
     role = ROLE_READER;
     INCR_READERS(obj);
-    send_data_from_obj(rq,so,obj,flags);
+    send_data_from_obj(rq, so, obj, flags);
     DECR_READERS(obj);
     goto done;
 
@@ -459,7 +447,7 @@ revalidate:
 	    /* old content					*/
 	    /*--------------------------------------------------*/
 	    SWITCH_TO_READER_ON(obj);
-	    send_data_from_obj(rq,so, obj, flags);
+	    send_data_from_obj(rq, so, obj, flags);
 	    DECR_READERS(obj);
 	    goto done;
 	}
@@ -524,7 +512,7 @@ revalidate:
 	    /* old content					*/
 	    /*--------------------------------------------------*/
 	    SWITCH_TO_READER_ON(obj);
-	    send_data_from_obj(rq,so, obj, flags);
+	    send_data_from_obj(rq, so, obj, flags);
 	    DECR_READERS(obj);
 	    tcp_tag = "TCP_REFRESH_HIT";
 	    goto done;
@@ -534,7 +522,7 @@ revalidate:
 done:
     my_xlog(LOG_HTTP|LOG_DBG, "send_from_mem(): From mem sended.\n");
     if ( new_obj ) leave_obj(new_obj);
-    if ( server_so != -1 ) close(server_so);
+    if ( server_so != -1 ) CLOSE(server_so);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
@@ -565,13 +553,14 @@ done:
 void
 send_data_from_obj(struct request *rq, int so, struct mem_obj *obj, int flags)
 {
-int 		r, sended, received, state, send_hot_pos, pass=0, sf=0, ssended;
+int 		r, received, send_hot_pos, pass = 0, sf = 0;
+unsigned int	sended, ssended, state;
 struct	buff	*send_hot_buff;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
 int		convert_charset = FALSE;
 int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
 char		*table = NULL;
-struct	pollarg	pollarg;
+struct pollarg	pollarg;
 
     downgrade_flags = downgrade(rq, obj);
     my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Downgrade flags: %x\n", downgrade_flags);
@@ -582,14 +571,15 @@ struct	pollarg	pollarg;
 	convert_from_chunked = TRUE;
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_data_from_obj(): fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_data_from_obj(): fcntl(): %m\n");
     sended = 0;
     received = obj->size;
     send_hot_buff = NULL;
     send_hot_pos = 0;
+
 go_again:
     lock_obj_state(obj);
-    while(1) {
+    forever() {
 	state = obj->state;
 	switch(state) {
 	  case OBJ_READY:
@@ -607,6 +597,7 @@ go_again:
 	    continue;
 	}
     }
+
 send_ready:
     if ( !send_hot_buff ) {
     	struct	av	*header = obj->headers;
@@ -621,7 +612,8 @@ send_ready:
 	    header = header->next;
 	}
 	while(header) {
-	    my_xlog(LOG_DBG, "send_data_from_obj(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
+	    my_xlog(LOG_DBG, "send_data_from_obj(): Sending ready header `%s' -> `%s'.\n",
+		    header->attr, header->val);
 	    if (   !is_attr(header, "Age:") &&
 		   !is_oops_internal_header(header) &&
 
@@ -717,8 +709,8 @@ send_ready:
 	sf |= RQ_CONVERT_FROM_CHUNKED;
     if ( IS_HUPED(&pollarg) )
 	goto done;
-    if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL, table)) ) {
-	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %s\n", strerror(errno));
+    if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL, table)) != 0 ) {
+	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %m\n");
 	goto done;
     }
     if ( rest_in_chunk == -1 )
@@ -728,7 +720,8 @@ send_ready:
     if ( (state == OBJ_INPROGR) && (sended == ssended) ) {
 	/* this must not happen, log it */
 	if ( obj->url.host && obj->url.path )
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_obj(): Impossible event on `%s%s'.\n", obj->url.host, obj->url.path);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_obj(): Impossible event on `%s%s'.\n",
+		    obj->url.host, obj->url.path);
 	goto done;
     }
     if ( !r && convert_from_chunked && !rest_in_chunk ) {
@@ -738,7 +731,7 @@ send_ready:
 	 * only begin of chunk size, without ending CRLF
 	 * If object is ready, this means something wrong, just return.
 	 * If object is in progress, we have to wait some time.			*/
-	if ( obj->state==OBJ_READY )
+	if ( obj->state == OBJ_READY )
 	    goto done;
 	/* else object in progress, sleep a little */
 	my_sleep(1);
@@ -746,9 +739,11 @@ send_ready:
     }
     if ( TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, sended-ssended);
     goto go_again;
+
 done:
     return;
 }
+
 /* return new object if old is invalid	*/
 /* otherwise returns NULL		*/
 struct mem_obj *
@@ -833,8 +828,8 @@ struct	buff		*to_server_request = NULL;
     }
 
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "check_validity(): fcntl: %s\n", strerror(errno));
-    while(1) {
+	my_xlog(LOG_SEVERE, "check_validity(): fcntl(): %m\n");
+    forever() {
 	struct pollarg pollarg;
 
 	pollarg.fd = server_so;
@@ -856,11 +851,11 @@ struct	buff		*to_server_request = NULL;
 	    continue;
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r <  0 ) {
-	    if ( errno == EAGAIN ) {
+	    if ( ERRNO == EAGAIN ) {
 		my_xlog(LOG_SEVERE, "check_validity(): Hmm, again select say ready, but read fails.\n");
 		continue;
 	    }
-	    my_xlog(LOG_SEVERE, "check_validity(): select error: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "check_validity(): select error: %m\n");
 	    goto validate_err;
 	}
 	if ( r == 0 ) {
@@ -938,7 +933,8 @@ char			*answer = NULL;
 struct	url		*url = &rq->url;
 char			*meth, *source;
 struct	server_answ	answ_state;
-int			received=0, sended=0, maxfd, resident_size;
+int			maxfd;
+unsigned int		received = 0, sended = 0, header_size, resident_size;
 struct	buff		*send_hot_buff=NULL;
 int			send_hot_pos=0;
 struct	timeval		tv, start_tv, stop_tv;
@@ -948,11 +944,12 @@ struct	buff		*to_server_request = NULL;
 char			origin[MAXHOSTNAMELEN];
 struct	sockaddr_in	peer_sa;
 int			source_type, downgrade_flags=0;
-int			body_size, header_size, sf = 0, rest_in_chunk = 0;
+int			body_size, sf = 0, rest_in_chunk = 0;
 char			*table = NULL;
 struct	av		*header = NULL;
 int			convert_charset = FALSE;
 time_t			last_read = global_sec_timer;
+ERRBUF ;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -1128,7 +1125,8 @@ time_t			last_read = global_sec_timer;
     free_container(to_server_request);
 
     if ( r < 0 ) {
-	say_bad_request(so, "Can't send", strerror(errno), ERR_TRANSFER, rq);
+	say_bad_request(so, "Can't send", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq);
 	change_state(obj, OBJ_READY);
 	obj->flags |= FLAG_DEAD;
 	goto error;
@@ -1145,10 +1143,10 @@ time_t			last_read = global_sec_timer;
     bzero(&answ_state, sizeof(answ_state));
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl(): %m\n");
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl: %s\n", strerror(errno));
-    while(1) {
+	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl(): %m\n");
+    forever() {
 	struct pollarg pollarg[2];
 
 	pollarg[0].fd = server_so;
@@ -1179,6 +1177,7 @@ time_t			last_read = global_sec_timer;
 		if ( r== 0 ) continue;
 		goto read_s;
 	    }
+
 	ignore_bw_overload:
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
@@ -1186,7 +1185,7 @@ time_t			last_read = global_sec_timer;
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
-	    my_xlog(LOG_SEVERE, "fill_mem_obj(): select: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "fill_mem_obj(): select: %m\n");
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
@@ -1198,13 +1197,13 @@ time_t			last_read = global_sec_timer;
 	    goto error;
 	}
 	if ( (so != -1) && (IS_WRITEABLE(&pollarg[1])||IS_HUPED(&pollarg[1])) ) {
-	    int	ssended = sended;
+	    unsigned int	ssended = sended;
 	    r--;
 	    if ( IS_HUPED(&pollarg[1]) ) {
 		so = -1;
 		goto client_so_closed;
 	    }
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) )
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 )
 		so = -1;
 	    if ( rest_in_chunk == -1 ) { /* was last chunk */
 		obj->state = OBJ_READY;
@@ -1263,6 +1262,7 @@ time_t			last_read = global_sec_timer;
 		}
 	    }
 	}
+
     client_so_closed:
 	if ( so == -1 ) {
 	    lock_obj(obj);
@@ -1276,6 +1276,7 @@ time_t			last_read = global_sec_timer;
 		goto error;	/* no one heard */
 	    }
 	}
+
     read_s:
 	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( IS_HUPED(&pollarg[0]) ) {
@@ -1298,11 +1299,11 @@ time_t			last_read = global_sec_timer;
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r < 0  ) {
 	    /* Error reading from server */
-	    if ( errno == EAGAIN ) {
+	    if ( ERRNO == EAGAIN ) {
 		my_xlog(LOG_SEVERE, "fill_mem_obj(): Hmm, server_so was ready, but read failed.\n");
 		continue;
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): read failed: %s\n", strerror(errno));
+	    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): read failed: %m\n");
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
@@ -1317,7 +1318,7 @@ time_t			last_read = global_sec_timer;
 	    change_state(obj, OBJ_READY);
 	    while( (so != -1) && send_hot_buff &&
 	           (received > sended) && (rest_in_chunk != -1)) {
-		int	ssended;
+		unsigned int	ssended;
 		struct pollarg pollarg;
 		int	rc;
 
@@ -1331,7 +1332,7 @@ time_t			last_read = global_sec_timer;
 		if ( IS_HUPED(&pollarg) )
 		    goto done;
 		ssended = sended;
-		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) )
+		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 )
 		    so = -1;
 		if ( ssended == sended )
 			goto done;
@@ -1404,7 +1405,7 @@ time_t			last_read = global_sec_timer;
 			while ( *p && IS_SPACE(*p) ) p++;
 			t = p;
 			/* split on ',' */
-			while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) ) {
+			while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) != 0 ) {
 			    int	a_len;
 			    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
 
@@ -1541,9 +1542,10 @@ time_t			last_read = global_sec_timer;
 	    change_state_notify(obj);
 	}
     }
+
 error:
     my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): load error.\n");
-    if ( server_so != -1 ) close(server_so);
+    if ( server_so != -1 ) CLOSE(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
@@ -1559,8 +1561,8 @@ error:
     log_access(delta_tv, rq, obj);
     DECR_WRITERS(obj);
     return;
-done:
 
+done:
     obj->response_time = global_sec_timer;
     resident_size = calculate_resident_size(obj);
     obj->x_content_length = obj->x_content_length_sum;
@@ -1578,7 +1580,7 @@ done:
 
 done1:
     my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Loaded successfully: received: %d\n", received);
-    if ( server_so != -1 ) close(server_so);
+    if ( server_so != -1 ) CLOSE(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
@@ -1598,7 +1600,8 @@ done1:
 int
 continue_load(struct request *rq, int so, int server_so, struct mem_obj *obj)
 {
-int			received=0, received0 = 0, sended=0, maxfd, pass=0, ssended, sf=0;
+int			maxfd, pass = 0, sf = 0;
+unsigned int		received = 0, received0 = 0, sended = 0, ssended;
 struct	buff		*send_hot_buff;
 int			send_hot_pos;
 struct	timeval		tv;
@@ -1608,6 +1611,7 @@ struct	av		*header;
 char			*table = NULL;
 struct	buff		*hdrs_to_send = NULL;
 int			convert_charset = FALSE;
+time_t			last_read = global_sec_timer;
 
     received = received0 = obj->size;
     send_hot_buff = obj->container;
@@ -1626,7 +1630,7 @@ int			convert_charset = FALSE;
     while(header) {
 	if ( 
 	    /* we must not send Tr.-Enc. and Cont.-Len. if we convert
-	     * from chunked							*/
+	     * from chunked						*/
 
 		!(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding")) &&
 		!(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) ){
@@ -1689,8 +1693,8 @@ int			convert_charset = FALSE;
 	goto error;
     }
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "continue_load(): fcntl: %s\n", strerror(errno));
-    while(1) {
+	my_xlog(LOG_SEVERE, "continue_load(): fcntl(): %m\n");
+    forever() {
 	struct	pollarg pollarg[2];
 
 	pollarg[0].fd = server_so; pollarg[0].request = FD_POLL_RD;
@@ -1718,6 +1722,7 @@ int			convert_charset = FALSE;
 		if ( r== 0 ) continue;
 		goto read_s;
 	    }
+
 	ignore_bw_overload:
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
@@ -1725,7 +1730,7 @@ int			convert_charset = FALSE;
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
-	    my_xlog(LOG_SEVERE, "continue_load(): select: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "continue_load(): select: %m\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -1743,13 +1748,20 @@ int			convert_charset = FALSE;
 		goto are_we_alone;
 	    }
 	    ssended = sended;
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) ) {
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 ) {
 		so = -1;
 		goto are_we_alone;
 	    }
 	    if ( !rc && (sended == ssended) && TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
 		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
 		    goto read_s;
+		if ( global_sec_timer - last_read > READ_ANSW_TIMEOUT ) {
+		    /* server died on the fly 	*/
+		    my_xlog(LOG_SEVERE, "fill_mem_obj(): server died on the fly.\n");
+		    change_state(obj, OBJ_READY);
+		    obj->flags |= FLAG_DEAD;
+		    goto error;
+		}
 		/* we stay on chunk border, server data not ready - sleep */
 		my_sleep(1);
 		/* and wait again */
@@ -1767,6 +1779,7 @@ int			convert_charset = FALSE;
 		}
 	    }
 	}
+
    are_we_alone:
 	if ( so == -1 ) {
 	    lock_obj(obj);
@@ -1776,13 +1789,14 @@ int			convert_charset = FALSE;
 		obj->flags |= FLAG_DEAD;
 	    }
 	    unlock_obj(obj);
-	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Send failed: %s\n", strerror(errno));
+	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Send failed: %m\n");
 	    if ( obj->state == OBJ_READY ) {
 		change_state_notify(obj);
 		goto error;	/* no one heard */
 	    }
 	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Continue to load - we are not alone.\n");
 	}
+
     read_s:;
 	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( r ) {
@@ -1797,11 +1811,11 @@ int			convert_charset = FALSE;
 	}
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r < 0  ) {
-	    if ( errno == EAGAIN)  {
+	    if ( ERRNO == EAGAIN )  {
 		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "continue_load(): Hmm in continue load.\n");
 		continue;
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Read failed: %s\n", strerror(errno));
+	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Read failed: %m\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -1827,7 +1841,7 @@ int			convert_charset = FALSE;
 		if ( IS_HUPED(&pollarg) )
 		    goto done;
 		ssended = sended;
-		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) )
+		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 )
 		    so = -1;
 		if ( ssended == sended )
 		    goto done;
@@ -1835,6 +1849,7 @@ int			convert_charset = FALSE;
 	    }
 	    goto done;
 	}
+	last_read = global_sec_timer;
 	/* store data in hot_buff */
 	if ( store_in_chain(answer, r, obj) ) {
 	    my_xlog(LOG_SEVERE, "continue_load(): Can't store.\n");
@@ -1847,11 +1862,13 @@ int			convert_charset = FALSE;
 	obj->state = OBJ_INPROGR;
 	change_state_notify(obj);
     }
+
 done:
     obj->resident_size = calculate_resident_size(obj);
     obj->x_content_length = obj->x_content_length_sum;
 	/*received + sizeof(*obj)+(obj->container?obj->container->used:0);*/
     increase_hash_size(obj->hash_back, obj->resident_size);
+
 error:
     if (answer) free(answer);
     return(0);
@@ -1867,6 +1884,7 @@ struct	pollarg	pollarg;
 
     if ( !*hot )
 	return(0);
+
 do_it:
     to_send = b->used - *pos;
     if ( !to_send ) {
@@ -1888,7 +1906,7 @@ do_it:
     if ( r <= 0 )
 	return(r);
     r = write(so, b->data+*pos, to_send);
-    if ((r < 0) && (errno == EWOULDBLOCK) ) return(0);
+    if ( (r < 0) && (ERRNO == EWOULDBLOCK) ) return(0);
     if ( r < 0 )
 	return(r);
     *pos += r; *sended += r;
@@ -1896,19 +1914,19 @@ do_it:
 }
 
 /* send data from memory buffs
-   so 		- socket to client
-   hot		- current buff
-   pos		- offset in buff data
-   sended	- address of 'sended' variable (updated in accordance with progress
-   rest_in_chunk- for chunked content
-   flags	- flags ( chunked, BW-control, ...)
-   obj		- object ( we need it to set x-content_len for chunked content)
-   recode	- recode table if we do charset conversion on the fly
+   so 		 - socket to client
+   hot		 - current buff
+   pos		 - offset in buff data
+   sended	 - address of 'sended' variable (updated in accordance with progress)
+   rest_in_chunk - for chunked content
+   flags	 - flags (chunked, BW-control, ...)
+   obj		 - object (we need it to set x-content_len for chunked content)
+   recode	 - recode table if we do charset conversion on the fly
 */
 int
-send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
+send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, unsigned int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
 {
-int		r, to_send, cz_here, faked_sent, chunk_size, ss,sp;
+int		r, to_send, cz_here, faked_sent, chunk_size, ss, sp;
 struct	buff	*b = *hot;
 char		*cb, *ce, *cd;
 char		ch_sz[16];	/* buffer to collect chunk size	*/
@@ -1965,7 +1983,7 @@ do_it:
 	source = b->data+*pos;
 
     r = send(so, source, to_send, 0);
-    if ((r < 0) && (errno == EWOULDBLOCK) ) return(0);
+    if ( (r < 0) && (ERRNO == EWOULDBLOCK) ) return(0);
     if ( TEST(flags, RQ_HAS_BANDWIDTH) && (r>0) ) {
 	*pos += r; *sended += r;
 	return(0);
@@ -1979,11 +1997,13 @@ do_it:
 
 send_chunked:
     faked_sent = 0;
+
 do_it_chunked:
     if ( !*rest_in_chunk ) {
 	/* we stay on a new chunk,extract current chunk size */
 	cb = b->data + *pos;
 	ce = b->data + b->used;
+
     find_chunk_size_again:
 	cz_here = FALSE;
 	cd = ch_sz;
@@ -2008,12 +2028,13 @@ do_it_chunked:
 		return(0);
 	    }
 	}
+
     number2:
 	while( cb < ce ) {
 	    *cd++ = *cb++;
-	    *cd=0;
+	    *cd = 0;
 	    faked_sent++;
-	    if ( cd - ch_sz >= sizeof(ch_sz) ) {
+	    if ( cd - ch_sz >= sizeof(ch_sz) - 1 ) {
 		return(-1);
 	    }
 	    if ( strstr(ch_sz, "\r\n") ) {
@@ -2065,7 +2086,7 @@ do_it_chunked:
 	}
     } else {
 	/* send from current position till the minimum(chunksize,b->used) */
-	to_send = MIN(b->used - *pos, *rest_in_chunk);
+	to_send = MIN(b->used - *pos, (uint32_t)*rest_in_chunk);
 	if ( !to_send ) {
 	    /* this canbe only end of buffer */
 	    if ( !b->next ) return(0);
@@ -2101,7 +2122,7 @@ do_it_chunked:
 	r = send(so, source, to_send, 0);
 	if ( r == 0 )
 	    return(-1);
-	if ((r < 0) && (errno == EWOULDBLOCK) ) {
+	if ( (r < 0) && (ERRNO == EWOULDBLOCK) ) {
 	    return(0);
 	}
 	if ( r < 0 ) {
@@ -2284,8 +2305,8 @@ time_t	corrected_initial_age, resident_time, current_age;
     resident_time = 		time(NULL) - obj->response_time;
     current_age = 		corrected_initial_age + resident_time;
 
-    my_xlog(LOG_DBG, "current_obj_age(): obj->times.date: %d\n", obj->times.date);
-    my_xlog(LOG_DBG, "current_obj_age(): obj->response_time: %d\n", obj->response_time);
+    my_xlog(LOG_DBG, "current_obj_age(): obj->times.date: %d\n", (utime_t)(obj->times.date));
+    my_xlog(LOG_DBG, "current_obj_age(): obj->response_time: %d\n", (utime_t)(obj->response_time));
     my_xlog(LOG_DBG, "current_obj_age(): apparent_age: %d\n", apparent_age);
     my_xlog(LOG_DBG, "current_obj_age(): corrected_received_age: %d\n", corrected_received_age);
     my_xlog(LOG_DBG, "current_obj_age(): responce_delay: %d\n", response_delay);
@@ -2312,34 +2333,38 @@ srv_connect(int client_so, struct url *url, struct request *rq)
 {
 int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
+ERRBUF ;
 
-#ifdef	MODULES
+#if	defined(MODULES)
     int			flags = 0;
 
     r = check_redir_connect(&server_so, rq, &flags);
     if ( server_so != -1 )
 	return(server_so);
     if ( r == MOD_CODE_ERR ) {
-	say_bad_request(client_so, "Can't connect to host.", strerror(errno), ERR_TRANSFER, rq);
+	say_bad_request(client_so, "Can't connect to host.", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq);
 	return(-1);
     }
-#endif
+#endif /* MODULES */
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
+	say_bad_request(client_so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_INTERNAL, rq);
 	return(-1);
     }
     bind_server_so(server_so, rq);
     if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
 	say_bad_request(client_so, "Can't translate name to address", url->host, ERR_DNS_ERR, rq);
-	close(server_so);
+	CLOSE(server_so);
 	return(-1);
     }
     server_sa.sin_port = htons(url->port);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
-	say_bad_request(client_so, "Can't connect to host.", strerror(errno), ERR_TRANSFER, rq);
-	close(server_so);
+	say_bad_request(client_so, "Can't connect to host.", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq);
+	CLOSE(server_so);
 	return(-1);
     }
     return(server_so);
@@ -2350,7 +2375,7 @@ srv_connect_silent(int client_so, struct url *url, struct request *rq)
 {
 int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
-#ifdef	MODULES
+#if	defined(MODULES)
     int			flags = 0;
 
     r = check_redir_connect(&server_so, rq, &flags);
@@ -2359,7 +2384,7 @@ struct	sockaddr_in 	server_sa;
     if ( r == MOD_CODE_ERR ) {
 	return(-1);
     }
-#endif
+#endif /* MODULES */
 
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
@@ -2367,13 +2392,13 @@ struct	sockaddr_in 	server_sa;
     }
     bind_server_so(server_so, rq);
     if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
-	close(server_so);
+	CLOSE(server_so);
 	return(-1);
     }
     server_sa.sin_port = htons(url->port);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
-	close(server_so);
+	CLOSE(server_so);
 	return(-1);
     }
     return(server_so);
@@ -2385,6 +2410,7 @@ parent_connect(int client_so, char *parent_host, int parent_port, struct request
 int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
 struct	sockaddr_in	dst_sa;
+ERRBUF ;
 
     if ( !TEST(rq->flags, RQ_GO_DIRECT) ) {
         bzero(&dst_sa, sizeof(dst_sa));
@@ -2402,17 +2428,19 @@ struct	sockaddr_in	dst_sa;
 	say_bad_request(client_so, "Can't translate parent name to address", parent_host, ERR_DNS_ERR,rq);
 	return(-1);
     }
-    server_sa.sin_port = htons(parent_port);
+    server_sa.sin_port = htons((unsigned short)parent_port);
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
+	say_bad_request(client_so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_INTERNAL, rq);
 	return(-1);
     }
     bind_server_so(server_so, rq);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
-	say_bad_request(client_so, "Can't connect to parent", strerror(errno), ERR_TRANSFER, rq);
-	close(server_so);
+	say_bad_request(client_so, "Can't connect to parent", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq);
+	CLOSE(server_so);
 	return(-1);
     }
     return(server_so);
@@ -2439,7 +2467,7 @@ struct	sockaddr_in	dst_sa;
     if ( str_to_sa(parent_host, (struct sockaddr*)&server_sa) ) {
 	return(-1);
     }
-    server_sa.sin_port = htons(parent_port);
+    server_sa.sin_port = htons((unsigned short)parent_port);
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	return(-1);
@@ -2447,7 +2475,7 @@ struct	sockaddr_in	dst_sa;
     bind_server_so(server_so, rq);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
-	close(server_so);
+	CLOSE(server_so);
 	return(-1);
     }
     return(server_so);
@@ -2457,18 +2485,21 @@ int
 peer_connect(int client_so, struct sockaddr_in *peer_sa, struct request *rq)
 {
 int 			server_so = -1, r;
+ERRBUF ;
 
     my_xlog(LOG_HTTP|LOG_DBG, "Connecting to peer\n");
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
+	say_bad_request(client_so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_INTERNAL, rq);
 	return(-1);
     }
     bind_server_so(server_so, rq);
     r = connect(server_so, (struct sockaddr*)peer_sa, sizeof(*peer_sa));
     if ( r == -1 ) {
-	say_bad_request(client_so, "Can't connect to parent", strerror(errno), ERR_TRANSFER, rq);
-	close(server_so);
+	say_bad_request(client_so, "Can't connect to parent", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq);
+	CLOSE(server_so);
 	return(-1);
     }
     return(server_so);
@@ -2516,7 +2547,7 @@ int	via_inserted = FALSE;
 	    goto do_not_insert;
 	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
 	    /* attach my Via: */
-	    if ( (fav = format_av_pair(av->attr, av->val)) ) {
+	    if ( (fav = format_av_pair(av->attr, av->val)) != 0 ) {
 		char	*buf;
 
 		buf = strchr(fav, '\r');
@@ -2543,7 +2574,7 @@ int	via_inserted = FALSE;
 	    }
 	    goto do_not_insert;
 	}
-	if ( (fav=format_av_pair(av->attr, av->val)) ) {
+	if ( (fav=format_av_pair(av->attr, av->val)) != 0 ) {
 	    if ( is_attr(av, "Authorization:") ) {
 		/* we prefer "in-header"-supplied Authorization: */
 		authorization_done = TRUE;
@@ -2574,7 +2605,7 @@ int	via_inserted = FALSE;
 	    }
 	}
     }
-    if ( (fav=format_av_pair("Connection:", "close")) ) {
+    if ( (fav = format_av_pair("Connection:", "close")) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
 	free(fav);fav = NULL;
@@ -2683,7 +2714,7 @@ struct	av	*av;
 	    goto do_not_insert;
 	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
 	    /* attach my Via: */
-	    if ( (fav = format_av_pair(av->attr, av->val)) ) {
+	    if ( (fav = format_av_pair(av->attr, av->val)) != 0 ) {
 		char	*buf;
 		buf = strchr(fav, '\r');
 		if ( buf ) *buf = 0;
@@ -2709,7 +2740,7 @@ struct	av	*av;
 	    }
 	    goto do_not_insert;
 	}
-	if ( (fav=format_av_pair(av->attr, av->val)) ) {
+	if ( (fav = format_av_pair(av->attr, av->val)) != 0 ) {
 	    if ( attach_data(fav, strlen(fav), tmpbuff) )
 		goto fail;
 	    free(fav);fav = NULL;
@@ -2717,7 +2748,7 @@ struct	av	*av;
   do_not_insert:
 	av = av->next;
     }
-    if ( (fav=format_av_pair("Connection:", "close")) ) {
+    if ( (fav = format_av_pair("Connection:", "close")) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
 	free(fav);fav = NULL;
@@ -2801,7 +2832,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 	    while ( *p && IS_SPACE(*p) ) p++;
 		t = p;
 		/* split on ',' */
-		while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) ) {
+		while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) != 0 ) {
 		    int	a_len;
 		    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
 
@@ -2892,7 +2923,7 @@ check_rewrite_charset(char *s, struct request *rq, struct av *header, int* conve
 char	*p, *t, *d=NULL, *delim, text = FALSE;
 int	dsize = 0;
     t = s;
-    while ( (p = (char*)strtok_r(t, ";", &delim)) ) {
+    while ( (p = (char*)strtok_r(t, ";", &delim)) != 0 ) {
 	/* if it is text/...	*/
 	if ( !text ) {
 	    if (!strncasecmp(p, "text/", 5) ) {
@@ -2953,7 +2984,8 @@ pump_data(struct mem_obj *obj, struct request *rq, int so, int server_so)
 int		r, pass = 0;
 struct	pollarg pollarg[2];
 
-    while(1) {
+    forever() {
+
     sel_again:
 	pollarg[0].fd = server_so;
 	pollarg[1].fd = so;
@@ -2969,7 +3001,7 @@ struct	pollarg pollarg[2];
 	    char b[1024];
 	    /* read from server */
 	    r = read(server_so, b, sizeof(b));
-	    if ( r < 0 && errno == EAGAIN )
+	    if ( (r < 0) && (ERRNO == EAGAIN) )
 		goto sel_again;
 	    if ( r <= 0 )
 		goto done;
@@ -2990,7 +3022,7 @@ struct	pollarg pollarg[2];
 	    char b[1024];
 	    /* read from client */
 	    r = read(so, b, sizeof(b));
-	    if ( r < 0 && errno == EAGAIN )
+	    if ( (r < 0) && (ERRNO == EAGAIN) )
 		goto sel_again;
 	    if ( r <= 0 )
 		goto done;

@@ -7,19 +7,28 @@ AC_PROG_YACC
 
 sed_script='s/,/.so /g'
 
-AC_ARG_ENABLE(opt-modules,--enable-opt-modules      Additional modules(comma separated),\
+AC_ARG_ENABLE(opt-modules,--enable-opt-modules      Additional modules (comma separated),\
 OPT_MODS=`echo $enable_opt_modules | sed "$sed_script"`.so)
 
 AC_ARG_ENABLE(large-files,--enable-large-files      Enable large files support,\
 large_files="yes")
 
+AC_ARG_ENABLE(db-locks,--enable-db-locks         Enable internal DB locks,\
+AC_DEFINE(USE_INTERNAL_DB_LOCKS))
+
+AC_ARG_ENABLE(oops-user,--enable-oops-user        Username under which uid Oops will run,
+OOPS_USER="$enableval")
+
 AC_ARG_WITH(DB,--with-DB                 BerkeleyDB home directory,\
 LIBDB_PATH=$withval,LIBDB_PATH="")
 
-AC_CHECK_HEADER(unistd.h)
-AC_CHECK_HEADER(pthread.h)
-AC_CHECK_HEADER(crypt.h, HAVE_CRYPT_H="-DHAVE_CRYPT_H", HAVE_CRYPT_H="")
-AC_CHECK_HEADER(netinet/ip_fil.h, HAVE_IPF="1", HAVE_IPF="0")
+AC_ARG_WITH(regexp,--with-regexp=(builtin|pcre|system)   Which regex to use,
+  regexp_val="$withval", regexp_val="system")
+
+
+AC_CHECK_HEADERS(crypt.h getopt.h pthread.h string.h strings.h unistd.h )
+AC_CHECK_HEADER(netinet/ip_fil.h, AC_DEFINE(HAVE_IPF))
+AC_CHECK_HEADER(netinet/ip6.h, AC_DEFINE(HAVE_IP6_H))
 
 pwd=`pwd`
 LIBDB_NAME=-ldb
@@ -39,6 +48,24 @@ elif test -r "/usr/lib/libdb.a"; then
 elif test -r "/usr/local/lib/libdb2.a"; then
     LIBDB_PATH="/usr/local/lib"
     LIBDB_NAME=-ldb2
+elif test -r "/usr/local/BerkeleyDB.3.0/lib/libdb.lib"; then
+    LIBDB_PATH="/usr/local/BerkeleyDB.3.0/lib"
+    LIBDB_NAME=-llibdb
+elif test -r "/usr/local/BerkeleyDB/lib/libdb.lib"; then
+    LIBDB_PATH="/usr/local/BerkeleyDB/lib"
+    LIBDB_NAME=-llibdb
+elif test -r "$pwd/libdb.lib"; then
+    LIBDB_PATH="$pwd"
+    LIBDB_NAME=-llibdb
+elif test -r "/usr/local/lib/libdb.lib"; then
+    LIBDB_PATH="/usr/local/lib"
+    LIBDB_NAME=-llibdb
+elif test -r "/usr/lib/libdb.lib"; then
+    LIBDB_PATH="/usr/lib"
+    LIBDB_NAME=-llibdb
+elif test -r "/usr/local/lib/libdb2.lib"; then
+    LIBDB_PATH="/usr/local/lib"
+    LIBDB_NAME=-llibdb2
 else
     echo "You must have bsd DB package installed."
     echo "Check it out at http://www.sleepycat.com"
@@ -47,21 +74,20 @@ fi
 AC_MSG_RESULT($LIBDB_PATH)
 
 if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB.3.0/lib"; then
-    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB.3.0/include -L/usr/local/BerkeleyDB.3.0/lib"
+    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB.3.0/include"
 elif test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
-    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
+    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include"
 elif test "$LIBDB_PATH" = "$pwd"; then
-    CFLAGS="$CFLAGS -I$pwd -L$pwd"
+    CFLAGS="$CFLAGS -I$pwd"
 elif test "$LIBDB_PATH" = "/usr/local/lib"; then
     if test "$LIBDB_NAME" = "-ldb2"; then
-	CFLAGS="$CFLAGS -I/usr/local/include/db2 -L/usr/local/lib"
+	CFLAGS="$CFLAGS -I/usr/local/include/db2"
     else
-	CFLAGS="$CFLAGS -I/usr/local/include -L/usr/local/lib"
+	CFLAGS="$CFLAGS -I/usr/local/include"
     fi
 else
     CFLAGS="$CFLAGS -I$LIBDB_PATH/include -L$LIBDB_PATH/lib"
 fi
-
 
 AC_CHECK_LIB(pthread, pthread_create, pthread_in=pthread,pthread_in=no)
 if test "$pthread_in" = no; then
@@ -70,11 +96,32 @@ fi
 
 AC_CHECK_LIB(dl, dlopen, dlopen_in=dl,dlopen_in=no)
 if test "$dlopen_in" = no; then
-AC_CHECK_LIB(c, dlopen, dlopen_in=c,dlopen=no)
+AC_CHECK_LIB(c, dlopen, dlopen_in=c,dlopen_in=no)
+fi
+if test "$dlopen_in" = no; then
+AC_CHECK_LIB(posix, dlopen, dlopen_in=posix,dlopen=no)
 fi
 
 AC_CHECK_LIB(fl, yywrap, need_lfl="-lfl",need_lfl="")
 AC_CHECK_LIB(crypt, crypt, LIBS="$LIBS -lcrypt")
+
+##
+## Check some typdefs
+##
+AC_MSG_CHECKING(for socklen_t)
+AC_TRY_COMPILE([
+#include	<stdio.h>
+#include	<stdlib.h>
+#include	<signal.h>
+#include	<sys/socket.h>
+#include	<sys/types.h>
+#include	<netinet/in.h>
+],[
+socklen_t	test;],[
+AC_DEFINE(HAVE_SOCKLEN_T) AC_MSG_RESULT(yes)
+],[AC_MSG_RESULT(no)])
+
+AC_CHECK_DEF(stdio.h errno.h, sys_nerr sys_errlist, AC_DEFINE(HAVE_SYSERRLIST))
 
 ##
 ## Check some typdefs
@@ -86,20 +133,39 @@ AC_TRY_COMPILE([
 #ifdef	HAVE_UNISTD
 #include	<stdlib.h>
 #endif
-#include	<signal.h>
+#ifdef	_WIN32
+#include	<inttypes.h>
+#else
 #include	<pthread.h>
+#endif
+#include	<signal.h>
 #include	<sys/types.h>
 #include	<netinet/in.h>
 ],[
 uint32_t	test;],[
-HAVE_UINT32_T=-DHAVE_UINT32_T;AC_MSG_RESULT(yes)
+AC_DEFINE(HAVE_UINT32_T) AC_MSG_RESULT(yes)
 ],[AC_MSG_RESULT(no)])
 
-CFLAGS="$CFLAGS $HAVE_UINT32_T"
-
-if test "$HAVE_CRYPT_H" != "" ; then
-	CFLAGS="$CFLAGS -DHAVE_CRYPT_H"
-fi
+##
+## Check some typdefs
+##
+AC_MSG_CHECKING(for struct timespec)
+AC_TRY_COMPILE([
+#include	<stdio.h>
+#include	<stdlib.h>
+#ifdef	HAVE_UNISTD
+#include	<stdlib.h>
+#endif
+#ifdef	_WIN32
+#include	<inttypes.h>
+#endif
+#include	<signal.h>
+#include	<sys/types.h>
+#include	<netinet/in.h>
+],[
+struct timespec	test;],[
+AC_DEFINE(HAVE_STRUCT_TIMESPEC) AC_MSG_RESULT(yes)
+],[AC_MSG_RESULT(no)])
 
 AC_MSG_CHECKING(for __tm_gmtoff__)
 AC_TRY_COMPILE([
@@ -109,6 +175,7 @@ AC_TRY_COMPILE([
 #include	<stdlib.h>
 #endif
 #include	<time.h>
+#ifndef
 #include	<pthread.h>
 #include	<sys/types.h>
 #include	<netinet/in.h>
@@ -116,10 +183,8 @@ AC_TRY_COMPILE([
 struct	tm	tm;
 tm.__tm_gmtoff__ = tm.__tm_gmtoff__*2;
 ],[
-HAVE__GMTOFF__=-DHAVE__GMTOFF__;AC_MSG_RESULT(yes)
+AC_DEFINE(HAVE__GMTOFF__) AC_MSG_RESULT(yes)
 ],[AC_MSG_RESULT(no)])
-
-CFLAGS="$CFLAGS $HAVE__GMTOFF__"
 
 LD=ld
 
@@ -128,14 +193,16 @@ LD=ld
 ##
 if   test "$dlopen_in" = "dl"; then
 	DLLIB="-ldl"
-	MODULES="-DMODULES"
+	MODULES=1
 elif test "$dlopen_in" = "c"; then
-	MODULES="-DMODULES"
+	MODULES=1
+elif test "$dlopen_in" = "posix"; then
+	MODULES=1
 else
 	echo "Can't locate dlopen() - no modules."
-	MODULES=""
+	MODULES=0
 fi
-if test "$MODULES" = "-DMODULES"; then
+if test "$MODULES" = 1; then
 	AC_MSG_CHECKING(flags to link shared objects.)
 	SAVED_LDFLAGS=$LDFLAGS
 cat>conftest.c << EOF
@@ -161,7 +228,7 @@ EOF
 	    res=`./confmain`
 	fi
 	if test "$res" = "test"; then
-	    SOFLAGS="-G"
+	    SOFLAGS="-L$LIBDB_PATH -G"
 	fi
 	if test "$SOFLAGS" = ""; then
 	    $LD conftest.o -L$LIBDB_PATH -G -o conftest.so 2>> config.log
@@ -188,7 +255,7 @@ EOF
 		res=`./confmain`
 	    fi
 	    if test "$res" = "test"; then
-		SOFLAGS="-fpic -shared"
+		SOFLAGS="-L$LIBDB_PATH -fpic -shared"
 	    fi
 	fi
 	rm -f conftest.so
@@ -199,13 +266,13 @@ EOF
 		echo $res
 	    fi
 	    if test "$res" = "test"; then
-		SOFLAGS="-shared"
+		SOFLAGS="-L$LIBDB_PATH -shared"
 	    fi
 	fi
 	rm -f conftest* confmain*
 	AC_MSG_RESULT($SOFLAGS)
 	if test "$SOFLAGS" != ""; then
-		CFLAGS="$CFLAGS $MODULES"
+		AC_DEFINE(MODULES) EXTRASRC="$EXTRASRC modules.c"
 		LIBS="$LIBS $DLLIB"
 	fi
     AC_MSG_CHECKING(for -export-dynamic)
@@ -232,38 +299,10 @@ rm -f confmain*
 
 LDFLAGS="$LDFLAGS -L$LIBDB_PATH"
 
-AC_CHECK_FUNC(strtok_r, need_strtok_r=no,need_strtok_r=yes)
-if test "$need_strtok_r" = "yes"; then
-    STRTOKSRC=strtok_r.c
-    STRTOKOBJ=strtok_r.o
-fi
-
-AC_CHECK_FUNC(daemon, need_daemon=no,need_daemon=yes)
-if test "$need_daemon" = "yes"; then
-	CFLAGS="$CFLAGS -DNEED_DAEMON"
-fi
-
-AC_CHECK_FUNC(pread, have_pread=yes,have_pread=no)
-if test "$have_pread" = "yes"; then
-	CFLAGS="$CFLAGS -DHAVE_PREAD"
-fi
-
-AC_CHECK_FUNC(pwrite, have_pwrite=yes,have_pwrite=no)
-if test "$have_pwrite" = "yes"; then
-	CFLAGS="$CFLAGS -DHAVE_PWRITE"
-fi
-
-AC_CHECK_FUNC(poll, have_poll=yes,have_poll=no)
-if test "$have_poll" = "yes"; then
-	CFLAGS="$CFLAGS -DHAVE_POLL"
-fi
-
-AC_CHECK_FUNC(getrusage, HAVE_GETRUSAGE=1,HAVE_GETRUSAGE=0)
-
 case "$host_os" in
 irix*)    CFLAGS="-D_SGI_MP_SOURCE"
 	  ;;
-osf*)     CFLAGS="-g0 -O4 $CFLAGS -D_REENTRANT -DOSF"
+osf*)     CFLAGS="$CFLAGS -D_REENTRANT -DOSF"
 	  LIBS="-oldstyle_liblookup -lpthread $LIBS -L$LIBDB_PATH $LIBDB_NAME"
 	  ;;
 freebsd*) CFLAGS="$CFLAGS -pthread -D_REENTRANT -DFREEBSD -D_THREAD_SAFE -DFD_SETSIZE=2048"
@@ -273,7 +312,7 @@ freebsd*) CFLAGS="$CFLAGS -pthread -D_REENTRANT -DFREEBSD -D_THREAD_SAFE -DFD_SE
 		CFLAGS="$CFLAGS -DWITH_LARGE_FILES"
 	  fi
 	  ;;
-bsdi*)	CFLAGS="$CFLAGS -pthread -DBSDOS"
+bsdi*)	  CFLAGS="$CFLAGS -pthread -DBSDOS"
 	  LIBS="$LEXLIB $LIBS -L$LIBDB_PATH $LIBDB_NAME"
 	  ;;
 gnu*|linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
@@ -290,7 +329,7 @@ gnu*|linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
 		CFLAGS="$CFLAGS -DWITH_LARGE_FILES -D_FILE_OFFSET_BITS=64 -D__USE_LARGEFILE64 -D__USE_FILE_OFFSET64"
 	  fi
 	  ;;
-solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
+solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS"
 	  LIBS="-lm -ly -ll $LIBS -lsocket -lnsl -L$LIBDB_PATH $LIBDB_NAME"
 	  case "$CC" in
 		gcc*)	LIBS="-lthread -lpthread $LIBS"
@@ -302,7 +341,7 @@ solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
 		CFLAGS="$CFLAGS -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -DWITH_LARGE_FILES"
 	  fi
 	  ;;
-aix4*) CFLAGS="$CFLAGS -DMODULES "
+aix4*)    AC_DEFINE(MODULES) EXTRASRC="$EXTRASRC modules.c"
 	  LIBS="$LIBS -ldl $LEXLIB -L$LIBDB_PATH $LIBDB_NAME"
           SOFLAGS=-G
           case "$CC" in
@@ -318,16 +357,33 @@ aix4*) CFLAGS="$CFLAGS -DMODULES "
 		CFLAGS="$CFLAGS -D_LARGE_FILES -D_LARGE_FILE_API -DWITH_LARGE_FILES"
 	  fi
 	  ;;
+uwin*) 	  AC_DEFINE(MODULES) EXTRASRC="$EXTRASRC modules.c"
+	  CFLAGS="$CFLAGS -I. -I.. -I/usr/include"
+	  LIBS="$LEXLIB $LIBS -lposix -lpthread -L$LIBDB_PATH $LIBDB_NAME"
+	  ;;
 esac
 
-AC_CHECK_FUNC(gethostbyname_r, have_gethostbyname_r=yes,have_gethostbyname_r=no)
-if test "$have_gethostbyname_r" = "yes"; then
-	HAVE_GETHOSTBYNAME_R=1
-else
-	HAVE_GETHOSTBYNAME_R=0
-fi
+AC_CHECK_FUNCS(atoll bzero chroot ctime_r daemon getdomainname gethostbyname_r getopt getrlimit getrusage gmtime_r localtime_r poll pread pwrite)
 
-AC_CHECK_FUNC(getdomainname, HAVE_GETDOMAINNAME=1,HAVE_GETDOMAINNAME=0)
+case "$regexp_val" in
+  system)
+    AC_CHECK_FUNC(regcomp, , [echo "regcomp not found in system libraries" 2>&1; exit 1])
+    AC_DEFINE(REGEX_H, <regex.h>)
+    ;;
+  pcre)
+    AC_CHECK_LIB(pcreposix, regcomp, LIBS="$LIBS -lpcreposix -lpcre", AC_CHECK_LIB(pcre, regcomp), -lpcre)
+    AC_DEFINE(REGEX_H, <pcreposix.h>)
+    ;;
+  builtin)
+    AC_DEFINE(REGEX_H, "gnu_regex.h") EXTRASRC="$EXTRASRC gnu_regex.c"
+    ;;
+  *)
+    echo "unknown value of --with-regexp option" 2>&1; exit 1
+    ;;
+esac
+
+AC_CHECK_FUNCS(setegid snprintf setrlimit strcasestr strerror_r strtoll)
+AC_CHECK_FUNC(strtok_r,,EXTRASRC="$EXTRASRC strtok_r.c")
 
 AC_PATH_PROG(CHOWN, chown, /usr/sbin/chown,
        $PATH:/bin:/usr/bin:/usr/sbin)
@@ -336,8 +392,11 @@ echo $CC
 echo $CFLAGS
 echo $LIBS
 
-printf %s "Under which uid Oops! will run? Enter username or press Enter: "
-read OOPS_USER
+if test "${enable_oops_user+set}" != set; then
+  printf %s "Under which uid Oops! will run? Enter username or press Enter: "
+  read OOPS_USER
+fi
+
 VER=`cat src/version`
 if test "X$OOPS_USER" != "X" ; then
 	echo
@@ -354,16 +413,25 @@ fi
 AC_SUBST(OOPSUSER_DEF)
 
 AC_SUBST(YACCLIB)
-AC_SUBST(STRTOKSRC)
-AC_SUBST(STRTOKOBJ)
+AC_SUBST(EXTRASRC)
 AC_SUBST(SOFLAGS)
 AC_SUBST(OPT_MODS)
-AC_SUBST(HAVE_GETHOSTBYNAME_R)
-AC_SUBST(HAVE_GETDOMAINNAME)
-AC_SUBST(HAVE_IPF)
-AC_SUBST(HAVE_GETRUSAGE)
 AC_SUBST(CHOWN)
 AC_SUBST(LD)
 AC_SUBST(LDFLAGS)
 AC_SUBST(VER)
-AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg src/config.h)
+
+AC_DEFINE(OPEN_FILES_MAXIMUM,8196)
+if test "x$prefix" != xNONE; then
+  oops_prefix="$prefix"
+else
+  oops_prefix="$ac_default_prefix"
+fi
+
+AC_DEFINE_UNQUOTED(OOPS_HOME, "$oops_prefix/oops")
+AC_DEFINE_UNQUOTED(OOPS_CFG, "$oops_prefix/oops/oops.cfg")
+AC_DEFINE_UNQUOTED(OOPS_CC, "$CC")
+AC_DEFINE_UNQUOTED(OOPS_CFLAGS, "$CFLAGS")
+AC_DEFINE_UNQUOTED(OOPS_LIBS, "$LIBS")
+AC_CONFIG_HEADER(src/config.h)
+AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg)

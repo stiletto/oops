@@ -1,0 +1,19 @@
+#undef OOPS_HOME
+#undef OOPS_CFG
+#undef OOPS_CC
+#undef OOPS_CFLAGS
+#undef OOPS_LIBS
+#undef OPEN_FILES_MAXIMUM
+#undef MODULES
+#undef USE_INTERNAL_DB_LOCKS
+#undef REGEX_H
+
+#undef HAVE_IPF
+#undef HAVE_SOCKLEN_T
+#undef HAVE_UINT32_T
+#undef HAVE__GMTOFF__
+#undef HAVE_STRUCT_TIMESPEC
+#undef HAVE_WORKING_SSCANF
+#undef HAVE_IP6_H
+#undef HAVE_SYSERRLIST
+#undef HAVE_TIME_T_AS_DOUBLE

@@ -1,4 +1,4 @@
-char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.3 2000/04/22 11:53:09 ai Exp $";
+char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.5 2000/05/09 15:46:15 ai Exp $";
 #ifdef REGEX
 
 #define REGEX_MALLOC
@@ -29,7 +29,7 @@ char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.3 2000/04/22 11:53:09 ai Exp $";
   #pragma alloca
 #endif
 
-#if	defined(SOLARIS)
+#if	defined(SOLARIS) || defined(_WIN32)
 void	abort(void);
 #endif
 
@@ -61,7 +61,7 @@ void	abort(void);
 
 /* We used to test for `BSTRING' here, but only GCC and Emacs define
    `BSTRING', as far as I know, and neither of them use this code.  */
-#if HAVE_STRING_H || STDC_HEADERS
+#if HAVE_STRING_H || STDC_HEADERS || _MSC_VER
 #include <string.h>
 #ifndef bcmp
 #define bcmp(s1, s2, n)	memcmp ((s1), (s2), (n))
@@ -887,7 +887,7 @@ static const char *re_error_msg[] =
 
 /* Make sure we have at least N more bytes of space in buffer.  */
 #define GET_BUFFER_SPACE(n)						\
-    while (b - bufp->buffer + (n) > bufp->allocated)			\
+    while ((unsigned)(b - bufp->buffer + (n)) > bufp->allocated)			\
       EXTEND_BUFFER ()
 
 /* Make sure we have one more byte of buffer space and then add C to it.  */
@@ -2236,8 +2236,8 @@ compile_range (p_ptr, pend, translate, syntax, b)
   unsigned this_char;
 
   const char *p = *p_ptr;
-  int range_start, range_end;
-  
+  unsigned int range_start, range_end;
+
   if (p == pend)
     return REG_ERANGE;
 
@@ -3202,7 +3202,7 @@ re_match_2 (bufp, string1, size1, string2, size2, pos, regs, stop)
      int stop;
 {
   /* General temporaries.  */
-  int mcnt;
+  unsigned int mcnt;
   unsigned char *p1;
 
   /* Just past the end of the corresponding string.  */

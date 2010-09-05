@@ -17,29 +17,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include	<stdio.h>
-#include	<unistd.h>
-#include	<errno.h>
-#include	<strings.h>
-#include	<ctype.h>
-#include	<sys/time.h>
-#include	<sys/types.h>
-
-#include	<pthread.h>
-#include        <sys/param.h>
-#include        <sys/socket.h>
-#include        <sys/types.h>
-#include        <sys/stat.h>
-#include        <sys/file.h>
-#include        <sys/time.h>
-#include        <sys/resource.h>
-
-#include        <netinet/in.h>
-
-#include	<db.h>
-
 #include	"oops.h"
-
 
 /* read with timeout */
 int
@@ -56,7 +34,7 @@ struct	pollarg	pollarg;
 	pollarg.request = FD_POLL_RD;
 	sr = poll_descriptors(1, &pollarg, tmo*1000);
 	if ( sr < 0 ) {
-		if ( errno == EINTR ) return(readed);
+		if ( ERRNO == EINTR ) return(readed);
 		return(sr);
 	}
 	if ( sr == 0 ) {
@@ -101,7 +79,7 @@ sendstr(int so, char * str)
 int
 writet(int so, char* buf, int len, int tmo)
 {
-int		to_write = len, sr, got, sent=0;
+int		to_write = len, sr, got, sent = 0;
 char		*p = buf;
 struct	timeval tv;
 time_t		start, now;

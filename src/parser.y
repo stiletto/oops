@@ -19,7 +19,7 @@
 %token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T
 
 %type	<NETPTR>	network_list network
-%type	<STRPTR>	group_name string module_name day
+%type	<STRPTR>	group_name string module_name
 %type	<STRING_LIST>	mod_op mod_ops string_list string_list_e
 %type	<GROUPOPS>	group_op group_ops
 %type	<GROUPOPS>	http icp badports bandwidth miss auth_mods redir_mods
@@ -29,42 +29,13 @@
 %type	<OFFSET>	offset
 %type	<ACL>		allow_acl deny_acl allow_acls deny_acls
 %type	<DOMAIN>	domain domainlist
-%type	<CHAR>		dayset
 
 %{
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
-
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#include	<netinet/in.h>
-#include    <arpa/inet.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
 
 #include	"oops.h"
-#ifdef	MODULES
+#if	defined(MODULES)
 #include	"modules.h"
-#endif
+#endif /* MODULES */
 
 extern	FILE	*yyin;
 
@@ -85,6 +56,8 @@ struct	peer_c {
 } peer_c;
 
 struct	domain_list	*load_domlist_from_file(char*);
+struct	domain_list	*load_domlist_from_list(struct string_list *);
+int			string_to_days(struct denytime *, struct string_list *);
 
 %}
 
@@ -356,64 +329,6 @@ stop_cache_acl	: STOP_CACHE_ACL_T  STRING L_EOS {
 			parse_acl_access(&stop_cache_acl, yylval.STRPTR);
 			free(yylval.STRPTR);
 		}
-day		: string {
-		    $$ = $1;
-		}
-dayset		: day {
-		    char day = daybit($1);
-		    if ( day < 0 ) {
-			fprintf(stderr, "%s - unrecognized day\n", $1);
-			yyerror();
-		    }
-		    free($1);
-		    $$ = day;
-		}
-		| day ',' dayset {
-		    char day = daybit($1);
-		    if ( day < 0 ) {
-			fprintf(stderr, "%s - unrecognized day\n", $1);
-			yyerror();
-		    }
-		    free($1);
-		    $$ = day | $3 ;
-		}
-		| day ':' day {
-		    unsigned char d1, d2, i, res = 0;
-		    d1 = daybit($1);
-		    d2 = daybit($3);
-		    if ( TEST(d1, 0x80) || TEST(d2, 0x80) ) {
-			fprintf(stderr, "%s or %s - unrecognized day\n", $1,$3);
-			yyerror();
-		    }
-		    if ( d1 > d2 ) {
-			fprintf(stderr, "Days can't be in reverse order\n");
-			yyerror();
-		    }
-		    i = d1;
-		    while(i<=d2) {
-			res |= i;
-			i <<= 1;
-		    }
-		    free($1); free($3);
-		    $$ = res;
-		}
-		| day ':' day ',' dayset {
-		    unsigned char d1, d2, i, res;
-		    d1 = daybit($1);
-		    d2 = daybit($3);
-		    res= $5;
-		    if ( d1 > d2 ) {
-			fprintf(stderr, "Days can't be in reverse order\n");
-			yyerror();
-		    }
-		    i = d1;
-		    while(i<=d2) {
-			res |= i;
-			i <<= 1;
-		    }
-		    free($1); free($3);
-		    $$ = res;
-		}
 acl		: ACL_T	STRING L_EOS {
 			char		  *token, *p, *tptr;
 			char		  *n=NULL, *type=NULL, *data=NULL;
@@ -490,7 +405,7 @@ nameserver	: NAMESERVER STRING L_EOS {
 			if ( ns_curr < MAXNS ) {
 			    bzero(&ns_sa[ns_curr], sizeof(ns_sa[ns_curr]));
 			    ns_sa[ns_curr].sin_family = AF_INET;
-#if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF)
+#if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF) && !defined(_WIN32)
 			    ns_sa[ns_curr].sin_len = sizeof(ns_sa[ns_curr]);
 #endif
 			    ns_sa[ns_curr].sin_addr.s_addr = inet_addr(yylval.STRPTR);
@@ -683,7 +598,7 @@ string		: STRING { $$ = yylval.STRPTR; }
 
 module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			struct string_list	*list = $4;
-#ifdef	MODULES
+#if	defined(MODULES)
 			struct general_module	*mod = module_by_name($2);
 			if ( mod ) {
 			    verb_printf("Config %s\n", $2);
@@ -700,16 +615,16 @@ module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			}
 #else
 			verb_printf("Modules was not configured\n");
-#endif
+#endif /* MODULES */
 			free_string_list($4);
 			free($2);
 		}
 		| MODULE module_name '{' '}' L_EOS {
-#ifdef	MODULES
+#if	defined(MODULES)
 			struct general_module	*mod = module_by_name($2);
 			if ( mod && mod->config_beg ) (*mod->config_beg)();
 			if ( mod && mod->config_end ) (*mod->config_end)();
-#endif
+#endif /* MODULES */
 			free($2);
 		}
 mod_ops		: mod_op {
@@ -998,28 +913,25 @@ group_op	: NETWORKS network_list ';' {
 		| auth_mods	{ $$ = $1; }
 		| redir_mods	{ $$ = $1; }
 
-denytime	: DENYTIME_T dayset num ':' num {
+denytime	: DENYTIME_T string_list {
 		    struct	group_ops_struct	*new_op;
 		    struct	denytime		*denytime;
 		    int		start_m, end_m;
-			verb_printf("Denytime 0x%0X %d %d\n", $2, $3, $5);
 			new_op = xmalloc(sizeof(*new_op), "parser: denytime 1");
 			denytime = xmalloc(sizeof(*denytime), "parser: denytime 2");
 			if ( !new_op || !denytime ) {
 				yyerror();
 				$$ = NULL;
 			} else {
+			    char m1[10], m2[10];
 			    new_op->op = OP_DENYTIME;
 			    bzero(denytime, sizeof(*denytime));
-			    start_m = 60*($3/100) + $3%100;
-			    end_m = 60*($5/100) + $5%100;
-			    denytime->days = $2;
-			    denytime->start_minute = start_m;
-			    denytime->end_minute = end_m;
+			    string_to_days(denytime, $2);
 			    new_op->val= (void*)denytime;
 			    new_op->next=NULL;
 			    $$ = new_op;
 			}
+			free_string_list($2);
 		}
 miss		: MISS_T DENY ';' {
 		    struct	group_ops_struct	*new_op;
@@ -1097,7 +1009,17 @@ bandwidth	: BANDWIDTH_T num ';' {
 			    $$ = new_op;
 			}
 		}
-range		: NUMBER {
+range		: '[' num ':' num ']'  {
+			if ( !badp_p ) badp_p = &badports[0];
+			badp_p->from = $2;
+			badp_p->length = $4-$2+1;
+			if ( badp_p < &badports[MAXBADPORTS] ) badp_p++;
+			    else {
+			    verb_printf("You can use max %d badports ranges\n", MAXBADPORTS);
+				badp_p--;
+			    }
+			}
+		| NUMBER {
 			if ( !badp_p ) badp_p = &badports[0];
 			badp_p->from = yylval.INT;
 			badp_p->length = 1;
@@ -1107,15 +1029,17 @@ range		: NUMBER {
 				badp_p--;
 			    }
 			}
-		| '[' num ':' num ']'  {
+		| '[' string ']' {
+			int	from, to;
+			/* this must be [port:port] */
 			if ( !badp_p ) badp_p = &badports[0];
-			badp_p->from = $2;
-			badp_p->length = $4-$2+1;
-			if ( badp_p < &badports[MAXBADPORTS] ) badp_p++;
-			    else {
-			    verb_printf("You can use max %d badports ranges\n", MAXBADPORTS);
-				badp_p--;
+			    if ( sscanf($2, "%d:%d", &from, &to) == 2 ) {
+				badp_p->from = from;
+				badp_p->length = to - from + 1;
+			    } else {
+				printf("Unrecognized format: %s\n", $2);
 			    }
+			    free($2);
 			}
 
 ranges		: range {}
@@ -1350,21 +1274,7 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 deny_acls	: deny_acl 			{ $$ = $1; }
 		| deny_acl deny_acls 		{ $2->next = $1 ; $$ = $2; }
 
-deny_acl	: DENY DSTDOMAIN INCLUDE_T string ';' { 
-			struct acl *new = xmalloc(sizeof(*new), "parser: deny_acl new acl 1");
-			if ( !new ) {
-				verb_printf("No mem for acl\n");
-				yyerror();
-				$$ = NULL;
-			} else {
-				$$ = new;
-				$$->list = load_domlist_from_file($4);
-				$$->next = NULL;
-				$$->type = ACL_DOMAINDST ;
-			}
-		}
-
-deny_acl	: DENY DSTDOMAIN domainlist ';' { 
+deny_acl	: DENY DSTDOMAIN string_list ';' { 
 			struct acl *new = xmalloc(sizeof(*new), "parser: deny_acl new acl 2");
 			if ( !new ) {
 				verb_printf("No mem for acl\n");
@@ -1372,31 +1282,23 @@ deny_acl	: DENY DSTDOMAIN domainlist ';' {
 				$$ = NULL;
 			} else {
 				$$ = new;
-				$$->list = $3 ;
+				if ( $3
+				     && $3->string
+				     && !strncasecmp($3->string,"include:",8) )
+				   $$->list =
+					load_domlist_from_file($3->string + 8);
+				else
+				   $$->list = load_domlist_from_list($3);
 				$$->next = NULL;
 				$$->type = ACL_DOMAINDST ;
 			}
+			free_string_list($3);
 		}
 
 allow_acls	: allow_acl 			{ $$ = $1; }
 		| allow_acl allow_acls 		{ $1->next = $2 ; $$ = $1; }
 
-allow_acl	: ALLOW  DSTDOMAIN INCLUDE_T string ';' { 
-			struct acl *new = xmalloc(sizeof(*new), "parser: allow_acl new acl 1");
-			verb_printf("Include from file %s\n",$4);
-			if ( !new ) {
-				verb_printf("No mem for acl\n");
-				yyerror();
-				$$ = NULL;
-			} else {
-				$$ = new;
-				$$->list = load_domlist_from_file($4);
-				$$->next = NULL;
-				$$->type = ACL_DOMAINDST ;
-			}
-		}
-
-allow_acl	: ALLOW  DSTDOMAIN domainlist ';' { 
+allow_acl	: ALLOW  DSTDOMAIN string_list ';' {
 			struct acl *new = xmalloc(sizeof(*new), "parser: allow_acl new acl 2");
 			if ( !new ) {
 				verb_printf("No mem for acl\n");
@@ -1404,10 +1306,17 @@ allow_acl	: ALLOW  DSTDOMAIN domainlist ';' {
 				$$ = NULL;
 			} else {
 				$$ = new;
-				$$->list = $3;
+				if ( $3
+				     && $3->string
+				     && !strncasecmp($3->string,"include:",8) )
+				   $$->list =
+					load_domlist_from_file($3->string + 8);
+				else
+				   $$->list = load_domlist_from_list($3);
 				$$->next = NULL;
 				$$->type = ACL_DOMAINDST ;
 			}
+			free_string_list($3);
 		}
 
 string_list	: string_list_e { $$ = $1; }
@@ -1420,6 +1329,16 @@ string_list	: string_list_e { $$ = $1; }
 				d = d->next;
 			}
 		}
+		| string_list_e ',' string_list {
+			struct string_list *d;
+			$1->next = $3; $$ = $1; 
+			d = $1;
+			while(d) {
+				verb_printf("string_list:<%s>\n", d->string);
+				d = d->next;
+			}
+		}
+
 string_list_e	: string {
 		struct string_list	*new;
 			new = xmalloc(sizeof(*new),"parser: string_list_e");
@@ -1513,6 +1432,7 @@ network		: NETWORK {
 			$$ = new;
 		}
 
+
 %%
 
 struct domain_list*
@@ -1524,7 +1444,7 @@ char			buf[128], *p;
 
     f = fopen(file,"r");
     if ( !f ) {
-	verb_printf("Failed to open file %s: %s\n", file, strerror(errno));
+	verb_printf("Failed to open file %s: %m\n", file);
 	return(NULL);
     }
     /* read file - domain per line */
@@ -1563,6 +1483,85 @@ char			buf[128], *p;
     }
     fclose(f);
     return(first);
+}
+
+struct domain_list*
+load_domlist_from_list(struct string_list *list)
+{
+struct	domain_list	*first=NULL, *new, *last=NULL;
+char			buf[128], *p;
+
+    while ( list && list->string ) {
+	new = malloc(sizeof(*new));
+	if ( !new ) {
+	    if ( first ) free_dom_list(first);
+	    return(NULL);
+	}
+	bzero(new, sizeof(*new));
+	new->domain = strdup(list->string);
+	if ( !new->domain ) {
+	    if ( first ) free_dom_list(first);
+	    return(NULL);
+	}
+	if ( !strcmp(new->domain, "*") )
+		new->length = -1;
+	    else
+		new->length = strlen(new->domain);
+	if ( !first ) first = new;
+	if ( last ) last->next = new;
+	last = new;
+	list = list->next;
+    }
+    return(first);
+}
+
+int
+string_to_days(struct denytime *dt, struct string_list *list)
+{
+unsigned char	res = 0;
+char		*t, *tokptr, *tb;
+int		start_m=0, end_m=0;
+
+    if ( (dt == NULL) || (list==NULL) ) return(0);
+
+    while ( list ) {
+	tb = list->string;
+	if ( list->next ) /* this must be dayspec */
+	while( (t = (char*)strtok_r(tb, ",", &tokptr)) != 0 ) {
+	    char          fday[4],tday[4];
+	    unsigned char d1, d2, i;
+
+	    tb = NULL;
+	    if ( sscanf(t,"%3s:%3s", (char*)&fday,(char*)&tday) == 2 ) {
+		verb_printf("string_to_days(): Day interval from: '%s' to '%s'\n", fday,tday);
+		d1 = daybit(fday);
+		d2 = daybit(tday);
+		if ( TEST(d1, 0x80) || TEST(d2, 0x80) || (d1>d2)) {
+		    verb_printf("string_to_days(): Wrong daytime\n");
+		    return(0);
+		}
+		i = d1;
+		while(i <= d2) {
+		    res |= i;
+		    i <<= 1;
+		}
+	    } else {
+		verb_printf("string_to_days(): Day: '%s'\n", t);
+		res |= daybit(t);
+	    }  
+	} else /* this must be timespec */ {
+	    if ( list->string && (sscanf(list->string, "%d:%d", &start_m, &end_m) != 2) ) {
+		verb_printf("Wrong timespec: %s\n", list->string);
+		return(0);
+	    }
+	    verb_printf("string_to_days(): %0.4d-%0.4d\n", start_m, end_m);
+	    dt->start_minute = 60*(start_m/100) + start_m%100;
+	    dt->end_minute = 60*(end_m/100) + end_m%100;
+	}
+	list = list->next;
+    }
+    dt->days = res;
+    return(0);
 }
 
 int

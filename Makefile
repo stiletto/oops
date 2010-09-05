@@ -1,4 +1,4 @@
-VER=1.4
+VER=1.4.5
 
 
 all:
@@ -17,7 +17,7 @@ tar:
 	$(MAKE) distclean
 	rm -Rf ../oops-${VER}.tar.gz /tmp/oops-${VER};
 	mkdir /tmp/oops-${VER};
-	gtar c --exclude=CVS . | (cd /tmp/oops-${VER}; gtar x);
+	gtar c --exclude=CVS --exclude=*.#* . | (cd /tmp/oops-${VER}; gtar x);
 	( cd /tmp; tar cf - oops-${VER} )| gzip -9 > ../oops-${VER}.tar.gz
 	rm -Rf /tmp/oops-${VER}
 

@@ -514,7 +514,8 @@ module	vary {
 ## %h -			remote ip address
 ## %A -			local ip address
 ## %l -			remote logname from identd (not suported now)
-## %u -			remote user (from auth)
+## %U -			remote user (from 'Authorization' header)
+## %u -			remote user (from proxy-auth)
 ## %{format}t -		time with optional {format} (for strftime)
 ## %t -			time with standard format %d/%b/%Y:%T %Z
 ## %r -			request line

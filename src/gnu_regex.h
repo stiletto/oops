@@ -32,6 +32,12 @@
 #ifdef _WIN32
 /* Same for Microsoft Visual C++ */
 #include <stddef.h>
+/*
+#ifndef __WINT_TYPE__
+#define __WINT_TYPE__ unsigned int
+typedef __WINT_TYPE__ wint_t;
+#endif
+*/
 #endif
 
 

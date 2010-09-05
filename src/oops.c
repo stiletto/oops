@@ -1,5 +1,6 @@
 /*
-Copyright (C) 1999 Igor Khasilev
+Copyright (C) 1999, 2000 Igor Khasilev, igor@paco.net
+Copyright (C) 2000 Andrey Igoshin, ai@vsu.ru
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -16,38 +17,6 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<strings.h>
-#include	<string.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
-#include	<pwd.h>
-
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
-
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#include	<netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
 
 #define		OOPS_MAIN
 #include	"oops.h"
@@ -72,16 +41,22 @@ void	free_dstd_ce(void*);
 void	free_bind_acl_list(bind_acl_t*);
 int	close_listen_so_list(void);
 extern	int	str_to_sa(char*, struct sockaddr *);
+extern	int	init_filebuff(filebuff_t*);
 void	open_db(void);
+#if	defined(_WIN32)
+BOOL	WINAPI	KillHandler(DWORD dwCtrlType);
+/* static	int	_cdecl my_bt_compare(const DBT *, const DBT *); */
+static	int	my_bt_compare(const DBT*, const DBT*);
+#else
+static	int	my_bt_compare(const DBT*, const DBT*);
+#endif	/* _WIN32 */
 
-static	int	my_bt_compare(const DBT*,const DBT*);
-pthread_attr_t	p_attr;
-pthread_t	stat_thread = (pthread_t)NULL;
+pthread_attr_t		p_attr;
+pthread_t		stat_thread = (pthread_t)NULL;
 
 time_t			start_time;
 struct			mem_obj	*youngest_obj, *oldest_obj;
 rwl_t			config_lock;
-rwl_t			log_lock;
 rwl_t			db_lock;
 char    		logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
 char    		accesslog[MAXPATHLEN];
@@ -92,7 +67,7 @@ char			dbname[MAXPATHLEN];
 int			reserved_fd[RESERVED_FD];
 int			accesslog_num, accesslog_size;
 int			log_num, log_size;
-int			maxresident;
+unsigned int		maxresident;
 int			icp_so;
 int			server_so;
 int			peer_down_interval;
@@ -108,7 +83,7 @@ char			parent_host[64];
 int			parent_port;
 int			always_check_freshness;
 int			force_http11;
-int			force_completion;
+unsigned int		force_completion;
 refresh_pattern_t	*global_refresh_pattern;
 int			max_rate_per_socket;
 int			one_second_proxy_requests;
@@ -124,7 +99,6 @@ u_short			icp_port;
 char			*bind_addr;
 struct			string_list	*stop_cache;
 struct			storage_st	*storages, *next_alloc_storage;
-void			*startup_sbrk;
 int			default_expire_value;
 int			max_expire_value;
 int			ftp_expire_value;
@@ -144,7 +118,6 @@ int			skip_check;
 pthread_mutex_t		obj_chain;
 pthread_mutex_t		malloc_mutex;
 pthread_mutex_t		clients_lock;
-pthread_mutex_t		accesslog_lock;
 pthread_mutex_t		icp_resolver_lock;
 pthread_mutex_t		dns_cache_lock;
 pthread_mutex_t		st_check_in_progr_lock;
@@ -190,10 +163,9 @@ acl_chk_list_hdr_t	*acl_allow;
 acl_chk_list_hdr_t	*acl_deny;
 acl_chk_list_hdr_t	*stop_cache_acl;
 bind_acl_t		*bind_acl_list;
-FILE		*logf, *accesslogf;
 int		blacklist_len;
-int		start_red;
-int		refuse_at;
+unsigned int	start_red;
+unsigned int	refuse_at;
 filebuff_t	logbuff;
 filebuff_t	accesslogbuff;
 
@@ -331,6 +303,7 @@ struct	cidr_net	*nets, *next_net;
 	sorted_networks_ptr = NULL;
     }
 }
+
 void
 sort_networks(void)
 {
@@ -411,8 +384,6 @@ char	*vlvls;
 int	c, i;
 int	format_storages = 0;
 
-    logf = NULL;
-    accesslogf = NULL;
     use_workers = 0;
     max_workers = 0;
     current_workers = 0;
@@ -423,6 +394,15 @@ int	format_storages = 0;
     setbuf(stdout, NULL);
     /* stderr by default is unbuffered, but this wont hurt 	*/
     setbuf(stderr, NULL);
+
+#if	defined(_WIN32)
+    SetConsoleTitle("Oops Internet Object Cache");
+    if ( SetConsoleCtrlHandler(KillHandler, TRUE) == 0 )
+	my_xlog(LOG_PRINT, "main(): SetConsoleCtrlHandler(): %m\n");
+
+    if ( winsock_init() == -1 )
+	exit(1);
+#endif	/* _WIN32 */
 
     if ( argc > 1)
     while( (c=getopt(argc, argv, "W:w:Zzc:C:hx:DdsvV")) != EOF ) {
@@ -540,14 +520,15 @@ int	format_storages = 0;
 	}
     }
 
-#if     __FreeBSD__ >= 4
+#if     __FreeBSD__ >= 3
     siginterrupt(SIGTERM, 1);
+    siginterrupt(SIGHUP, 1);
     siginterrupt(SIGINT, 1);
     siginterrupt(SIGWINCH, 1);
 #endif
         
     setlocale(LC_ALL, "");
-    if ( run_daemon ) daemon(TRUE,TRUE);
+    if ( run_daemon ) daemon(TRUE, TRUE);
     my_pid = getpid();
 
     signal(SIGPIPE, SIG_IGN);
@@ -591,12 +572,12 @@ int	format_storages = 0;
 	}
     }
 #endif
+
     server_so = -1;
     icp_so = -1;
     groups = 0;
     stop_cache = NULL;
     storages = NULL;
-    startup_sbrk = sbrk(0);
     total_alloc = 0;
     clients_number = 0;
     peers = NULL;
@@ -610,13 +591,11 @@ int	format_storages = 0;
     pthread_mutex_init(&obj_chain, NULL);
     pthread_mutex_init(&malloc_mutex, NULL);
     pthread_mutex_init(&clients_lock, NULL);
-    pthread_mutex_init(&accesslog_lock, NULL);
     pthread_mutex_init(&icp_resolver_lock, NULL);
     pthread_mutex_init(&dns_cache_lock, NULL);
     pthread_mutex_init(&st_check_in_progr_lock, NULL);
     pthread_mutex_init(&mktime_lock, NULL);
     rwl_init(&config_lock);
-    rwl_init(&log_lock);
     rwl_init(&db_lock);
     list_init(&icp_requests_list);
     list_init(&blacklist);
@@ -636,6 +615,8 @@ int	format_storages = 0;
     one_second_proxy_requests = 0;
     bzero(&logbuff, sizeof(logbuff)); logbuff.fd = -1;
     bzero(&accesslogbuff, sizeof(accesslogbuff));  accesslogbuff.fd = -1;
+    init_filebuff(&logbuff);
+    init_filebuff(&accesslogbuff);
 #ifdef	MODULES
     if ( !check_config_only )
 	load_modules();
@@ -644,7 +625,7 @@ int	format_storages = 0;
 
     /* reserve some fd's	*/
     for(i=0;i<RESERVED_FD;i++)
-	reserved_fd[i] = open("/dev/null", O_RDONLY);
+	reserved_fd[i] = open(_PATH_DEVNULL, O_RDONLY);
 
 run:
     reconfig_request = 1;
@@ -769,13 +750,12 @@ run:
 
     /* release reserved fd's	*/
     for(i=0;i<RESERVED_FD;i++)
-	if ( reserved_fd[i] >= 0 ) {
+	if ( reserved_fd[i] >= 0 )
 	    close(reserved_fd[i]);
-	}
 
     /* go read config */
-    if ( readconfig(configfile) ) exit(1);
-    if ( check_config_only ) exit(0);
+    if ( readconfig(configfile) ) return(1);
+    if ( check_config_only ) return(0);
 
     if ( listen_so_list ) {
 	close_listen_so_list();
@@ -783,54 +763,44 @@ run:
     }
 
     if ( oops_chroot ) {
-	int rc = chroot(oops_chroot);
-
-	if ( rc == -1 )
-	    verb_printf("Can't chroot(): %s\n", strerror(errno));
+#if	defined(HAVE_CHROOT)
+	if ( chroot(oops_chroot) == -1 )
+	    verb_printf("Can't chroot(): %m\n");
+#endif	/* HAVE_CHROOT */
     }
 
     if ( oops_user ) set_euser(oops_user);
     if ( logfile[0] != 0 ) {
-        rwl_wrlock(&log_lock);
-	if ( logf )
-	    fclose(logf);
-	logf = fopen(logfile, "a");
-	if ( !logf ) verb_printf("%s: %s\n", logfile, strerror(errno));
-	if ( logf && !logfile_buffered )
-	    setbuf(logf, NULL);
-	rwl_unlock(&log_lock);
+	reopen_filebuff(&logbuff, logfile, logfile_buffered);
     }
     if ( accesslog[0] != 0 ) {
-	if ( accesslogf )
-	    fclose(accesslogf);
-	accesslogf = fopen(accesslog, "a");
-	if ( !accesslogf ) verb_printf("%s: %s\n", accesslog, strerror(errno));
-	if ( accesslogf && !accesslog_buffered )
-	    setbuf(accesslogf, NULL);
+	reopen_filebuff(&accesslogbuff, accesslog, accesslog_buffered);
     }
     if ( format_storages ) {
 	do_format_storages();
-	exit(0);
+	return(0);
     }
 
     if ( pidfile[0] != 0 ) {
 	char	pid[11];
-	flock_t	fl;
+	flock_t fl;
 
 	if ( pid_d != -1 )
 	    close(pid_d);
 	pid_d = open(pidfile, O_RDWR|O_CREAT|O_NONBLOCK, S_IRUSR|S_IWUSR|S_IRGRP);
 	if ( pid_d == -1 ) {
-	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't create pid file: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't create pid file: %m\n");
 	    do_exit(1);
 	}
+#if	!defined(_WIN32)
 	bzero(&fl, sizeof(fl));
-	fl.l_type=F_WRLCK;
-	fl.l_whence=fl.l_len=0;
+	fl.l_type = F_WRLCK;
+	fl.l_whence = 0; fl.l_len = 0;
 	if ( fcntl(pid_d, F_SETLK, &fl) < 0 ) {
-	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't lock pid file: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't lock pid file: %m\n");
 	    do_exit(1);
 	}
+#endif	/* !_WIN32 */
 	sprintf(pid, "%-10d", (int)getpid());
 	write(pid_d, pid, strlen(pid));
     }
@@ -867,9 +837,8 @@ run:
     run_modules();
 #endif
     /* reserve them again	*/
-    for(i=0;i<RESERVED_FD;i++) {
-	reserved_fd[i] = open("/dev/null", O_RDONLY);
-    }
+    for(i=0;i<RESERVED_FD;i++)
+	reserved_fd[i] = open(_PATH_DEVNULL, O_RDONLY);
 
     if ( disk_hi_free >= 100          ) disk_hi_free  = DEFAULT_HI_FREE;
     if ( disk_low_free > disk_hi_free ) disk_low_free = disk_hi_free;
@@ -896,19 +865,13 @@ run:
     bzero(&Me, sizeof(Me));
     Me.sin_family = AF_INET;
     /* this is all we need to start server */
+
+
     run();
     reconfig_request = 1;
     WRLOCK_CONFIG ;
-    if ( logf) {
-	rwl_wrlock(&log_lock);
-	fclose(logf);
-	logf = NULL;
-	rwl_unlock(&log_lock);
-    }
-    if ( accesslogf) {
-	fclose(accesslogf);
-	accesslogf = NULL;
-    }
+    close_filebuff(&logbuff);
+    close_filebuff(&accesslogbuff);
     if ( dbp ) {
 	dbp->close(dbp, 0);
 	dbp = NULL;
@@ -924,8 +887,8 @@ run:
     reconfig_request = 0;
     UNLOCK_CONFIG ;
     goto run;
-}
 
+}
 
 void
 free_dstd_ce(void *a)
@@ -971,6 +934,7 @@ struct	domain_list	*dom_list;
 	    free(acls);
 	}
 }
+
 void
 print_acls()
 {
@@ -1017,6 +981,7 @@ struct	domain_list	*dom_list;
 	group=group->next;
     }
 }
+
 void
 print_dom_list(struct domain_list *list)
 {
@@ -1062,6 +1027,7 @@ struct storage_st * next = NULL;
 	current=next;
     }
 }
+
 void
 free_peers(struct peer *peer)
 {
@@ -1076,7 +1042,11 @@ struct	peer	*next;
 	peer = next;
     }
 }
+
 int
+#if	defined(_WIN32)
+/* _cdecl */
+#endif	/* _WIN32 */
 my_bt_compare(const DBT* a, const DBT* b)
 {
     if ( a->size != b->size ) return(a->size-b->size);
@@ -1104,7 +1074,7 @@ struct listen_so_list *list = listen_so_list, *next, *new, *new_curr=NULL;
 		list->next = NULL;
 	    }
 	} else {
-	    if ( list->so != -1 ) close(list->so);
+	    if ( list->so != -1 ) CLOSE(list->so);
 	    xfree(list);
 	}
 	list = next;
@@ -1115,7 +1085,7 @@ struct listen_so_list *list = listen_so_list, *next, *new, *new_curr=NULL;
 just_free:
     while(list) {
 	next = list->next;
-	if ( list->so != -1 ) close(list->so);
+	if ( list->so != -1 ) CLOSE(list->so);
 	xfree(list);
 	list = next;
     }
@@ -1155,22 +1125,22 @@ int	rc;
     dbp = NULL;
 #if	DB_VERSION_MAJOR<3
     dbenv = calloc(sizeof(*dbenv),1);
-    bzero(&dbinfo,sizeof(dbinfo));
+    bzero(&dbinfo, sizeof(dbinfo));
     dbinfo.db_cachesize = db_cache_mem_val;
     dbinfo.db_pagesize = OOPS_DB_PAGE_SIZE;
     dbinfo.bt_compare = my_bt_compare;
     if ( !dbhome[0] || !dbname[0] ) return;
     if (db_appinit(dbhome, NULL, dbenv, 
     		DB_CREATE|DB_THREAD) ) {
-		my_xlog(LOG_SEVERE, "open_db(): db_appinit(%s) failed: %s\n", dbhome, strerror(errno));
+		my_xlog(LOG_SEVERE, "open_db(): db_appinit(%s) failed: %m\n", dbhome);
     }
     if ( (rc = db_open(dbname, DB_BTREE,
     		DB_CREATE|DB_THREAD,
     		0644,
     		dbenv,
     		&dbinfo,
-    		&dbp)) ) {
-	my_xlog(LOG_SEVERE, "open_db(): db_open(): %s\n", strerror(rc));
+    		&dbp)) != 0 ) {
+	my_xlog(LOG_SEVERE, "open_db(): db_open(%s): %d %m\n", dbname, rc);
 	dbp = NULL;
     }
 #else
@@ -1181,7 +1151,7 @@ int	rc;
     dbenv->set_errpfx(dbenv, "oops");
     dbenv->set_cachesize(dbenv, 0, db_cache_mem_val, 0);
     rc = dbenv->open(dbenv, dbhome, NULL,
-	DB_CREATE|DB_THREAD|DB_INIT_MPOOL,
+	DB_CREATE|DB_THREAD|DB_INIT_MPOOL|DB_PRIVATE,
 	0);
     if ( rc ) {
 	my_xlog(LOG_SEVERE, "open_db(): Can't open dbenv.\n");
@@ -1198,7 +1168,7 @@ int	rc;
     dbp->set_pagesize(dbp, OOPS_DB_PAGE_SIZE);
     rc = dbp->open(dbp, dbname, NULL, DB_BTREE, DB_CREATE, 0);
     if ( rc ) {
-	my_xlog(LOG_SEVERE, "open_db(): dbp->open(%s): %s\n", dbname, db_strerror(rc));
+	my_xlog(LOG_SEVERE, "open_db(): dbp->open(%s): (%d): %s\n", dbname, rc, db_strerror(rc));
 	dbenv->close(dbenv, 0); dbenv = NULL;
 	dbp = NULL;
 	return;
@@ -1209,18 +1179,27 @@ int	rc;
 void
 set_user(void)
 {
+#if	!defined(_WIN32)
 int		rc;
 struct passwd	*pwd = NULL;
          
-    if ( (pwd = getpwnam(oops_user)) ) {
+    if ( (pwd = getpwnam(oops_user)) != 0 ) {
 	rc = setgid(pwd->pw_gid);
 	if ( rc == -1 )
-	    printf("set_user(): Can't setgid(): %s\n", strerror(errno));
+	    verb_printf("set_user(): Can't setgid(): %m\n");
+#if	defined(LINUX)
+	/* due to linuxthreads design you can not call setuid even
+	   when you call setuid before any thread creation
+	 */
+	rc = seteuid(pwd->pw_uid);
+#else
 	rc = setuid(pwd->pw_uid);
+#endif
 	if ( rc == -1 )
-	    printf("set_user(): Can't setuid(): %s\n", strerror(errno));
+	    verb_printf("set_user(): Can't setuid(): %m\n");
     } else
 	printf("set_user(): Can't getpwnam() `%s'.\n", oops_user);
+#endif	/* !_WIN32 */
 }
 
 void

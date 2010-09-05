@@ -1,8 +1,27 @@
+/*
+Copyright (C) 1999, 2000 Igor Khasilev, igor@paco.net
+Copyright (C) 2000 Andrey Igoshin, ai@vsu.ru
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #if		!defined(OOPS_MAIN)
 extern time_t		start_time;
 extern struct		mem_obj	*youngest_obj, *oldest_obj;
 extern rwl_t		config_lock;
-extern rwl_t		log_lock;
 extern rwl_t		db_lock;
 extern char    	logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
 extern char    	accesslog[MAXPATHLEN];
@@ -13,7 +32,7 @@ extern char		dbname[MAXPATHLEN];
 extern int		reserved_fd[RESERVED_FD];
 extern int		accesslog_num, accesslog_size;
 extern int		log_num, log_size;
-extern int		maxresident;
+extern unsigned int	maxresident;
 extern int		icp_so;
 extern int		server_so;
 extern int		peer_down_interval;
@@ -29,10 +48,10 @@ extern char		parent_host[64];
 extern int		parent_port;
 extern int		always_check_freshness;
 extern int		force_http11;
-extern int		force_completion;
+extern unsigned int		force_completion;
 extern refresh_pattern_t	*global_refresh_pattern;
-extern int		max_rate_per_socket;
-extern int		one_second_proxy_requests;
+extern int			max_rate_per_socket;
+extern int			one_second_proxy_requests;
 extern struct	domain_list 	*local_domains;
 extern struct	cidr_net	*local_networks;
 extern struct	cidr_net	**local_networks_sorted;
@@ -45,7 +64,6 @@ extern u_short		icp_port;
 extern char		*bind_addr;
 extern struct		string_list	*stop_cache;
 extern struct		storage_st	*storages, *next_alloc_storage;
-extern void		*startup_sbrk;
 extern int		default_expire_value;
 extern int		max_expire_value;
 extern int		ftp_expire_value;
@@ -65,7 +83,6 @@ extern int		skip_check;
 extern pthread_mutex_t	obj_chain;
 extern pthread_mutex_t	malloc_mutex;
 extern pthread_mutex_t	clients_lock;
-extern pthread_mutex_t	accesslog_lock;
 extern pthread_mutex_t	icp_resolver_lock;
 extern pthread_mutex_t	dns_cache_lock;
 extern pthread_mutex_t	st_check_in_progr_lock;
@@ -110,17 +127,17 @@ extern acl_chk_list_hdr_t	*acl_allow;
 extern acl_chk_list_hdr_t	*acl_deny;
 extern acl_chk_list_hdr_t	*stop_cache_acl;
 extern bind_acl_t		*bind_acl_list;
-extern FILE    *logf, *accesslogf;
 extern int	blacklist_len;
-extern int	start_red;
-extern int	refuse_at;
-extern filebuff_t      logbuff;
-extern filebuff_t      accesslogbuff;
+extern unsigned int	start_red;
+extern unsigned int	refuse_at;
+extern filebuff_t	logbuff;
+extern filebuff_t	accesslogbuff;
 extern int		dont_cache_without_last_modified;
 #endif		/* !defined(OOPS_MAIN) */
 
-
+#if	!defined(NO_NEED_XMALLOC)
 extern	void		*xmalloc(size_t, char*);
+#endif /* NO_NEED_XMALLOC */
 
 extern	struct	cidr_net **sort_n(struct cidr_net*, int*);
 extern	int		readt(int, char*, int, int);
@@ -129,11 +146,13 @@ extern	int		readt(int, char*, int, int);
 extern	void            do_exit(int);
 extern	void		run(void);
 extern	void		add_to_stop_cache(char*);
-#if		defined(SOLARIS) || defined(_AIX)
+#if	defined(SOLARIS) || defined(_AIX) || defined(_WIN32)
 extern	int		daemon(int, int);
 #endif
 extern	void		*garbage_collector(void*);
 extern	void		*rotate_logs(void*);
+extern	void		rotate_logbuff(void);
+extern	void		rotate_accesslogbuff(void);
 extern	void		*clean_disk(void*);
 extern	void		*statistics(void*);
 extern	void		*deadlock(void*);
@@ -198,7 +217,7 @@ extern	void		prepare_storages(void);
 extern	void		do_format_storages(void);
 extern	int		locate_url_on_disk(struct url *, struct disk_ref**);
 extern	int		load_obj_from_disk(struct mem_obj *, struct disk_ref *);
-extern	struct storage_st *locate_storage_by_id(long);
+extern	struct storage_st *locate_storage_by_id(uint32_t);
 extern	int		erase_from_disk(char *, struct disk_ref*);
 extern	void		process_icp_msg(int so, char *buf, int len, struct sockaddr_in *, struct sockaddr_in *);
 extern	void		my_sleep(int);
@@ -243,13 +262,13 @@ extern	int		miss_deny(struct group*);
 extern	int		put_av_pair(struct av **, char *, char*);
 extern	struct	av	*lookup_av_by_attr(struct av*, char*);
 extern	int		poll_descriptors(int, struct pollarg*, int);
-#ifdef		FREEBSD
+#if	defined(FREEBSD)
 extern	int		poll_descriptors_S(int, struct pollarg*, int);
-#endif
+#endif /* FREEBSD */
 extern	int		add_socket_to_listen_list(int, u_short, struct in_addr*, void* (*f)(void*));
 extern	char		daybit(char*);
 extern	int		denytime_check(struct denytime*);
-extern	int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int, struct mem_obj*, char*);
+extern	int             send_data_from_buff_no_wait(int, struct buff **, int *, unsigned int *, int*, int, struct mem_obj*, char*);
 extern	void		update_transfer_rate(struct request*, int size);
 extern	int		group_traffic_load(struct group *group);
 extern	char		*format_av_pair(char*, char*);
@@ -296,15 +315,31 @@ extern	int		parse_raw_url(char *, struct url *);
 extern	void		parse_refresh_pattern(refresh_pattern_t **, char *);
 extern	void		insert_named_acl_in_list(named_acl_t *acl);
 extern	void		parse_networks_acl(acl_chk_list_hdr_t **, string_list_t *);
-extern	void		CTIME_R(time_t *, char *);
+extern	void		CTIME_R(time_t *, char *, size_t);
+extern	char		*STRERROR_R(int, char *, size_t);
 extern	int		rq_match_named_acl_by_index(struct request*, int);
 extern	int		url_match_named_acl_by_index(char*, int);
-
+extern	int		init_filebuff(filebuff_t*);
+extern	int		reopen_filebuff(filebuff_t*, char*, int);
+extern	void		close_filebuff(filebuff_t *);
+extern	void		flushout_fb(filebuff_t *);
+extern	void		short_flushout_fb(filebuff_t *);
+extern	void		put_str_in_filebuff(char *, filebuff_t *);
 extern	void		sort_networks();
 extern	void		free_groups(struct group *);
 
+#if	defined(WITH_LARGE_FILES) && !defined(HAVE_ATOLL) && !defined(HAVE_STRTOLL)
+extern	long long	atoll(const char *);
+#endif
 
-#ifdef		MODULES
+#if     !defined(HAVE_BZERO)
+extern	void		bzero(void *, size_t);
+#endif	/* HAVE_BZERO */
+#if     !defined(HAVE_STRERROR_R)
+extern	int		strerror_r(int, char *, size_t);
+#endif	/* !HAVE_STRERROR_R */
+
+#if	defined(MODULES)
 extern	void	run_modules(void);
 extern	int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
 extern	int	check_redirect(int so, struct request *rq, struct group *group, int *flag);
@@ -316,4 +351,4 @@ extern	int	mod_reopen_logs(void);
 extern	int	pre_body(int, struct mem_obj *, struct request *, int *);
 extern	int	check_redir_connect(int *, struct request *, int *);
 extern	int	parse_myports(char *, myport_t *, int);
-#endif
+#endif /* MODULES */

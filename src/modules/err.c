@@ -1,34 +1,21 @@
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-#include	<netinet/in.h>
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include	<pthread.h>
-
-#include	<db.h>
+*/
 
 #include	"../oops.h"
 #include	"../modules.h"
@@ -213,6 +200,12 @@ struct	buff		*body;
 			attach_data("%", 1, body);
 			tptr = proc+2;
 			break;
+		case 'l':
+			attach_data(messages[LANG_EN][code-1],
+				strlen(messages[LANG_EN][code-1]),
+				body);
+			tptr = proc+2;
+			break;
 		case 'm':
 			attach_data(messages[LANG_EN][code-1],
 				strlen(messages[LANG_EN][code-1]),
@@ -228,6 +221,36 @@ struct	buff		*body;
 			if ( code == ERR_ACL_DENIED ) {
 			    attach_data(": ", 2, body);
 			    attach_data(reason, strlen(reason), body);
+			}
+			if ( code == ERR_BAD_URL ) {
+			    /* show what we was able to parse from request */
+			    if ( rq && rq->url.proto != NULL ) {
+				attach_data("\n<br>Protocol:",14, body);
+				attach_data(rq->url.proto, strlen(rq->url.proto), body);
+			    } else
+				attach_data("\n<br>Protocol: NULL",19, body);
+			    if ( rq && rq->url.host != NULL ) {
+				attach_data("\n<br>Host:", 10, body);
+				attach_data(rq->url.host, strlen(rq->url.host), body);
+			    } else
+				attach_data("\n<br>Host: NULL", 15, body);
+			    if ( rq && (rq->url.port != 0) ) {
+				char buf[10];
+				sprintf(&buf[0],"%d", rq->url.port);
+				printf("m:'%s'\n", buf);
+				attach_data("\n<br>Port:", 10, body);
+				attach_data(buf, strlen(buf), body);
+			    }
+			    if ( rq && rq->url.path != NULL ) {
+				char	*htmlized_path = NULL;
+				htmlized_path = html_escaping(rq->url.path);
+				if ( htmlized_path ) {
+				    attach_data("\n<br>Path:", 10, body);
+				    attach_data(htmlized_path, strlen(htmlized_path), body);
+				    free(htmlized_path);
+				}
+			    } else
+				attach_data("\n<br>Path: NULL", 15, body);
 			}
 			tptr = proc+2;
 			break;
@@ -246,6 +269,36 @@ struct	buff		*body;
 			if ( code == ERR_ACL_DENIED ) {
 			    attach_data(": ", 2, body);
 			    attach_data(reason, strlen(reason), body);
+			}
+			if ( code == ERR_BAD_URL ) {
+			    /* show what we was able to parse from request */
+			    if ( rq && rq->url.proto != NULL ) {
+				attach_data("\n<br>Protocol:",14, body);
+				attach_data(rq->url.proto, strlen(rq->url.proto), body);
+			    } else
+				attach_data("\n<br>Protocol: NULL",19, body);
+			    if ( rq && rq->url.host != NULL ) {
+				attach_data("\n<br>Host:", 10, body);
+				attach_data(rq->url.host, strlen(rq->url.host), body);
+			    } else
+				attach_data("\n<br>Host: NULL", 15, body);
+			    if ( rq && (rq->url.port != 0) ) {
+				char buf[10];
+				sprintf(&buf[0],"%d", rq->url.port);
+				printf("M:'%s'\n", buf);
+				attach_data("\n<br>Port:", 10, body);
+				attach_data(buf, strlen(buf), body);
+			    }
+			    if ( rq && rq->url.path != NULL ) {
+				char	*htmlized_path = NULL;
+				htmlized_path = html_escaping(rq->url.path);
+				if ( htmlized_path ) {
+				    attach_data("\n<br>Path:", 10, body);
+				    attach_data(htmlized_path, strlen(htmlized_path), body);
+				    free(htmlized_path);
+				}
+			    } else
+				attach_data("\n<br>Path: NULL", 15, body);
 			}
 			tptr = proc+2;
 			break;
@@ -331,12 +384,12 @@ char	*in_mem;
 		    template_check_time = global_sec_timer;
 		    template[size]	= 0; /* so we can use str... functions */
 		} else {
-		    printf("reload_template(): Read failed: %s\n", strerror(errno));
+		    verb_printf("reload_template(): Read failed: %m\n");
 		    xfree(in_mem);
 		}
 		close(fd);
 	    } /* fd != -1 */ else {
-		printf("reload_template(): Open(%s) failed: %s\n", err_template,strerror(errno));
+		verb_printf("reload_template(): Open(%s) failed: %m\n", err_template);
 		xfree(in_mem);
 	    }
 	} /* if in_mem */

@@ -1,5 +1,6 @@
 /*
-Copyright (C) 1999 Igor Khasilev, igor@paco.net
+Copyright (C) 1999, 2000 Igor Khasilev, igor@paco.net
+Copyright (C) 2000 Andrey Igoshin, ai@vsu.ru
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -17,69 +18,98 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<unistd.h>
-#include	<errno.h>
-#include	<strings.h>
-#include	<stdarg.h>
-#include	<netdb.h>
-#include	<ctype.h>
-
-#include	<sys/stat.h>
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/socketvar.h>
-#include	<sys/resource.h>
-
-#include	<netinet/in.h>
-
-#include	<arpa/inet.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
 
 void	rotate_file(char * name, FILE **f, int num);
 
 void
-rotate_log_file(void)
+rotate_names(char *name, filebuff_t *fb, int num)
 {
-struct	stat	stat;
-int		r;
+int	last, i;
+char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
 
-    if ( !logf ) return;
-    r = fstat(fileno(logf), &stat);
-    if ( !S_ISREG(stat.st_mode) )
+    if ( fb == NULL || name == NULL ) return;
+    if ( !num ) {
+	/* if no number of logs configured just reopen file */
+#if	defined(HAVE_SNPRINTF)
+	close(fb->fd);
+	fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT);
+#else
+	if ( fb->FILE ) fclose(fb->FILE);
+	fb->fd = -1;
+	fb->FILE = fopen(name, "a");
+	if (fb->FILE) fb->fd=fileno(fb->FILE);
+#endif
 	return;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_log_file(): Rotate File %s\n", logfile);
-    rwl_wrlock(&log_lock);
-    rotate_file(logfile,&logf,log_num);
-    if ( logf && !logfile_buffered )
-	    setbuf(logf, NULL);
-    rwl_unlock(&log_lock);
+
+    }
+
+    /* rename old files */
+    last = num - 1;
+    /* now rotate */
+    for(i=last;i>0;i--) {
+	sprintf(tname,  "%s.%d", name, i-1);	/* newer version */
+	sprintf(tname1, "%s.%d", name, i);	/* older version */
+	RENAME(tname, tname1);			/* rename newer to older */
+    }
+#if	defined(HAVE_SNPRINTF)
+    if ( fb->fd != -1 ) close(fb->fd);
+    RENAME(name, tname);
+    fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT, 0660);
+#else
+    if ( fb->FILE ) fclose(fb->FILE);
+    RENAME(name, tname);
+    fb->fd = -1;
+    fb->FILE = fopen(name, "a");
+    if (fb->FILE) fb->fd=fileno(fb->FILE);
+#endif
 }
 
 void
-rotate_accesslog_file(void)
+rotate_logbuff(void)
 {
 struct	stat	stat;
 int		r;
+filebuff_t 	*fb = &logbuff;
 
-    if ( !accesslogf ) return;
-    r = fstat(fileno(accesslogf), &stat);
-    if ( !S_ISREG(stat.st_mode) )
+    flushout_fb(fb);
+    pthread_mutex_lock(&fb->lock);
+    if ( fb->fd != -1 ) {
+	r = fstat(fb->fd, &stat);
+	if ( !S_ISREG(stat.st_mode) ) {
+	    pthread_mutex_unlock(&fb->lock);
+	    return;
+	}
+	rotate_names(logfile, fb, log_num);
+	pthread_mutex_unlock(&fb->lock);
 	return;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_accesslog_file(): Rotate File %s\n", accesslog);
-    pthread_mutex_lock(&accesslog_lock);
-    rotate_file(accesslog,&accesslogf,accesslog_num);
-    if ( accesslogf && !accesslog_buffered )
-	setbuf(accesslogf, NULL);
-    pthread_mutex_unlock(&accesslog_lock);
+    }
+    pthread_mutex_unlock(&fb->lock);
 }
-void*
+
+void
+rotate_accesslogbuff(void)
+{
+struct	stat	stat;
+int		r;
+filebuff_t 	*fb = &accesslogbuff;
+
+    flushout_fb(fb);
+    pthread_mutex_lock(&fb->lock);
+    if ( fb->fd != -1 ) {
+	r = fstat(fb->fd, &stat);
+	if ( !S_ISREG(stat.st_mode) ) {
+	    pthread_mutex_unlock(&fb->lock);
+	    return;
+	}
+	rotate_names(accesslog, fb, accesslog_num);
+	pthread_mutex_unlock(&fb->lock);
+	return;
+    }
+    pthread_mutex_unlock(&fb->lock);
+}
+
+void *
 rotate_logs(void *arg)
 {
 /* rotate log and accesslog files if need */
@@ -87,29 +117,34 @@ struct stat	statb;
 int		r;
 
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): Log rotator started.\n");
-    while( 1 ) {
+    if ( arg ) return (void *)0;
+    forever() {
 	RDLOCK_CONFIG ;
-	if ( logf && log_num ) {
-	    r = fstat(fileno(logf), &statb) ;
-	    if ( !r && (statb.st_mode & S_IFREG) && log_size && (ftell(logf) > log_size) ) {
+	if ( log_num && (logbuff.fd != -1) ) {
+	    r = fstat(logbuff.fd, &statb) ;
+	    if ( !r && (statb.st_mode & S_IFREG)
+	    	    && log_size
+	    	    && (lseek(logbuff.fd,0,SEEK_END) > log_size) ) {
 		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
-	    		r, statb.st_mode, log_size, ftell(logf));
-		rotate_log_file();
+	    		r, statb.st_mode, log_size, lseek(logbuff.fd,0,SEEK_END));
+		rotate_logbuff();
 	    } else {
 		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
-	    		r, statb.st_mode, log_size, ftell(logf));
+	    		r, statb.st_mode, log_size, lseek(logbuff.fd,0,SEEK_END));
 		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): No need to rotate %s\n", logfile);
 	    }
 	}
-	if ( accesslogf && accesslog_num ) {
-	    r = fstat(fileno(accesslogf), &statb) ;
-	    if ( !r && (statb.st_mode & S_IFREG) && accesslog_size && (ftell(accesslogf) > accesslog_size) ) {
+	if ( accesslog_num && (accesslogbuff.fd != -1) ) {
+	    r = fstat(accesslogbuff.fd, &statb) ;
+	    if ( !r && (statb.st_mode & S_IFREG)
+		    && accesslog_size
+		    && (lseek(accesslogbuff.fd,0,SEEK_END) > accesslog_size) ) {
 		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
-	    		r, statb.st_mode, accesslog_size, ftell(accesslogf));
-		rotate_accesslog_file();
+	    		r, statb.st_mode, accesslog_size, lseek(accesslogbuff.fd,0,SEEK_END));
+		rotate_accesslogbuff();
 	    } else {
 		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
-	    		r, statb.st_mode, accesslog_size, ftell(accesslogf));
+	    		r, statb.st_mode, accesslog_size, lseek(accesslogbuff.fd,0,SEEK_END));
 		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): No need to rotate %s\n", accesslog);
 	    }
 	}
@@ -133,19 +168,14 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
 
     /* rename old files */
     last = num - 1;
-    sprintf(tname, "%s.%d", name, last);
-    unlink(tname);
     /* now rotate */
     for(i=last;i>0;i--) {
 	sprintf(tname,  "%s.%d", name, i-1);	/* newer version */
 	sprintf(tname1, "%s.%d", name, i);	/* older version */
-	unlink(tname1);				/* unlink older	 */
-	link(tname, tname1);			/* rename newer to older */
+	RENAME(tname, tname1);			/* rename newer to older */
     }
-    sprintf(tname1, "%s.0", name);
-    unlink(tname1);
-    link(name, tname1);
     fclose(*f);
-    unlink(name);
+    RENAME(name, tname);
     *f = fopen(name, "a");
 }
+

@@ -17,33 +17,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include        <stdio.h>
-#include        <stdlib.h>
-#include        <fcntl.h>
-#include        <errno.h>
-#include        <stdarg.h>
-#include        <string.h>
-#include        <strings.h>
-#include        <netdb.h>
-#include        <unistd.h>
-#include        <ctype.h>
-#include        <signal.h>
-#include        <time.h>
-
-#include        <sys/param.h>
-#include        <sys/socket.h>
-#include        <sys/types.h>
-#include        <sys/stat.h>
-#include        <sys/file.h>
-#include        <sys/time.h>
-#include        <sys/resource.h>
-
-#include        <netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
 
 extern	char	icons_host[MAXPATHLEN];
@@ -317,7 +290,7 @@ done:
 		obj->flags |= FLAG_DEAD;
 
 free_ftp_resources:
-    if ( server_so != -1 ) close(server_so);
+    if ( server_so != -1 ) CLOSE(server_so);
     if ( ftp_request.data != -1 ) close(ftp_request.data);
     if ( ftp_request.control != -1 ) close(ftp_request.control);
     if ( ftp_request.dehtml_path ) free(ftp_request.dehtml_path);
@@ -340,19 +313,15 @@ free_ftp_resources:
 int
 recv_ftp_data(struct ftp_r *ftp_r)
 {
-int	client = ftp_r->client;
-int	data = ftp_r->data;
-struct	mem_obj *obj=ftp_r->obj;
-char	buf[1024];
-int	r, read_size, pass=0;
-#if	!defined(_AIX)
-int	sa_len;
-#else
-size_t	sa_len;
-#endif
-struct  sockaddr_in sa;
-struct	request	*rq = ftp_r->request;
-char	*mime_type;
+int		client = ftp_r->client;
+int		data = ftp_r->data;
+struct		mem_obj *obj=ftp_r->obj;
+char		buf[1024];
+int		r, read_size, pass = 0;
+socklen_t	sa_len;
+struct		sockaddr_in sa;
+struct		request	*rq = ftp_r->request;
+char		*mime_type;
 
     my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): receiving data.\n");
 
@@ -411,11 +380,7 @@ recv_ftp_nlst(struct ftp_r *req)
 {
 char			buf[160];
 int			r, received = 0, checked, r_code;
-#if	!defined(_AIX)
-int			sa_len;
-#else
-size_t			sa_len;
-#endif
+socklen_t		sa_len;
 int			data = req->data;
 char			*tmpbuf = NULL;
 struct  sockaddr_in 	sa;
@@ -449,7 +414,7 @@ time_t			started;
 	attach_data(buf, r, nlst_buff);
 	parse_answ(nlst_buff, &received, &add_nlst_entry, (void*)req);
     }
-    if ( r < 0 ) my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_nlst(): Read list: %s\n", strerror(errno));
+    if ( r < 0 ) my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_nlst(): Read list: %m\n");
     my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_nlst(): Data connection closed.\n");
     resp_buff = alloc_buff(CHUNK_SIZE);
     checked = 0;
@@ -480,7 +445,7 @@ read_srv:
 	my_xlog(LOG_SEVERE, "recv_ftp_nlst(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    if ( resp_buff ) while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, req)) ) {
+    if ( resp_buff ) while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, req)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "recv_ftp_nlst(): Some fatal error at nlst.\n");
 	    r = -1;
@@ -509,19 +474,15 @@ done:;
 int
 recv_ftp_list(struct ftp_r *req)
 {
-char	buf[160];
-int	r, received = 0, rc = 0, len;
-#if	!defined(_AIX)
-int	sa_len;
-#else
-size_t	sa_len;
-#endif
-int	client = req->client;
-int	data = req->data;
-struct	mem_obj *obj = req->obj;
-char	*tmpbuf = NULL, *pTmp;
-struct  sockaddr_in sa;
-struct url url = req->request->url;
+char		buf[160];
+int		r, received = 0, rc = 0, len;
+socklen_t	sa_len;
+int		client = req->client;
+int		data = req->data;
+struct		mem_obj *obj = req->obj;
+char		*tmpbuf = NULL, *pTmp;
+struct		sockaddr_in sa;
+struct		url url = req->request->url;
 
     my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_list(): Receiving list.\n");
 
@@ -575,7 +536,7 @@ struct url url = req->request->url;
 		len--;
 		pTmp[len] = 0;
 	    }
-	    if ( (ls = strrchr(pTmp, '/') ) ) *(ls+1) = 0;
+	    if ( (ls = strrchr(pTmp, '/')) != 0 ) *(ls+1) = 0;
 	    len += 80 + strlen(url.proto) + strlen(url.host);
 	    if ( url.login )
 		len += strlen(url.login);
@@ -611,7 +572,7 @@ struct url url = req->request->url;
 	parse_answ(req->container, &received, &list_parser, (void*)req);
     }
     if ( r < 0 ) {
-	my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_list(): Read list: %s\n", strerror(errno));
+	my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_list(): Read list: %m\n");
 	rc = -1;
     }
     if ( writet(client, "</body>", strlen("</body>"), READ_ANSW_TIMEOUT) < 0 )
@@ -680,7 +641,7 @@ char	b[50];
 char	*fmt;
 struct	buff	*nextb;
 
-    r=writet(so, "HTTP/1.0 200 Ftp Gateway\r\n", strlen("HTTP/1.0 200 Ftp Gateway\r\n"), READ_ANSW_TIMEOUT);
+    r = writet(so, "HTTP/1.0 200 Ftp Gateway\r\n", strlen("HTTP/1.0 200 Ftp Gateway\r\n"), READ_ANSW_TIMEOUT);
     if ( obj ) {
 	put_av_pair(&obj->headers, "HTTP/1.0","200 Ftp Gateway");
 	fmt = format_av_pair("HTTP/1.0","200 Ftp Gateway");
@@ -688,9 +649,9 @@ struct	buff	*nextb;
 	xfree(fmt);
     }
     if ( r >= 0 )
-    r=writet(so, "Content-Type: ", strlen("Content-Type: "), READ_ANSW_TIMEOUT);
+    r = writet(so, "Content-Type: ", strlen("Content-Type: "), READ_ANSW_TIMEOUT);
     if ( r >= 0 )
-    r=writet(so, type, strlen(type), READ_ANSW_TIMEOUT);
+    r = writet(so, type, strlen(type), READ_ANSW_TIMEOUT);
     if ( r >= 0 ) r=writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
     if ( obj ) {
 	put_av_pair(&obj->headers, "Content-Type:", type);
@@ -700,8 +661,8 @@ struct	buff	*nextb;
     }
     if ( (r >= 0) && size ) {
 	sprintf(b, "Content-Length: %d", size);
-	r=writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
-	r=writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
+	r = writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
+	r = writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
 	if ( obj ) {
 	    put_av_pair(&obj->headers, b, "");
 	    attach_data(b, strlen(b), obj->container);
@@ -709,11 +670,11 @@ struct	buff	*nextb;
     }
     mk1123time(global_sec_timer + ftp_expire_value, b, sizeof(b));
     if ( r >= 0 )
-    r=writet(so, "Expires: ", strlen("Expires: "), READ_ANSW_TIMEOUT);
+    r = writet(so, "Expires: ", strlen("Expires: "), READ_ANSW_TIMEOUT);
     if ( r >= 0 )
-    r=writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
+    r = writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
     if ( r >= 0 )
-    r=writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
+    r = writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
     if ( obj ) {
 	put_av_pair(&obj->headers, "Expires:", b);
 	fmt = format_av_pair("Expires:", b);
@@ -726,7 +687,7 @@ struct	buff	*nextb;
 	xfree(fmt);
     }
     if ( r >= 0 )
-    r=writet(so, "Via: oops\r\n", strlen("Via: oops\r\n"), READ_ANSW_TIMEOUT);
+    r = writet(so, "Via: oops\r\n", strlen("Via: oops\r\n"), READ_ANSW_TIMEOUT);
     if ( obj ) {
 	put_av_pair(&obj->headers, "Via:", "oops");
 	fmt = format_av_pair("Via:", "oops");
@@ -734,7 +695,7 @@ struct	buff	*nextb;
 	xfree(fmt);
     }
     if ( r >= 0 )
-    r=writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
+    r = writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
     if ( obj ) {
 	fmt = format_av_pair("", NULL);
 	attach_data(fmt, strlen(fmt), obj->container);
@@ -846,7 +807,7 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
 	case 'l':	type = LINK; 	break;
 	default:	type = UNKNOWN; break;
     }
-    if ( (t = in_nlst(p, req->nlst)) ) {
+    if ( (t = in_nlst(p, req->nlst)) !=0 ) {
 	if ( (t > p) && ( t<=p+strlen(p) ) ) *(t-1)=0;
 	htmlized_something = html_escaping(p);
 	sprintf(tempbuf, "<img src=\"http://%s:%s/%s/%s\" alt=\"%s\">%s ",
@@ -912,7 +873,7 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
 	goto fin_line;
     }
     t = p;
-    while( ( p = (char*)strtok_r(t, " \t", &tok_ptr) ) ) {
+    while( (p = (char*)strtok_r(t, " \t", &tok_ptr)) != 0 ) {
 	t = NULL;
 	switch (tok_cnt) {
 	case 0:
@@ -1029,10 +990,12 @@ server_connect(struct ftp_r *rq)
 int			server_so = -1, so = rq->client, r;
 struct	url		*url = &rq->obj->url;
 struct	sockaddr_in	server_sa;
+ERRBUF ;
 
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	say_bad_request(so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq->request);
+	say_bad_request(so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_INTERNAL, rq->request);
 	goto error;
     }
     if ( rq && rq->request )
@@ -1045,13 +1008,14 @@ struct	sockaddr_in	server_sa;
     my_xlog(LOG_FTP|LOG_DBG, "server_connect(): Connecting `%s' for `%s'.\n", url->host, url->path);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
-	say_bad_request(so, "Can't connect", strerror(errno), ERR_TRANSFER, rq->request);
+	say_bad_request(so, "Can't connect", STRERROR_R(ERRNO, ERRBUFS),
+			ERR_TRANSFER, rq->request);
 	goto error;
     }
 
     return(server_so);
 error:
-    if ( server_so != -1) close(server_so);
+    if ( server_so != -1) CLOSE(server_so);
     return(-1);
 }
 
@@ -1092,7 +1056,7 @@ read_srv:
 	my_xlog(LOG_SEVERE, "get_server_greeting(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "get_server_greeting(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1149,7 +1113,7 @@ wait_user_ok:
 	my_xlog(LOG_SEVERE, "send_user_pass_type(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "send_user_pass_type(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1188,7 +1152,7 @@ send_pass:
 	IF_FREE(pass);
     }
     if ( r < 0 ) {
-	my_xlog(LOG_FTP|LOG_DBG, "send_user_pass_type(): Error at 'USER anonymous' in ftp_fill_mem: %s\n", strerror(errno));
+	my_xlog(LOG_FTP|LOG_DBG, "send_user_pass_type(): Error at 'USER anonymous' in ftp_fill_mem: %m\n");
 	goto error;
     }
 wait_pass_ok:
@@ -1201,7 +1165,7 @@ wait_pass_ok:
 	my_xlog(LOG_SEVERE, "send_user_pass_type(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "send_user_pass_type(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1235,7 +1199,7 @@ wait_type_ok:
 	my_xlog(LOG_SEVERE, "send_user_pass_type(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "send_user_pass_type(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1295,7 +1259,7 @@ wpasv:
 	my_xlog(LOG_SEVERE, "try_passive(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "try_passive(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1335,7 +1299,7 @@ use_pasv:
     pasv_port = (i[4]<<8)  |  i[5];
     data_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	my_xlog(LOG_SEVERE, "try_passive(): Can't create socket: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "try_passive(): Can't create socket: %m\n");
 	goto error;
     }
     if ( ftp_r && ftp_r->request )
@@ -1345,14 +1309,14 @@ use_pasv:
     pasv_sa.sin_port        = htons(pasv_port);
     r = connect(data_so, (struct sockaddr*)&pasv_sa, sizeof(pasv_sa));
     if ( r < 0 ) {
-	my_xlog(LOG_FTP|LOG_DBG, "try_passive(): PASV connect: %s\n", strerror(errno));
+	my_xlog(LOG_FTP|LOG_DBG, "try_passive(): PASV connect: %m\n");
 	goto error;
     }
     ftp_r->data = data_so;
     if ( resp_buff ) free_chain(resp_buff);
     return(r);
 error:
-    if ( data_so != -1 ) close(data_so);
+    if ( data_so != -1 ) CLOSE(data_so);
     if ( resp_buff ) free_chain(resp_buff);
     return(-1);
 }
@@ -1366,11 +1330,7 @@ char			answer[ANSW_SIZE+1], *p;
 time_t			started = time(NULL);
 struct	buff		*resp_buff=NULL;
 struct	sockaddr_in	my_data_sa;
-#if	!defined(_AIX)
-int			my_data_sa_len;
-#else
-size_t			my_data_sa_len;
-#endif
+socklen_t		my_data_sa_len;
  
     resp_buff = alloc_buff(CHUNK_SIZE);
     started = time(NULL);
@@ -1379,24 +1339,24 @@ size_t			my_data_sa_len;
 		/* __________________________ */
     data_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	my_xlog(LOG_SEVERE, "try_port(): Can't create socket: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "try_port(): Can't create socket: %m\n");
 	goto error;
     }
     my_data_sa_len = sizeof(my_data_sa);
     r = getsockname(server_so, (struct sockaddr*)&my_data_sa, &my_data_sa_len);
     if ( r == -1 ) {
-	my_xlog(LOG_SEVERE, "try_port(): Can't getsockname: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "try_port(): Can't getsockname: %m\n");
 	goto error;
     }
     my_data_sa.sin_port = 0;
     r = bind(data_so, (struct sockaddr*)&my_data_sa, sizeof(my_data_sa));
     if ( r == -1 ) {
-	my_xlog(LOG_SEVERE, "try_port(): Can't bind for PORT: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "try_port(): Can't bind for PORT: %m\n");
 	goto error;
     }
     r = getsockname(data_so, (struct sockaddr*)&my_data_sa, &my_data_sa_len);
     if ( r == -1 ) {
-	my_xlog(LOG_SEVERE, "try_port(): Can't do 2-nd getsockname: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "try_port(): Can't do 2-nd getsockname: %m\n");
 	goto error;
     }
     /* this is dangerous, but solaris has no snprintf */
@@ -1409,7 +1369,7 @@ size_t			my_data_sa_len;
     	(unsigned)(ntohs(my_data_sa.sin_port) & 0x00ff));
     r = writet(server_so, answer, strlen(answer), READ_ANSW_TIMEOUT);
     if ( r < 0 ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "try_port(): Error sending PORT: %s\n", strerror(errno));
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "try_port(): Error sending PORT: %m\n");
 	goto error;
     }
     p = strchr(answer, '\n'); *p = 0; my_xlog(LOG_FTP|LOG_DBG, "try_port(): ftp_srv: ---> `%s'\n", answer);
@@ -1426,7 +1386,7 @@ w_port_ok:
 	my_xlog(LOG_SEVERE, "try_port(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "try_port(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1441,7 +1401,7 @@ w_port_ok:
 prep_data_so:
     r = listen(data_so, 5);
     if ( r < 0 ) {
-	my_xlog(LOG_SEVERE, "try_port(): Can't accept: %d\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "try_port(): Can't accept: %m\n");
 	goto error;
     }
 
@@ -1449,7 +1409,7 @@ prep_data_so:
     if ( resp_buff ) free_chain(resp_buff);
     return(0);
 error:
-    if ( data_so != -1 ) close(data_so);
+    if ( data_so != -1 ) CLOSE(data_so);
     if ( resp_buff ) free_chain(resp_buff);
     return(-1);
 }
@@ -1496,7 +1456,7 @@ w_retr_ok:
 	my_xlog(LOG_SEVERE, "try_size(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "try_size(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1566,7 +1526,7 @@ w_retr_ok:
 	my_xlog(LOG_SEVERE, "try_retr(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "try_retr(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1628,7 +1588,7 @@ w_cwd_ok:
 	my_xlog(LOG_SEVERE, "try_cwd(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "try_cwd(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1663,7 +1623,7 @@ request_list:
 	    if ( !cwd_path ) {
 		my_xlog(LOG_FTP|LOG_DBG, "try_cwd(): Can't allocate server_path in try_cwd.\n");
 	    } else {
-		int n;
+		int	n;
 		n = sscanf(answer, "%d %s", &r_code, cwd_path);
 		if ( (n == 2) && 
 		     (r_code == 257) && 
@@ -1681,7 +1641,7 @@ request_list:
 
     r = writet(server_so, "NLST -a\r\n", 9, READ_ANSW_TIMEOUT);
     if ( r < 0 ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "try_cwd(): ftp_srv: error sending NLST.\n", strerror(errno));
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "try_cwd(): ftp_srv: error sending NLST: %m\n");
 	goto error;
     }
     resp_buff->used = 0;
@@ -1697,7 +1657,7 @@ w_list_ok:
 	my_xlog(LOG_SEVERE, "try_cwd(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "try_cwd(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1736,7 +1696,7 @@ struct	buff		*resp_buff=NULL;
 
     r = writet(server_so, "LIST\r\n", 6, READ_ANSW_TIMEOUT);
     if ( r < 0 ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "request_list(): ftp_srv: error sending LIST: %s\n", strerror(errno));
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "request_list(): ftp_srv: error sending LIST: %m\n");
 	goto error;
     }
     resp_buff->used = 0;
@@ -1752,7 +1712,7 @@ w_list_ok:
 	my_xlog(LOG_SEVERE, "request_list(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "request_list(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -1888,7 +1848,7 @@ struct search_list *res = NULL, *curr;
     while(list) {
 	start = line;
 refind:
-	if ( (t = strstr(start, list->string)) ) {
+	if ( (t = strstr(start, list->string)) != 0 ) {
 	    /*while( *t && (p = strstr(t+1, list->string)) ) t = p;*/
 	    len = strlen(list->string);
 	    wb = t; we = t+len;
@@ -2027,7 +1987,7 @@ void
 ftp_put(int so, struct request *rq, char *headers, struct ftp_r *ftp_r)
 {
 /* ftp_r->server_path contains filename */
-int			r, checked, r_code, sent = 0, pass=0;
+int			r, checked, r_code, sent = 0, pass = 0;
 int			server_so = ftp_r->control;
 char			answer[ANSW_SIZE+1];
 char			*rq_buff = NULL, *path = NULL, *dir = NULL, *t;
@@ -2068,7 +2028,7 @@ w_stor_ok:
 	my_xlog(LOG_SEVERE, "ftp_put(): No space at ftp_fill_mem.\n");
 	goto error;
     }
-    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) ) {
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
 	if ( r_code < 100 ) {
 	    my_xlog(LOG_SEVERE, "ftp_put(): Some fatal error at ftp_fill_mem.\n");
 	    goto error;
@@ -2127,7 +2087,7 @@ send_data:
 	    char b[1024];
 	    /* read from client */
 	    r = read(so, b, sizeof(b));
-	    if ( r < 0 && errno == EAGAIN )
+	    if ( (r < 0) && (ERRNO == EAGAIN) )
 		continue;
 	    if ( r <= 0 )
 		goto done;

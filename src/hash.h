@@ -1,10 +1,10 @@
 /* BeginSourceFile hash.h */
 
-#define ENTRY_LOCKED 1
-#define STRING_HASH_KEY 0
-#define INT_HASH_KEY 1
+#define		ENTRY_LOCKED	1
+#define		STRING_HASH_KEY	0
+#define		INT_HASH_KEY	1
 
-#include "llt.h"
+#include	"llt.h"
 
 typedef struct hash_entry {
 	void *data;								/* data storage */
@@ -18,12 +18,14 @@ typedef struct hash_entry {
 	struct hash_entry *right_entry;	/* next entry in master chain */
 	struct hash_entry *left_entry;	/* previous entry in master */
 } hash_entry_t;
+
 typedef struct hash_waiter {
 	ll_t list;								/* list pointer */
 	int wakeup;								/* flag for cv */
 	hash_entry_t *entry;								/* which entry we're waiting for */
 	pthread_cond_t cv;								/* condition variable we block on */
 } hash_waiter_t;
+
 typedef struct hash {
 	pthread_mutex_t lock;								/* mutext to protect hash table */
 	int size;								/* number of buckets */
@@ -36,6 +38,7 @@ typedef struct hash {
 	hash_entry_t **table;								/* buckets */
 	hash_entry_t *start;								/* first entry in master chain */
 } hash_t;
+
 extern hash_t *hash_make(int size, int key_type);
 extern void **hash_get(hash_t *tbl, char *key);
 extern void **hash_find(hash_t *tbl, char *key);

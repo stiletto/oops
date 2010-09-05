@@ -1,34 +1,21 @@
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
-#include	<string.h>
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-#include	<netinet/in.h>
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include	<pthread.h>
-
-#include	<db.h>
+*/
 
 #include "../oops.h"
 #include "../modules.h"
@@ -54,7 +41,7 @@ typedef	struct	logfile_ {
 
 static	logfile_t	*logfiles, *current_config = NULL;
 static	rwl_t		cloglock;
-static	void		close_logfiles();
+static	void		close_logfiles(void);
 static	void		process_log_record(logfile_t*, int, struct request*, struct mem_obj*);
 
 char	module_type = MODULE_LOG;
@@ -84,7 +71,7 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 	return;
     RDLOCK_CL;
     {
-	char	res[256], *s, *d, *w;
+	char	res[256], *s, *d, *w, *authorization;
 
 	res[0] = 0;
 	/* now scan format line */
@@ -184,9 +171,42 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 		    d+= MIN(strlen(w), sizeof(res)-(d-res)-2) - 1;
 		    }
 		    break;
+		case 'U':
+		    /* user from 'Authorization' header*/
+		    if ( rq && rq->av_pairs && ((authorization =
+				attr_value(rq->av_pairs, "Authorization")) != NULL ) ) {
+
+			if ( !strncasecmp(authorization, "Basic", 5 ) ) {
+			    char	*data, *up = NULL, *u, *p;
+			    data = authorization + 5;
+			    while ( *data && IS_SPACE(*data) ) data++;
+			    if ( *data && ((up = base64_decode(data)) != NULL) ) {
+				p = strchr(up, ':');
+				if ( p != NULL ) {
+				    *p = 0;
+				    strncat(d, up, sizeof(res)-(d-res)-2);
+				    d+= MIN(strlen(up), sizeof(res)-(d-res)-2) - 1;
+				} else {
+				    strncat(d, "?", sizeof(res)-(d-res)-2);
+				    d+= MIN(1, sizeof(res)-(d-res)-2) - 1;
+				} /* : */
+				free(up);
+			    } else {
+				strncat(d, "?", sizeof(res)-(d-res)-2);
+				d+= MIN(1, sizeof(res)-(d-res)-2) - 1;
+			    } /* user:pass */
+			} else {
+			    strncat(d, "?", sizeof(res)-(d-res)-2);
+			    d+= MIN(1, sizeof(res)-(d-res)-2) - 1;
+			} /* Basic */
+		    } else {
+			strncat(d, "-", sizeof(res)-(d-res)-2);
+			d+= MIN(1, sizeof(res)-(d-res)-2) - 1;
+		    } /* Authorization */
+		    break;
 		case 'u':
-		    /* remote user from auth 		*/
-		    if ( rq->proxy_user ) {
+		    /* remote user from proxy auth 	*/
+		    if ( rq && rq->proxy_user ) {
 			strncat(d, rq->proxy_user, sizeof(res)-(d-res)-2);
 			d+= MIN(strlen(rq->proxy_user), sizeof(res)-(d-res)-2) - 1;
 		    } else {
@@ -323,7 +343,7 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 }
 
 void
-close_logfiles()
+close_logfiles(void)
 {
 logfile_t	*curr = logfiles, *next;
 
@@ -422,8 +442,8 @@ logfile_t *curr;
 		if ( curr->allocated )
 		    curr->buff = malloc(curr->allocated);
 	    } else
-		my_xlog(LOG_SEVERE, "mod_run(): custom_log: fopen(%s): %s\n",
-			curr->path, strerror(errno));
+		my_xlog(LOG_SEVERE, "mod_run(): custom_log: fopen(%s): %m\n",
+			curr->path);
 	}
 	curr = curr->next;
     }

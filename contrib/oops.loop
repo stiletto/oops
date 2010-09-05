@@ -44,6 +44,9 @@ while [ $i -eq 0 ]; do
 #	Next string may be needed if you use Oops with db-3.x.x
 #	rm -f $OOPS_DB/__db.00[147]
 	echo `date`: Starting Oops >> $OOPS_LOG
+	echo `date`: ulimit -a - started >> $OOPS_LOG
+	ulimit -a >> $OOPS_LOG
+	echo `date`: ulimit -a - ended >> $OOPS_LOG
 	$OOPS_HOME/$OOPS_NAME -c $OOPS_HOME/oops.cfg >> $OOPS_LOG 2>&1
 	[ $i -eq 0 ] && sleep $OOPS_WAIT
 done

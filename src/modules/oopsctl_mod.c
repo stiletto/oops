@@ -1,35 +1,21 @@
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-#include	<sys/un.h>
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-#include	<netinet/in.h>
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include	<pthread.h>
-
-#include	<db.h>
+*/
 
 #include	"../oops.h"
 #include	"../modules.h"
@@ -49,7 +35,7 @@ int	oopsctl_so	= -1;
 #define	RDLOCK_OOPSCTL_CONFIG	rwl_rdlock(&oopsctl_config_lock)
 #define	UNLOCK_OOPSCTL_CONFIG	rwl_unlock(&oopsctl_config_lock)
 
-static	void	open_oopsctl_so();
+static	void	open_oopsctl_so(void);
 
 int
 mod_load()
@@ -170,6 +156,7 @@ float			tot_req_rate, tot_hit_rate;
 float			peer_hits_percent;
 float			max_req_rate, max_icp_rate, max_hit_rate;
 float			free_pages_p;
+float			drop_rate;
 char			ctime_buf[30] = "";
 
     if ( oops_stat.requests_http1 ) {
@@ -192,6 +179,7 @@ char			ctime_buf[30] = "";
     max_req_rate = oops_stat.requests_http0_max/6e1;
     max_icp_rate = oops_stat.requests_icp0_max/6e1;
     max_hit_rate = oops_stat.hits0_max/6e1;
+    drop_rate    = oops_stat.drops0/6e1;
     write(so, "## --  General info   --\n", 25);
     sprintf(buf, "Version      : %s, DB version: %s\n", version, db_ver);
     write(so, buf, strlen(buf));
@@ -199,7 +187,7 @@ char			ctime_buf[30] = "";
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
 			(uptime%3600)/60);
     write(so, buf, strlen(buf));
-    CTIME_R(&global_sec_timer, ctime_buf);
+    CTIME_R(&global_sec_timer, ctime_buf, sizeof(ctime_buf)-1);
     sprintf(buf,  "Last update  : %s", ctime_buf);
     write(so, buf, strlen(buf));
     sprintf(buf, "Clients      : %d (max: %d)\n", (int)clients_number, (int)oops_stat.clients_max);
@@ -223,6 +211,12 @@ char			ctime_buf[30] = "";
     write(so, buf, strlen(buf));
     sprintf(buf, "Tot.hit.rate : %.2f %%\n", tot_hit_rate);
     write(so, buf, strlen(buf));
+    if ( (oops_stat.drops0>0) || (oops_stat.drops>0) ) {
+	sprintf(buf, "Cur.drop.rate: %.2f %%\n", drop_rate);
+	write(so, buf, strlen(buf));
+	sprintf(buf, "Tot. drops   : %d\n", oops_stat.drops);
+	write(so, buf, strlen(buf));
+    }
     sprintf(buf, "Curr.icp.rate: %.2f req/sec (max: %.2f)\n",
 	last_min_icp_rate, max_icp_rate);
     write(so, buf, strlen(buf));
@@ -401,6 +395,7 @@ float			tot_req_rate, tot_hit_rate;
 float			max_req_rate, max_icp_rate, max_hit_rate;
 float			peer_hits_percent;
 float			free_pages_p;
+float			drop_rate;
 char			ctime_buf[30];
 
     if ( oops_stat.requests_http1 ) {
@@ -423,6 +418,7 @@ char			ctime_buf[30];
     max_req_rate = oops_stat.requests_http0_max/6e1;
     max_icp_rate = oops_stat.requests_icp0_max/6e1;
     max_hit_rate = oops_stat.hits0_max/6e1;
+    drop_rate = oops_stat.drops0/6e1;
     sprintf(buf, "<html><title>Oops stat</title>\n");
     write(so, buf, strlen(buf));
     if ( html_refresh ) {
@@ -437,7 +433,7 @@ char			ctime_buf[30];
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
 			(uptime%3600)/60);
     write(so, buf, strlen(buf));
-    CTIME_R(&global_sec_timer, ctime_buf);
+    CTIME_R(&global_sec_timer, ctime_buf, sizeof(ctime_buf)-1);
     sprintf(buf,  "<tr><td>Last update<td>%s", ctime_buf);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Clients<td>%d (max: %d)\n", (int)clients_number, (int)oops_stat.clients_max);
@@ -463,6 +459,12 @@ char			ctime_buf[30];
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Tot.hit.rate<td>%.2f %%\n", tot_hit_rate);
     write(so, buf, strlen(buf));
+    if ( (oops_stat.drops0>0) || (oops_stat.drops>0) ) {
+	sprintf(buf, "<tr><td>Cur.drop.rate<td>%.2f %%\n", drop_rate);
+	write(so, buf, strlen(buf));
+	sprintf(buf, "<tr><td>Tot. drops<td>%d\n", oops_stat.drops);
+	write(so, buf, strlen(buf));
+    }
     sprintf(buf, "<tr><td>Curr.icp.rate<td>%.2f req/sec (max: %.2f)\n",
 	last_min_icp_rate, max_icp_rate);
     write(so, buf, strlen(buf));
@@ -673,14 +675,14 @@ char	command[128];
 }
 
 void
-open_oopsctl_so()
+open_oopsctl_so(void)
 {
 struct	sockaddr_un	sun_addr;
 int			rc;
 
     oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
     if ( oopsctl_so == -1 ) {
-	printf("oopsctl:socket: %s\n", strerror(errno));
+	verb_printf("oopsctl: socket: %m\n");
 	return;
     }
     bzero(&sun_addr, sizeof(sun_addr));
@@ -689,7 +691,7 @@ int			rc;
     unlink(socket_path);
     rc = bind(oopsctl_so, (struct sockaddr*)&sun_addr, sizeof(sun_addr));
     if ( rc == -1 ) {
-	printf("oopsctl:bind: %s\n", strerror(errno));
+	verb_printf("oopsctl: bind: %m\n");
 	close(oopsctl_so);
 	oopsctl_so = -1;
 	return;
@@ -709,7 +711,7 @@ struct	sockaddr_in	sin_addr;
     sin_addr.sin_port   = htons(20050);
     rc = bind(so, (struct sockaddr*)&sin_addr, sizeof(sin_addr));
     if ( rc == -1 ) {
-	printf("oopsctl:bind2: %s\n", strerror(errno));
+	verb_printf("oopsctl: bind2: %m\n");
 	close(so);
 	return;
     }

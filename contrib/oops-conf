@@ -18,7 +18,7 @@ acc)
 
 scc)
     # Solaris cc (Workshop 5.0)
-    CC="cc -fast -xtarget=generic -xO3 -Qn"
+    CC="cc -fast -xO3 -Qn"
     CPPFLAGS="-I/usr/include -I/usr/local/include"
     CFLAGS="-I/usr/include -I/usr/local/include"
     LDFLAGS="-L/usr/local/lib"

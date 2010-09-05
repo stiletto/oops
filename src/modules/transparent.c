@@ -1,39 +1,33 @@
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-#include	<netinet/in.h>
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include	<pthread.h>
-
-#include	<db.h>
+*/
 
 #include	"../oops.h"
 #include	"../modules.h"
 
-#if		HAVE_IPF==1
+#if	defined(HAVE_IPF)
+#if     defined(va_start) /* dirty hack. sol7 x86 + gcc 2.95.2 */
+#define _SYS_VARARGS_H
+#endif
 #include	<sys/ioctl.h>
+#if	defined(HAVE_IP6_H)
+#include        <netinet/ip6.h>
+#endif
 #include	<netinet/tcp.h>
 #include	<net/if.h>
 #include	<netinet/ip_compat.h>
@@ -63,7 +57,7 @@ mod_load()
     verb_printf("Transparent started\n");
     rwl_init(&tp_lock);
     nmyports = 0;
-#if	HAVE_IPF==1
+#if	defined(HAVE_IPF)
     natfd = -1;
 #endif
     myports_string = NULL;
@@ -84,7 +78,7 @@ mod_config_beg()
     nmyports = 0;
     if ( myports_string ) free(myports_string);
     myports_string = NULL;
-#if	HAVE_IPF==1
+#if	defined(HAVE_IPF)
     if ( natfd != -1 ) close(natfd);
     natfd = -1;
 #endif
@@ -161,7 +155,7 @@ char			*dd = NULL;
 	host = attr_value(rq->av_pairs, "host");
     if ( !host ) {
 	/* We can try to fetch destination using IPF */
-#if	HAVE_IPF==1
+#if	defined(HAVE_IPF)
 	struct natlookup natLookup;
 	static int natfd = -1;
 
@@ -173,8 +167,7 @@ char			*dd = NULL;
 	if (natfd < 0) {
 	    natfd = open(IPL_NAT, O_RDONLY, 0);
 	    if (natfd < 0) {
-		my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT open failed: %s\n",
-		    strerror(errno));
+		my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT open failed: %m\n");
 		goto notdone;
 	    }
 	}

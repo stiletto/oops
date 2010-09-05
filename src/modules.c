@@ -17,45 +17,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-
-#ifdef	MODULES
-
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
-
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
-
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#include	<netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
-#include <dlfcn.h>
-#include <glob.h>
-
-#include "oops.h"
-#include "modules.h"
+#include	"oops.h"
+#include	"modules.h"
 
 struct	log_module		*log_first = NULL;
 struct	err_module		*err_first = NULL;
@@ -315,16 +278,21 @@ char			*nptr;
 	goto load_mods;
     else
 	sprintf(modules_path, "%s/modules", OOPS_HOME);
+
 load_mods:
     printf("Loading modules from %s\n", modules_path);
+#if	!defined(_WIN32)
     sprintf(glob_mask, "%s/*.so", modules_path);
+#else
+    sprintf(glob_mask, "%s/*.dll", modules_path);
+#endif	/* !_WIN32 */
     global_mod_chain = NULL;
     bzero(&globbuf, sizeof(globbuf));
     if ( glob(glob_mask, 0, NULL, &globbuf) ) {
 	printf("Can't glob on %s\n", modules_path);
 	return(1);
     }
-    for( gc = globbuf.gl_pathc, paths=globbuf.gl_pathv; gc;gc--,paths++) {
+    for( gc = globbuf.gl_pathc, paths = globbuf.gl_pathv; gc; gc--, paths++) {
 	module_path = *paths;
 	printf("Loading module %s\n", module_path);
 	modh = dlopen(module_path, RTLD_NOW);
@@ -661,7 +629,7 @@ struct		sockaddr_in	sin_addr;
 	}
 	*d = 0;
 	string = p;
-	if ( ( t = (char*)strchr(buf, ':') ) ) {
+	if ( (t = (char*)strchr(buf, ':')) != 0 ) {
 	    *t = 0;
 	    port = atoi(t+1);
 	    bzero(&sin_addr, sizeof(sin_addr));
@@ -677,7 +645,7 @@ struct		sockaddr_in	sin_addr;
 	    pptr->so = -1;	/* this is sign to use server_so */
 	    pptr++;
 	} else
-	if ( (so = tcp_port_in_use(port, &sin_addr.sin_addr)) ) {
+	if ( (so = tcp_port_in_use(port, &sin_addr.sin_addr)) !=0 ) {
 	    nres++;
 	    bzero(pptr, sizeof(*pptr));
 	    pptr->port = port;
@@ -688,7 +656,7 @@ struct		sockaddr_in	sin_addr;
 	    setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
 	    sin_addr.sin_family = AF_INET;
 	    sin_addr.sin_port   = htons(port);
-#if	!defined(LINUX) && !defined(SOLARIS) && !defined(OSF)
+#if	!defined(LINUX) && !defined(SOLARIS) && !defined(OSF) && !defined(_WIN32)
 	    sin_addr.sin_len	= sizeof(sin_addr);
 #endif
 	    rc = bind(so, (struct sockaddr*)&sin_addr, sizeof(sin_addr));
@@ -701,7 +669,7 @@ struct		sockaddr_in	sin_addr;
 		listen(so, 128);
 		pptr++;
 	    } else {
-		printf("parse_myports:bind: %s\n", strerror(errno));
+		verb_printf("parse_myports: bind: %m\n");
 	    }
 	    printf("port = %d\n", port);
 	}
@@ -741,4 +709,3 @@ struct	log_module	*mod = log_first;
     }
     return(0);
 }
-#endif

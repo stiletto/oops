@@ -1,6 +1,6 @@
 CC = @CC@
 LIBS = @LIBS@
-CFLAGS = @CFLAGS@
+CFLAGS = @CFLAGS@ @DEFS@
 LDFLAGS = @LDFLAGS@
 LD = @LD@
 SOFLAGS = @SOFLAGS@
@@ -16,7 +16,7 @@ OPT_MODS = @OPT_MODS@
 
 
 all:	log_dummy.so err.so passwd_file.so lang.so redir.so oopsctl_mod.so oopsctl \
-	vary_header.so accel.so transparent.so custom_log.so $(OPT_MODS)
+	vary_header.so accel.so transparent.so custom_log.so fastredir.so $(OPT_MODS)
 
 log_dummy.so:	log_dummy.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -c log_dummy.c
@@ -41,6 +41,10 @@ passwd_file.so:	passwd_file.c ../modules.h ../oops.h
 redir.so:	redir.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -c redir.c
 	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o redir.so redir.o
+
+fastredir.so:	fastredir.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c fastredir.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o fastredir.so fastredir.o
 
 vary_header.so:	vary_header.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -c vary_header.c

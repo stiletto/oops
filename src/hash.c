@@ -2,12 +2,7 @@
 
 /* BeginSourceFile hash.c */
 
-#include <pthread.h>
-#include "hash.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <assert.h>
+#include	"oops.h"
 
 #if	!defined(NDEBUG)
 static int
@@ -54,6 +49,7 @@ hash_string(char *s)
 		result += (result << 3) + *s++;
 	return (result);
 }
+
 hash_t *
 hash_make(int size, int key_type)
 {
@@ -78,6 +74,7 @@ hash_make(int size, int key_type)
 		  (pthread_mutex_unlock(&ptr->lock) == 0));
 	return (ptr);
 }
+
 void **
 hash_get(hash_t *tbl, char *key)
 {
@@ -163,6 +160,7 @@ hash_get(hash_t *tbl, char *key)
 	pthread_mutex_unlock(&tbl->lock);
 	return (&new->data);
 }
+
 void **
 hash_find(hash_t *tbl, char *key)
 {
@@ -218,6 +216,7 @@ hash_find(hash_t *tbl, char *key)
 	pthread_mutex_unlock(&tbl->lock);
 	return (NULL);
 }
+
 int
 hash_release(hash_t *tbl, void **data)
 {
@@ -246,6 +245,7 @@ hash_release(hash_t *tbl, void **data)
 		pthread_cond_signal(&sleeper->cv);
 	return (0);
 }
+
 void *
 hash_delete(hash_t *tbl, void **dataptr)
 {
@@ -319,6 +319,7 @@ hash_delete(hash_t *tbl, void **dataptr)
 		pthread_cond_signal(&sleeper->cv);
 	return (old);
 }
+
 int
 hash_operate(hash_t *tbl,
 	void (*ptr)(void *, void *, void *),void *usr_arg)
@@ -343,7 +344,6 @@ hash_operate(hash_t *tbl,
 	pthread_mutex_unlock(&tbl->lock);
 	return (c);
 }
-/* EndSourceFile */
 
 /* Warning: this must be called with hash locked on higher level !!!! */
 void
@@ -378,3 +378,5 @@ hash_destroy(hash_t *tbl, void (*ptr)(void*) )
 	free(tbl);
 	return;
 }
+
+/* EndSourceFile */

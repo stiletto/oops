@@ -17,44 +17,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<unistd.h>
-#include	<errno.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<stdarg.h>
-#include	<netdb.h>
-#include	<ctype.h>
-
-#include	<sys/stat.h>
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/socketvar.h>
-#include	<sys/resource.h>
-#include	<fcntl.h>
-
-#include	<netinet/in.h>
-
-#include	<arpa/inet.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
 
-#define	ICP_OP_INVALID		0
-#define	ICP_OP_QUERY		1
-#define	ICP_OP_HIT		2
-#define	ICP_OP_MISS		3
-#define	ICP_OP_ERR		4
-#define	ICP_OP_SECHO		10
-#define	ICP_OP_DECHO		11
-#define	ICP_OP_MISS_NOFETCH	21
-#define	ICP_OP_DENIED		22
-#define	ICP_OP_HIT_OBJ		23
-
+#define		ICP_OP_INVALID		0
+#define		ICP_OP_QUERY		1
+#define		ICP_OP_HIT		2
+#define		ICP_OP_MISS		3
+#define		ICP_OP_ERR		4
+#define		ICP_OP_SECHO		10
+#define		ICP_OP_DECHO		11
+#define		ICP_OP_MISS_NOFETCH	21
+#define		ICP_OP_DENIED		22
+#define		ICP_OP_HIT_OBJ		23
 
 struct icp_hdr {
 	struct {
@@ -122,12 +96,12 @@ struct	peer	*peer;
 	sprintf(buf+sizeof(struct icp_hdr)+4, "%s://%s%s",
 			rq->url.proto,rq->url.host,
     			rq->url.path);
-    icp_hdr	= (struct icp_hdr*)buf;
+    icp_hdr		= (struct icp_hdr*)buf;
     icp_opcode 		= ICP_OP_QUERY;
     icp_version 	= 2;
     len			= sizeof(struct icp_hdr)+4+
     			  strlen(buf+(sizeof(struct icp_hdr))+4)+1;
-    icp_msg_len		= htons(len);
+    icp_msg_len		= htons((unsigned short)len);
     icp_rq_n		= qe->rq_n;
     icp_opt		= 0;
     peer = peers;
@@ -168,7 +142,7 @@ struct	peer	*peer;
 		succ++;
 	    peer->last_sent = global_sec_timer;
 	} else {
-	    my_xlog(LOG_SEVERE, "send_icp_requests(): Sendto: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "send_icp_requests(): Sendto: %m\n");
 	}
 	/* as is just statistics, let it only approximate */
 	peer->rq_sent++;
@@ -445,7 +419,7 @@ struct	icp_hdr	*icp_hdr = (struct icp_hdr*)buf;
     bzero(buf, sizeof(buf));
     icp_opcode = ICP_OP_ERR;
     icp_version = 2;
-    icp_msg_len = htons(len);
+    icp_msg_len = htons((unsigned short)len);
     icp_rq_n = htonl(rq_n);
     sendto(so, buf, len, 0, (struct sockaddr*)sa, sizeof(struct sockaddr_in));
 }
@@ -464,12 +438,12 @@ int	r;
     bzero(buf, len);
     icp_opcode = op;
     icp_version = 2;
-    icp_msg_len = htons(len);
+    icp_msg_len = htons((unsigned short)len);
     icp_rq_n = htonl(rq_n);
     strncpy(buf+sizeof(*icp_hdr), urlp, strlen(urlp));
     r = sendto(so, buf, len, 0, (struct sockaddr*)sa, sizeof(struct sockaddr_in));
     if ( r == -1 ) {
-	my_xlog(LOG_SEVERE, "send_icp_op_err(): Failed to send OP_HIT: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_icp_op_err(): Failed to send OP_HIT: %m\n");
     }
     xfree(buf);
 }

@@ -1,5 +1,6 @@
 /*
-Copyright (C) 1999 Igor Khasilev, igor@paco.net
+Copyright (C) 1999, 2000 Igor Khasilev, igor@paco.net
+Copyright (C) 2000 Andrey Igoshin, ai@vsu.ru
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -17,43 +18,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include        <stdio.h>
-#include        <stdlib.h>
-#include        <fcntl.h>
-#include        <errno.h>
-#include        <stdarg.h>
-#include        <netdb.h>
-#include        <unistd.h>
-#include        <ctype.h>
-#include        <signal.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<time.h>
-
-#include        <sys/param.h>
-#include        <sys/socket.h>
-#include        <sys/types.h>
-#include        <sys/stat.h>
-#include        <sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#if	defined(SOLARIS) || defined(LINUX)
-#include	<netinet/tcp.h>
-#endif
-
-#include        <netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
-#ifdef		MODULES
+
+#if	defined(MODULES)
 #include	"modules.h"
 extern struct	err_module	*err_first;
-#endif
+#endif /* MODULES */
+
 #define		READ_REQ_TIMEOUT	(10*60)		/* 10 minutes */
+#define		READ_BUFF_SZ		(1500)
 
 #define		REQUEST_EMPTY	0
 #define		REQUEST_READY	1
@@ -80,29 +53,23 @@ static	int	served = 0;
 void*
 run_client(void *arg)
 {
-u_char			*buf=NULL;
+u_char			*buf = NULL;
 int			got, rc;
-u_char			*cp,*ip;
+u_char			*cp, *ip;
 char			*headers;
 struct	request		request;
 time_t			started;
 struct	mem_obj		*stored_url;
 size_t			current_size;
-int			status, checked_len=0, mod_flags;
+int			status, checked_len = 0, mod_flags;
 int			mem_send_flags = 0;
-#if			!defined(_AIX)
-int			clsalen = sizeof(request.client_sa);
-int			mysalen = sizeof(request.my_sa);
-#else
-size_t			clsalen = sizeof(request.client_sa);
-size_t			mysalen = sizeof(request.my_sa);
-#endif
+socklen_t		clsalen = sizeof(request.client_sa);
+socklen_t		mysalen = sizeof(request.my_sa);
 struct	group		*group;
 int			miss_denied = TRUE;
 int			so, new_object, redir_mods_visited, auth_mods_visited;
 int			accepted_so;
 struct	work		*work;
-
 
    work = (struct work*)arg;
    if ( !work ) return(NULL);
@@ -110,7 +77,8 @@ struct	work		*work;
    accepted_so = work->accepted_so;
    free(work);	/* we don't need it anymore	*/
 
-   fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK);
+    if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
+	my_xlog(LOG_SEVERE, "run_client(): fcntl(): %m\n");
 
    increment_clients();
    set_socket_options(so);
@@ -123,22 +91,22 @@ struct	work		*work;
    request.request_time = started = time(NULL);
    redir_mods_visited = FALSE;
    auth_mods_visited  = FALSE;
-   buf = xmalloc(CHUNK_SIZE, "run_client(): for client request");
+   buf = xmalloc(READ_BUFF_SZ, "run_client(): For client request.");
    if ( !buf ) {
 	my_xlog(LOG_SEVERE, "run_client(): No mem for header!\n");
 	goto done;
    }
-   current_size = CHUNK_SIZE;
+   current_size = READ_BUFF_SZ;
    cp = buf; ip = buf;
 
-   while(1) {
+   forever() {
 	got = readt(so, (char*)cp, current_size-(cp-ip), 100);
 	if ( got == 0 ) {
 	    my_xlog(LOG_FTP|LOG_HTTP|LOG_DBG, "run_client(): Client closed connection.\n");
 	    goto done;
 	}
 	if ( got == -2 ) {
-	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "Read client input timeout\n");
+	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "Read client input timeout.\n");
 	    if ( time(NULL) - started > READ_REQ_TIMEOUT ) {
 		my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Client send too slow.\n");
 		goto done;
@@ -149,8 +117,8 @@ struct	work		*work;
 	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Failed to read from client.\n");
 	    goto done;
 	}
-	cp+=got;
-	if ( cp - ip >= current_size ) {
+	cp += got;
+	if ( (unsigned)(cp - ip) >= current_size ) {
 	    char *nb = xmalloc(current_size+CHUNK_SIZE, "run_client(): new block");
 	    /* resize buf */
 	    if ( !nb ) {
@@ -190,7 +158,7 @@ ck_group:
 	goto done;
     }
     miss_denied = group->miss_deny;
-    if ((rc = deny_http_access(so, &request, group)) ) {
+    if ( (rc = deny_http_access(so, &request, group)) != 0 ) {
 	UNLOCK_CONFIG ;
 	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Access banned.\n");
 	switch ( rc ) {
@@ -230,7 +198,7 @@ ck_group:
 	log_access(0, &request, NULL);
 	goto done;
     }
-#ifdef	MODULES
+#if	defined(MODULES)
     /* copy redir modules reference to struct request, so we will
        not lookup for group again
     */
@@ -265,7 +233,7 @@ ck_group:
 	}
 	auth_mods_visited = TRUE;
     }
-#endif
+#endif /* MODULES */
 
     if ( acl_deny && (check_acl_access(acl_deny, &request) == TRUE) ) {
 	UNLOCK_CONFIG;
@@ -337,7 +305,7 @@ ck_group:
 	    goto done;
 	}
 	send_not_cached(so, &request, headers);
-	close(so); so = -1;
+	CLOSE(so); so = -1;
 	goto done;
     }
     if ( (request.proto != PROTO_FTP) && !request.refresh_pattern.valid && in_stop_cache(&request) ) {
@@ -347,7 +315,7 @@ ck_group:
 	    goto done;
 	}
 	send_not_cached(so, &request, headers);
-	close(so); so = -1;
+	CLOSE(so); so = -1;
 	goto done;
     }
     if ( request.flags & RQ_HAS_ONLY_IF_CACHED ) {
@@ -357,7 +325,7 @@ ck_group:
 	    goto done;
 	}
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
-	close(so); so = -1;
+	CLOSE(so); so = -1;
 	leave_obj(stored_url);
 	goto done;
     }
@@ -367,7 +335,6 @@ ck_group:
 
     if ( request.flags & RQ_HAS_NO_CACHE )
 	mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
-
     if ( request.flags &
 	(RQ_HAS_MAX_AGE|RQ_HAS_MAX_STALE|RQ_HAS_MIN_FRESH) ) {
 	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT, &new_object, &request);
@@ -427,7 +394,7 @@ ck_group:
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	}
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
-	close(so); so = -1;
+	CLOSE(so); so = -1;
 	leave_obj(stored_url);
 	goto done;
     }
@@ -458,7 +425,7 @@ read_net:
 		stored_url->flags |= FLAG_DEAD;
 	    }
 	}
-	close(so); so = -1;
+	CLOSE(so); so = -1;
 	leave_obj(stored_url);
     } else {
 	if ( stored_url->flags & ANSW_HAS_MAX_AGE ) {
@@ -469,13 +436,13 @@ read_net:
 	    }
 	}
 	if ( TEST(stored_url->flags, ANSW_HAS_EXPIRES) ) {
-	     if (stored_url->times.expires < global_sec_timer)
+	     if ( stored_url->times.expires < global_sec_timer )
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	}
 	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): read <%s:%s:%s> from mem.\n",
 		request.url.proto, request.url.host, request.url.path);
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
-	close(so); so = -1;
+	CLOSE(so); so = -1;
         leave_obj(stored_url);
     }
 /*persistent:*/
@@ -483,7 +450,7 @@ read_net:
 done:
     if (buf)  free(buf);
     free_request(&request);
-    if ( so != -1 ) close(so);
+    if ( so != -1 ) CLOSE(so);
     decrement_clients();
     LOCK_STATISTICS(oops_stat);
 	oops_stat.requests_http++;
@@ -729,7 +696,7 @@ int		found=0, mod_flags = 0;
                 		increase_hash_size(obj->hash_back, obj->resident_size);
 				if ( !strcasecmp(url->proto,"ftp") ) obj->doc_type = FTP_DOC;
 				SET(obj->flags, FLAG_FROM_DISK);
-#ifdef	MODULES
+#if	defined(MODULES)
 				if ( rq && (check_headers_match(obj, rq, &mod_flags) != MOD_CODE_OK) ) {
 				    /* obj don't match request	*/
 				    struct	mem_obj	*n_obj;
@@ -745,7 +712,7 @@ int		found=0, mod_flags = 0;
 				    return(n_obj);
 				} else
 				    CLR(obj->flags, ANSW_NO_CACHE);
-#endif
+#endif /* MODULES */
 				pthread_cond_broadcast(&obj->decision_cond);
 			    }
 			} else {
@@ -1158,7 +1125,7 @@ normal:;
 	    number[i]=*se;
 	}
 	number[i] = 0;
-	if ( (pval=atoi(number)) )
+	if ( (pval=atoi(number)) != 0 )
 		url->port = pval;
 	    else {
 		if ( so > 0) {
@@ -1336,7 +1303,7 @@ normal:;
 	    number[i]=*se;
 	}
 	number[i] = 0;
-	if ( (pval=atoi(number)) )
+	if ( (pval=atoi(number)) != 0 )
 		url->port = pval;
 	    else {
 		if ( login )    free(login);
@@ -1547,7 +1514,7 @@ char	*trailer="\
 		Generated by Oops.\
 		</body>\
 		</html>";
-#ifdef	MODULES
+#if	defined(MODULES)
 struct	err_module	*mod = err_first;
 int			modflags = 0;
 
@@ -1558,7 +1525,7 @@ int			modflags = 0;
 	    break;
     }
     if ( !TEST(modflags, MOD_AFLAG_OUT) )
-#endif
+#endif /* MODULES */
     {
 	if (hdr ) writet(so, hdr, strlen(hdr), READ_ANSW_TIMEOUT);
 	if ( r  ) writet(so, r, strlen(r), READ_ANSW_TIMEOUT);
@@ -1616,12 +1583,12 @@ decrement_clients(void)
 int
 set_socket_options(int so)
 {
-int	on = -1;
 #if	!defined(FREEBSD)
+int	on = -1;
 #if	defined(TCP_NODELAY)
      setsockopt(so, IPPROTO_TCP, TCP_NODELAY, (char*)&on, sizeof(on));
 #endif
-#endif
+#endif /* !FREEBSD */
     return(0);
 }
 

@@ -41,7 +41,7 @@ struct	general_module {
 	int			(*unload)();
 	int			(*config_beg)();
 	int			(*config_end)();
-	int			(*config)(char*);
+	int			(*config)();
 	struct general_module	*next_global;
 	int			type;
 	char			info[MODINFOLEN];
@@ -56,7 +56,7 @@ struct	log_module {
 
 struct	err_module {
 	struct	general_module	general;
-	int	(*err)(int, char*,char*,int, struct request*, int*);
+	int	(*err)(int, char*, char*, int, struct request*, int*);
 };
 
 struct	auth_module {

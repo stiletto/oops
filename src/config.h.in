@@ -1,12 +1,105 @@
-#define	OOPS_HOME	"@prefix@/oops"
-#define	OOPS_CFG	"@prefix@/oops/oops.cfg"
-#define	OOPS_CC		"@CC@"
-#define	OOPS_CFLAGS	"@CFLAGS@"
-#define	OOPS_LIBS	"@LIBS@"
+/* src/config.h.in.  Generated automatically from configure.in by autoheader.  */
 
+#undef OOPS_HOME
+#undef OOPS_CFG
+#undef OOPS_CC
+#undef OOPS_CFLAGS
+#undef OOPS_LIBS
+#undef OPEN_FILES_MAXIMUM
+#undef MODULES
+#undef USE_INTERNAL_DB_LOCKS
+#undef REGEX_H
 
-#define	OPEN_FILES_MAXIMUM	8196
-#define	HAVE_GETHOSTBYNAME_R	@HAVE_GETHOSTBYNAME_R@
-#define	HAVE_GETDOMAINNAME	@HAVE_GETDOMAINNAME@
-#define	HAVE_IPF		@HAVE_IPF@
-#define	HAVE_GETRUSAGE		@HAVE_GETRUSAGE@
+#undef HAVE_IPF
+#undef HAVE_SOCKLEN_T
+#undef HAVE_UINT32_T
+#undef HAVE__GMTOFF__
+#undef HAVE_STRUCT_TIMESPEC
+#undef HAVE_WORKING_SSCANF
+#undef HAVE_IP6_H
+#undef HAVE_SYSERRLIST
+#undef HAVE_TIME_T_AS_DOUBLE
+
+/* Define if you have the atoll function.  */
+#undef HAVE_ATOLL
+
+/* Define if you have the bzero function.  */
+#undef HAVE_BZERO
+
+/* Define if you have the chroot function.  */
+#undef HAVE_CHROOT
+
+/* Define if you have the ctime_r function.  */
+#undef HAVE_CTIME_R
+
+/* Define if you have the daemon function.  */
+#undef HAVE_DAEMON
+
+/* Define if you have the getdomainname function.  */
+#undef HAVE_GETDOMAINNAME
+
+/* Define if you have the gethostbyname_r function.  */
+#undef HAVE_GETHOSTBYNAME_R
+
+/* Define if you have the getopt function.  */
+#undef HAVE_GETOPT
+
+/* Define if you have the getrlimit function.  */
+#undef HAVE_GETRLIMIT
+
+/* Define if you have the getrusage function.  */
+#undef HAVE_GETRUSAGE
+
+/* Define if you have the gmtime_r function.  */
+#undef HAVE_GMTIME_R
+
+/* Define if you have the localtime_r function.  */
+#undef HAVE_LOCALTIME_R
+
+/* Define if you have the poll function.  */
+#undef HAVE_POLL
+
+/* Define if you have the pread function.  */
+#undef HAVE_PREAD
+
+/* Define if you have the pwrite function.  */
+#undef HAVE_PWRITE
+
+/* Define if you have the setegid function.  */
+#undef HAVE_SETEGID
+
+/* Define if you have the setrlimit function.  */
+#undef HAVE_SETRLIMIT
+
+/* Define if you have the snprintf function.  */
+#undef HAVE_SNPRINTF
+
+/* Define if you have the strcasestr function.  */
+#undef HAVE_STRCASESTR
+
+/* Define if you have the strerror_r function.  */
+#undef HAVE_STRERROR_R
+
+/* Define if you have the strtoll function.  */
+#undef HAVE_STRTOLL
+
+/* Define if you have the <crypt.h> header file.  */
+#undef HAVE_CRYPT_H
+
+/* Define if you have the <getopt.h> header file.  */
+#undef HAVE_GETOPT_H
+
+/* Define if you have the <pthread.h> header file.  */
+#undef HAVE_PTHREAD_H
+
+/* Define if you have the <string.h> header file.  */
+#undef HAVE_STRING_H
+
+/* Define if you have the <strings.h> header file.  */
+#undef HAVE_STRINGS_H
+
+/* Define if you have the <unistd.h> header file.  */
+#undef HAVE_UNISTD_H
+
+/* Define if you have the pcre library (-lpcre).  */
+#undef HAVE_LIBPCRE

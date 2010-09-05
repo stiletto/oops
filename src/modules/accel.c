@@ -1,34 +1,21 @@
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
 
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 
-#include	<netinet/in.h>
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
-#include	<pthread.h>
-
-#include	<db.h>
+*/
 
 #include	"../oops.h"
 #include	"../modules.h"
@@ -586,7 +573,7 @@ struct	url		tmp_url;
 		*resulting_so = so;
 		goto done;
 	    }
-	    if ( errno == EINPROGRESS ) {
+	    if ( ERRNO == EINPROGRESS ) {
 	      /* do timed wait */
 	      struct pollarg pollarg;
 
@@ -598,7 +585,7 @@ struct	url		tmp_url;
 		    *resulting_so = so;
 		    goto done;
 		}
-		my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Connect failed\n");
+		my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Connect failed.\n");
 	    }
 	    if ( so != -1 ) {
 		close(so);
@@ -1860,18 +1847,18 @@ struct	map	*map;
 
     rc = stat(map_file, &sb);
     if ( rc == -1 ) {
-	verb_printf("reload_map_file(): Can't stat %s: %s\n", map_file, strerror(errno));
-	my_xlog(LOG_SEVERE, "reload_map_file(): Can't stat %s: %s\n", map_file, strerror(errno));
+	verb_printf("reload_map_file(): Can't stat %s: %m\n", map_file);
+	my_xlog(LOG_SEVERE, "reload_map_file(): Can't stat %s: %m\n", map_file);
 	return;
     }
     if ( sb.st_mtime <= map_file_mtime )
 	return;
     WRLOCK_ACCEL_CONFIG ;
     map_file_mtime = sb.st_mtime;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "reload_map_file(): reload mapfile\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "reload_map_file(): reload mapfile.\n");
     mf = fopen(map_file, "r");
     if ( !mf ) {
-	verb_printf("reload_map_file(): Can't fopen %s: %s", map_file, strerror(errno));
+	verb_printf("reload_map_file(): Can't fopen %s: %m", map_file);
 	goto done;
     }
     if ( map_hash_table ) {

@@ -1,3 +1,16 @@
+	24.05.00 - %U in custom_log
+	21.05.00 - buffering system for log and accesslog rewritten.
+		   err.c - for ERR_BAD_URL show succesfully parsed fields.
+		   pthread_attr_setstacksize(64k) under solaris.
+		   some minor bugs fixed (^C for FreeBSD, HTTP 0.9 docs,...)(ik)
+		   configure --enable-db-locks for DB 2.x - turn off top-level
+		   locks for some DB operations. Can emprove speed (tested, but
+		   still experimental)
+	03.05.00 - configure --with-regexp[=(builtin|pcre|system)] [system] (ai)
+	29.04.00 - Initial WIN32 support. (ai)
+	27.04.00 - module fastredir by john gladkih
+		   redir based on strcasestr, which is much faster then
+		   regex, but not so flexible.
 version.1.4
 	24.04.00 - some daemon() related stuff fixed(ik)
 	18.04.00 - OPTIONS method added. (ik)

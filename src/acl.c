@@ -17,35 +17,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<unistd.h>
-#include	<errno.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<stdarg.h>
-#include	<netdb.h>
-#include	<ctype.h>
-#include	<time.h>
-#include	<fcntl.h>
-
-#include	<sys/stat.h>
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/socketvar.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#include	<netinet/in.h>
-
-#include	<arpa/inet.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
-
 
 struct	domain_list	*find_best_dom(struct domain_list*, char*);
 int			port_deny(struct group *, struct request *);
@@ -53,7 +25,7 @@ int			port_deny(struct group *, struct request *);
 struct group *
 rq_to_group(struct request * rq)
 {
-struct	cidr_net	*net=NULL;
+struct	cidr_net	*net = NULL;
 int			i;
 struct	group		*g = groups;
 struct	in_addr		*addr = &rq->client_sa.sin_addr;
@@ -510,7 +482,7 @@ int	must_free_data = FALSE;
 
 	fn = data + 8;
 	if ( stat(fn, &sb) ) {
-	    printf("Can't stat file %s: %s\n", fn, strerror(errno));
+	    verb_printf("Can't stat file %s: %m\n", fn);
 	    return(0);
 	}
 	new_data_sz = sb.st_size;
@@ -520,7 +492,7 @@ int	must_free_data = FALSE;
 	}
 	fd = open(fn, O_RDONLY);
 	if ( fd < 0 ) {
-	    printf("Can't open file %s: %s\n", fn, strerror(errno));
+	    verb_printf("Can't open file %s: %m\n", fn);
 	    return(0);
 	}
 	data = malloc(new_data_sz+1);
@@ -582,53 +554,53 @@ case ACL_TIME:
 	struct denytime	dt, *result;
 	int		start_m, end_m;
 
-	printf("acl->data: `%s'\n", data);
+	verb_printf("acl->data: `%s'\n", data);
 	bzero(&dt, sizeof(dt));
 	/* split on '\t '					*/
 	tb = (char*)strtok_r(data, " \t", &tokptr);
 	if ( !tb ) {
-	    printf("Wrong time acl: %s\n", data);
+	    verb_printf("Wrong time acl: %s\n", data);
 	    if ( must_free_data ) free(data);
 	    return(0);
 	}
 	strncpy(dayspec, tb, sizeof(dayspec) - 2);
-	printf("dayspec: `%s'\n", dayspec);
+	verb_printf("dayspec: `%s'\n", dayspec);
 	tb = (char*)strtok_r(NULL, " \t", &tokptr);
 	if ( !tb ) {
-	    printf("Wrong time acl: %s\n", data);
+	    verb_printf("Wrong time acl: %s\n", data);
 	    if ( must_free_data ) free(data);
 	    return(0);
 	}
 	strncpy(timespec, tb, sizeof(timespec) - 2);
-	printf("timespec: `%s'\n", timespec);
+	verb_printf("timespec: `%s'\n", timespec);
 	if ( sscanf(timespec, "%d:%d", &start_m, &end_m) != 2 ) {
-	    printf("Wrong time acl: %s\n", data);
+	    verb_printf("Wrong time acl: %s\n", data);
 	    if ( must_free_data ) free(data);
 	}
 	dt.start_minute = 60*(start_m/100) + start_m%100;
 	dt.end_minute = 60*(end_m/100) + end_m%100;
 	/* now process days					*/
-	tb=dayspec;
-	while( ( t = (char*)strtok_r(tb, ",", &tokptr) ) ) {
+	tb = dayspec;
+	while( (t = (char*)strtok_r(tb, ",", &tokptr)) != 0 ) {
 	    char 	  fday[4],tday[4];
 	    unsigned char d1, d2, i;
 	    tb = NULL;
 	    if ( sscanf(t,"%3s:%3s", (char*)&fday,(char*)&tday) == 2 ) {
-		printf("from: `%s' to `%s'\n", fday,tday);
-		d1=daybit(fday);
-		d2=daybit(tday);
+		verb_printf("from: `%s' to `%s'\n", fday,tday);
+		d1 = daybit(fday);
+		d2 = daybit(tday);
 		if ( TEST(d1, 0x80) || TEST(d2, 0x80) || (d1>d2)) {
-		    printf("Wrong time acl: %s\n", data);
+		    verb_printf("Wrong time acl: %s\n", data);
 		    if ( must_free_data ) free(data);
 		    return(0);
 		}
 		i = d1;
-		while(i<=d2) {
+		while(i <= d2) {
 		    res |= i;
 		    i <<= 1;
 		}
 	    } else {
-		printf("day: `%s'\n", t);
+		verb_printf("day: `%s'\n", t);
 		res |= daybit(t);
 	    }
 	}
@@ -642,7 +614,7 @@ case ACL_TIME:
 	}
 	return(0);
 case ACL_PORT:
-	printf("acl->data: `%s'\n", data);
+	verb_printf("acl->data: `%s'\n", data);
 	/* range,range,... where range = port | [port:port]	*/
 	/* split on ',' */
 	p = data;
@@ -697,13 +669,13 @@ case ACL_DSTDOM:
 	struct	domain_list	*new, *next;
 	/* domain domain domain ...			*/
 	    acl->data = NULL;
-	    printf("acl->data: `%s'\n", data);
+	    verb_printf("acl->data: `%s'\n", data);
 	    /* split on ' ' */
 	    p = data;
-	    while( (t = (char*)strtok_r(p, ", \n", &tokptr)) ) {
+	    while( (t = (char*)strtok_r(p, ", \n", &tokptr)) != 0 ) {
 
 		p = NULL;
-		printf("Token: %s\n", t);
+		verb_printf("Token: %s\n", t);
 		new = calloc(1, sizeof(*new));
 		if ( new && (new->domain = malloc(strlen(t)+1))) {
 		    new->length = strlen(t);
@@ -734,21 +706,21 @@ case ACL_SRC_IP:
 
 	    verb_printf("SRC_IP: %s\n", data);
 	    t = data;
-	    while ( (p = (char*)strtok_r(t, "\t \n", &tptr)) ) {
+	    while ( (p = (char*)strtok_r(t, "\t \n", &tptr)) != 0 ) {
 	      char	*slash = NULL, masklen, *tt, *pp, *ttptr;
 	      int	net = 0, i = 24;
 	      struct	cidr_net *new;
 
 		t = NULL;
 		verb_printf("SRC: %s\n", p);
-		if ( (slash = strchr(p, '/')) ) {
+		if ( (slash = strchr(p, '/')) != 0 ) {
 		    masklen = atoi(slash+1);
 		    *slash = 0;
 		} else {
 		    masklen = 32;
 		}
 		tt = p;
-		while ( (pp = (char*)strtok_r(tt,".", &ttptr)) ) {
+		while ( (pp = (char*)strtok_r(tt,".", &ttptr)) != 0 ) {
 		    tt = NULL;
 
 		    net |= (atol(pp) << i);
@@ -1190,7 +1162,7 @@ acl_chk_list_hdr_t	*newhdr, *nexthdr;
     bzero(newhdr, sizeof(*newhdr));
     verb_printf("parse_acl_access(): PARSING ACL: %s\n", string);
     t = string;
-    while ( (p=(char*)strtok_r(t, "\t ", &tptr)) ) {
+    while ( (p=(char*)strtok_r(t, "\t ", &tptr)) != 0 ) {
 	t = NULL;
 
 	sign = 0;

@@ -2,10 +2,8 @@
 
 /* BeginSourceFile queue.c */
 
-#include <stdlib.h>
-#include <pthread.h>
-#include "dataq.h"
-#include <assert.h>
+#include	"oops.h"
+#include	"dataq.h"
 
 #if	!defined(NDEBUG)
 static int
@@ -30,6 +28,7 @@ dataq_init(dataq_t *ptr)
 		  (pthread_mutex_unlock(&ptr->lock) == 0));
 	return (0);
 }
+
 int
 dataq_enqueue(dataq_t *dataq, void *in)
 {
@@ -53,6 +52,7 @@ dataq_enqueue(dataq_t *dataq, void *in)
 		pthread_cond_signal(&sleeper->cv);
 	return (0);
 }
+
 int
 dataq_dequeue(dataq_t *dataq, void **outptr)
 {
@@ -86,6 +86,26 @@ dataq_dequeue(dataq_t *dataq, void **outptr)
 	free(dptr);
 	return (0);
 }
+
+int
+dataq_dequeue_no_wait(dataq_t *dataq, void **outptr)
+{
+	dataq_data_t *dptr;
+	dataq_waiter_t *sleeper = NULL;
+
+	pthread_mutex_lock(&dataq->lock);
+	dptr = (dataq_data_t *) ll_dequeue(&dataq->data);
+	if ( dptr == NULL ) {
+	    pthread_mutex_unlock(&dataq->lock);
+	    return(1);
+	}
+	dataq->num_data--;
+	pthread_mutex_unlock(&dataq->lock);
+	*outptr = dptr->data;
+	free(dptr);
+	return (0);
+}
+
 int
 dataq_dequeue_special(dataq_t *dataq, void **outptr)
 {
@@ -121,10 +141,12 @@ wfd:
 	free(dptr);
 	return (0);
 }
+
 int
 dataq_destroy(dataq_t *dataq)
 {
 	pthread_mutex_destroy(&dataq->lock);
 	return (0);
 }
+
 /* EndSourceFile */

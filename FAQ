@@ -120,4 +120,11 @@ A5. In the group description you will see two directives:
 
      so that host 192.168.0.1 will belong to group with 192.168.0.0/25 in
      description.
-                
+
+Q6. Which platform is best for OOPS?
+A6. I develop and use OOPS under Solaris, and think this is best platform
+    (both intel and sparc). Next and very close go FreeBSD (may-be it is
+    even better on some parameters). Alas, as for today, you can use OOPS
+    under Linux for limited number of simultaneous connections. This is
+    because Linux use model 'one thread-one process', and OOPS use model one
+    'connection-one thread'

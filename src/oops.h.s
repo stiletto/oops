@@ -1,6 +1,5 @@
 /*
-Copyright (C) 1999, 2000 Igor Khasilev, igor@paco.net
-Copyright (C) 2000 Andrey Igoshin, ai@vsu.ru
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -18,7 +17,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#if	defined(_WIN32)
+#if	defined(__IBMC__) && defined(_WIN32)
 #include	"win32/config.h"
 #include	"win32/environment.h"
 #else
@@ -26,15 +25,116 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"environment.h"
 #endif
 
-#if	DB_VERSION_MAJOR >= 3
-#undef	USE_INTERNAL_DB_LOCKS
+<<<<<<< oops.h
+#include	<stdio.h>
+#include	<stdlib.h>
+#include	<fcntl.h>
+#include	<errno.h>
+#include	<stdarg.h>
+#include	<string.h>
+#include	<strings.h>
+#include	<netdb.h>
+#include	<unistd.h>
+#include	<pwd.h>
+#include	<dlfcn.h>
+#include	<glob.h>
+#include	<ctype.h>
+#include	<signal.h>
+#include	<locale.h>
+#if	defined(__IBMC__) && defined(_WIN32)
+#define _TIMEVAL_DEFINED	1
 #endif
+#include	<time.h>
+#include	<assert.h>
+#include	<locale.h>
+
+#if	defined(HAVE_CRYPT_H)
+#include	<crypt.h>
+#endif
+#if	defined(HAVE_GETOPT_H)
+#include	<getopt.h>
+#endif
+
+#if	defined(SOLARIS)
+#include	<thread.h>
+#endif
+#if	defined(__IBMC__) && defined(_WIN32)
+#include	<win32/pthread.h>
+#else
+#include	<pthread.h>
+#endif
+
+#include	<sys/types.h>
+#include	<sys/stat.h>
+#include	<sys/param.h>
+#include	<sys/socket.h>
+#include	<sys/file.h>
+#include	<sys/time.h>
+#include	<sys/resource.h>
+#include        <sys/un.h>
+#if	defined(__IBMC__) && defined(_WIN32)
+#include	<win32/signal.h>
+#endif
+#include        <sys/wait.h>
+
+#if	defined(_AIX)
+#include	<sys/ioctl.h>
+#include	<sys/devinfo.h>
+#include	<sys/lvdd.h>
+extern	int	seteuid(uid_t);
+extern	int	setegid(gid_t);
+#endif
+
+#if	defined(BSDOS) || defined(FREEBSD)
+#include	<sys/disklabel.h>
+#include	<sys/ioctl.h>
+#include	<sys/stat.h>
+#endif
+
+#if	defined(LINUX)
+#ifdef		WNOHANG
+#undef		WNOHANG
+#endif
+#ifdef		WUNTRACED
+#undef		WUNTRACED
+#endif
+#include	<sys/ioctl.h>
+#include	<linux/fs.h>
+#endif         
+=======
+>>>>>>> 1.21
+
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD) && !defined(_WIN32)
+#include	<sys/poll.h>
+#endif                     
+
+#include	<netinet/in.h>
+#if	defined(SOLARIS) || defined(LINUX)
+#include	<netinet/tcp.h>
+#endif
+
+#include	<arpa/inet.h>
+
+#if	defined(__IBMC__) && defined(_WIN32)
+#include	<win32/db.h>
+#else
+#include	<db.h>
+#endif
+
+#if	defined(__IBMC__) && defined(_WIN32)
+#include	<win32/fcntl.h>
+#include	<win32/stat.h>
+#ifndef		PATH_MAX
+#define		PATH_MAX	512
+#endif
+#define		EWOULDBLOCK	EAGAIN
+#endif
+
+/* ------------------------------------------------------------------- */
 
 #define	forever()	for(;;)
 
-#if	defined(REGEX_H)
 #include	REGEX_H
-#endif
 
 #include "llt.h"
 #include "hash.h"
@@ -151,6 +251,15 @@ typedef	unsigned	uint32_t;
 #endif
 #define	ROUND(x,b)	((x)%(b)?(((x)/(b)+1)*(b)):(x))
 
+#if	!defined(_AIX) && !defined(_WIN32)
+#define	TRUE		(1)
+#define	FALSE		(0)
+#endif
+
+#if	defined(_AIX)
+#define	pthread_sigmask sigthreadmask
+#endif
+
 #define	MAXNS		(5)
 #define	MAXBADPORTS	(10)
 
@@ -228,7 +337,6 @@ typedef	unsigned	uint32_t;
 #define RQ_NO_ICP		(1<<15)
 #define RQ_FORCE_DIRECT		(1<<16)
 #define RQ_HAS_HOST		(1<<17)
-#define RQ_HAVE_RANGE		(1<<18)
 
 #define	DOWNGRADE_ANSWER	1
 #define	UNCHUNK_ANSWER		2
@@ -283,10 +391,8 @@ typedef	unsigned	uint32_t;
 #define	CLR(a,b)		(a&=~b)
 #define	TEST(a,b)		((a)&(b))
 
-#if	!defined(NO_NEED_XMALLOC)
 #define	malloc(x)	xmalloc(x, NULL)
 #define	free(x)		xfree(x)
-#endif
 
 typedef	struct {
 	pthread_mutex_t	m;
@@ -310,8 +416,8 @@ struct	url {
 struct	obj_times {
 	time_t			date;		/* from the server answer	*/
 	time_t			expires;	/* from the server answer	*/
-	int			age;		/* Age: from stored answer	*/
-	int			max_age;	/* max-age: from server		*/
+	time_t			age;		/* Age: from stored answer	*/
+	time_t			max_age;	/* max-age: from server		*/
 	time_t			last_modified;	/* Last-Modified: from server	*/
 };
 
@@ -409,8 +515,6 @@ struct	request {
 	int			received;
 	char			*proxy_user;	/* if proxy-auth used			*/
 	char			*original_path;	/* original path			*/
-	size_t			range_from;
-	size_t			range_to;
 };
 
 struct	av {
@@ -447,7 +551,7 @@ struct	storage_st {
 	int			flags;		/* flags, like ready	*/
 	rwl_t			storage_lock;	/* locks for writings	*/
 	struct	superb		super;		/* in-memory super	*/
-	fd_t			fd;		/* descriptor for access*/
+	int			fd;		/* descriptor for access*/
 	char			*map;		/* busy map		*/
 	off_t			i_off;		/* initial offset in file*/
 };
@@ -834,8 +938,6 @@ struct	oops_stat {
 #endif
 	time_t		timestamp;	/* last update time				*/
 	time_t		timestamp0;	/* prev update time			*/
-	int		drops0;		/* client drops (RED, refuse)	*/
-	int		drops;		/* drops total			*/
 };
 
 #define	MAXPOLLFD	(64)
@@ -855,24 +957,11 @@ struct	pollarg {
 #define        IS_SPACE(a)     isspace((unsigned)a)
 #define        IS_DIGIT(a)     isdigit((unsigned)a)
 
-#define	ERRBUF		char	errbuf[256]
-#define	ERRBUFS		errbuf, sizeof(errbuf)-1
-
-#include	"dataq.h"
-
-#define	FILEBUFFSZ	(16*1024)
 typedef	struct	filebuff_ {
-	int		fd;
-#if	!defined(HAVE_SNPRINTF)
-	FILE		*FILE;
-#endif
-	int		buffered;
-	pthread_mutex_t	lock;
-	struct	buff	*buff;
-	dataq_t		queue;
+	int	fd;
+	int	size;
+	int	used;
+	char	*buff;
 } filebuff_t;
 
-
 #include	"extern.h"
-
-

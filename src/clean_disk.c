@@ -17,35 +17,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<unistd.h>
-#include	<errno.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<stdarg.h>
-#include	<netdb.h>
-#include	<ctype.h>
-
-#include	<sys/stat.h>
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/socketvar.h>
-#include	<sys/resource.h>
-#include	<fcntl.h>
-
-#if     defined(_AIX)
-#include        <time.h>
-#endif
-
-#include	<netinet/in.h>
-
-#include	<arpa/inet.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
 
 #define		KEEP_NO_LONGER_THAN	1	/* keep storage locked for cleanup *
@@ -75,6 +46,7 @@ long		  res = 0;
     }
     return(res);
 }
+
 long
 count_total_blks(void)
 {
@@ -100,6 +72,7 @@ start_cleanup(int total_blks, int total_free, int low_free)
 	return(1);
     return(0);
 }
+
 int
 continue_cleanup(int total_blks, int total_free, int hi_free)
 {
@@ -110,7 +83,7 @@ continue_cleanup(int total_blks, int total_free, int hi_free)
     return(0);
 }
 
-void*
+void *
 clean_disk(void *arg)
 {
 struct	storage_st	*storage;
@@ -121,8 +94,9 @@ long			total_free, total_blks;
 struct	disk_ref	*disk_ref;
 time_t			now;
 
-    arg = arg ;
-    while(1) {
+    if ( arg ) return (void *)0;
+
+    forever() {
 	pthread_mutex_lock(&st_check_in_progr_lock);
 	if ( !st_check_in_progr ) check_expire();
 	pthread_mutex_unlock(&st_check_in_progr_lock);
@@ -147,25 +121,27 @@ time_t			now;
 	    continue;
 	}
 	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
-	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n", total_free, total_blks);
+	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n",
+		    total_free, total_blks);
 	    /* 1. create db cursor */
+	    WRLOCK_DB ;
 	    rc = dbp->cursor(dbp, NULL, &dbcp
 #if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)   
 					     , 0
 #endif
 	    					);
 	    if ( rc ) {
-		my_xlog(LOG_SEVERE, "clean_disk(): cursor: %s\n", strerror(rc));
+		UNLOCK_DB;
+		my_xlog(LOG_SEVERE, "clean_disk(): cursor: %d %m\n", rc);
 		goto err;
 	    }
-	    WRLOCK_DB ;
 	    while ( continue_cleanup(total_blks, total_free, disk_hi_free) ) {
 		bzero(&key, sizeof(key));
 		bzero(&data, sizeof(data));
 		key.flags = data.flags = DB_DBT_MALLOC;
 		rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT);
 		if ( rc > 0 ) {
-		    my_xlog(LOG_SEVERE, "clean_disk(): c_get: %s\n", strerror(rc));
+		    my_xlog(LOG_SEVERE, "clean_disk(): c_get: %d %m\n", rc);
 		    UNLOCK_DB;
 		    goto done;
 	        }
@@ -184,7 +160,7 @@ time_t			now;
 		    UNLOCK_STORAGE(storage) ;
 		    total_free+=disk_ref->blk;
 		} else {
-		    my_xlog(LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk\n");
+		    my_xlog(LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk.\n");
 		}
 		free(key.data);
 		free(data.data);
@@ -198,8 +174,10 @@ time_t			now;
 	    UNLOCK_DB ;
 	    forced_cleanup = FALSE;
 	} else {
-	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Skip cleanup: %d out of %d (%d%%) free\n", total_free, total_blks,(total_free*100)/total_blks);
+	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Skip cleanup: %d out of %d (%d%%) free.\n",
+		    total_free, total_blks, (total_free*100)/total_blks);
 	}
+
 done:
 err:
 	UNLOCK_CONFIG ;
@@ -234,7 +212,7 @@ struct	storage_st	*storage;
 
 run:
     WRLOCK_DB ;
-    /* I'd like lo lock all storages now, but can this lead to deadlocks?	*/
+    /* I'd like to lock all storages now, but can this lead to deadlocks?	*/
     /* so, storages will be locked and unlocked when need			*/
     if ( !dbcp ) {
 	rc = dbp->cursor(dbp, NULL, &dbcp
@@ -246,14 +224,15 @@ run:
 	    UNLOCK_DB ;
 	    UNLOCK_CONFIG ;
 	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
-	    	expired_cnt, global_sec_timer-started, total_cnt);
+	    	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);
 	    return ;
 	}
     }
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE started, %d total, %d expired\n", total_cnt, expired_cnt);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE started, %d total, %d expired\n",
+	    total_cnt, expired_cnt);
     now = global_sec_timer;
     get_counter = 0 ;
-    while ( 1 ) {
+    forever() {
 	bzero(&key, sizeof(key));
 	bzero(&data, sizeof(data));
 	key.flags = data.flags = DB_DBT_MALLOC;
@@ -291,13 +270,14 @@ run:
 	    goto run ;
 	}
     }
+
 done:
     UNLOCK_DB ;
     if ( dbcp )
 	dbcp->c_close(dbcp);
     UNLOCK_CONFIG ;
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
-	expired_cnt, global_sec_timer-started, total_cnt);
+	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);
 }
 
 void

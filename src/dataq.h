@@ -1,6 +1,9 @@
+#if	!defined(DATAQ_H_INCLUDED)
+#define DATAQ_H_INCLUDED
 /* BeginSourceFile dataq.h */
 
-#include "llt.h"
+#include	"llt.h"
+
 typedef struct dataq_data {
 	ll_t list;
 	void *data;
@@ -22,6 +25,9 @@ typedef struct dataq {
 extern int dataq_init(dataq_t *ptr);
 extern int dataq_enqueue(dataq_t *dataq, void *in);
 extern int dataq_dequeue(dataq_t *dataq, void **outptr);
+extern int dataq_dequeue_no_wait(dataq_t *dataq, void **outptr);
 extern int dataq_destroy(dataq_t *dataq);
 extern int dataq_dequeue_special(dataq_t *dataq, void **outptr);
+
 /* EndSourceFile */
+#endif

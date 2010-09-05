@@ -2,19 +2,15 @@
 
 /* BeginSourceFile list2.c */
 
-#define	NDEBUG
+#include	"oops.h"
 
-#include <stdlib.h>
-#include <pthread.h>
-#include <assert.h>
-#include <stdio.h>
-#include "llt.h"
 void
 ll_init(llh_t *head)
 {
 	head->back = &head->front;
 	head->front = NULL;
 }
+
 void
 ll_enqueue(llh_t *head, ll_t *data)
 {
@@ -22,11 +18,13 @@ ll_enqueue(llh_t *head, ll_t *data)
 	*head->back = data;
 	head->back = &data->n;
 }
+
 ll_t *
 ll_peek(llh_t *head)
 {
 	return (head->front);
 }
+
 ll_t *
 ll_dequeue(llh_t *head)
 {
@@ -36,6 +34,7 @@ ll_dequeue(llh_t *head)
 		head->back = &head->front;
 	return (ptr);
 }
+
 ll_t *
 ll_traverse(llh_t *ptr, int (*func)(void *, void *), void *user)
 {
@@ -59,6 +58,7 @@ ll_traverse(llh_t *ptr, int (*func)(void *, void *), void *user)
 	}
 	return (NULL);
 }
+
 /* Make sure the list isn't corrupt and returns number of list items */
 int
 ll_check(llh_t *head)
@@ -75,6 +75,7 @@ ll_check(llh_t *head)
 	assert(head->back == prev);
 	return (i);
 }
+
 typedef struct list_entry {
 	struct ll list;
 	void *data;
@@ -86,6 +87,7 @@ list_check(list_t *ptr)										/* call while holding lock */
 	assert(ptr->count == ll_check(&ptr->head));
 	return (1);
 }
+
 int
 list_init(list_t *ptr)
 {
@@ -97,6 +99,7 @@ list_init(list_t *ptr)
 		  pthread_mutex_unlock(&ptr->lock) == 0);
 	return (0);
 }
+
 void*
 list_dequeue(list_t *ptr)
 {
@@ -133,10 +136,12 @@ list_add(list_t *ptr, void *item)
 	pthread_mutex_unlock(&ptr->lock);
 	return (0);
 }
+
 struct wrap {
 	int (*func)(void *, void *);
 	void *user;
 };
+
 static int
 wrapper(void *e, void *u)
 {
@@ -144,6 +149,7 @@ wrapper(void *e, void *u)
 	struct wrap *w = (struct wrap *)u;
 	return (w->func(q->data, w->user));
 }
+
 int
 list_traverse(list_t *ptr, int (*func)(void *, void *), void *user)
 {
@@ -164,22 +170,26 @@ list_traverse(list_t *ptr, int (*func)(void *, void *), void *user)
 	pthread_mutex_unlock(&ptr->lock);
 	return (0);
 }
+
 static int
 matchit(void *data, void *compare)
 {
 	return ((data == compare)? -1: 0);
 }
+
 int
 list_remove(list_t *ptr, void *item)
 {
 	return (list_traverse(ptr, matchit, item)? -1: 0);
 }
+
 void
 list_unlink_item(list_t *list, ll_t *e)
 {
 	list_traverse(list, matchit, (void*)e);
 	return;
 }
+
 int
 list_destroy(list_t *ptr)
 {
@@ -190,4 +200,5 @@ list_destroy(list_t *ptr)
 		free(e);
 	return (pthread_mutex_destroy(&ptr->lock));
 }
+
 /* EndSourceFile */

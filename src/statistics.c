@@ -17,32 +17,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#include        <stdio.h>
-#include        <stdlib.h>
-#include        <fcntl.h>
-#include        <errno.h>
-#include        <stdarg.h>
-#include        <strings.h>
-#include        <netdb.h>
-#include        <unistd.h>
-#include        <ctype.h>
-#include        <signal.h>
-#include	<time.h>
-
-#include        <sys/param.h>
-#include        <sys/socket.h>
-#include        <sys/types.h>
-#include        <sys/stat.h>
-#include        <sys/file.h>
-#include	<sys/time.h>
-#include	<sys/resource.h>
-
-#include        <netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
 #include	"oops.h"
 
 #define		MID3(a,b,c)	((40*a+30*b+30*c)/100)
@@ -98,21 +72,21 @@ int	cbytes, bw;
      return((cbytes*100)/bw);
 }
 
-void*
+void *
 statistics(void *arg)
 {
 struct group 	 *group;
 struct peer	 *peer;
 struct oops_stat temp_stat;
 int		 counter = 0;
-int		 hits=0, reqs=0;
+int		 hits = 0, reqs = 0;
 int		 purge = PURGE_INTERVAL;
 
-    arg = arg;
+    if ( arg ) return (void *)0;
     bzero(&oops_stat, sizeof(oops_stat));
     start_time = oops_stat.timestamp0 = oops_stat.timestamp = time(NULL);
 
-    while(1) {
+    forever() {
 	global_sec_timer = time(NULL);
 
 	if ( ++counter == 60 ) {	/* once per minute */
@@ -125,6 +99,7 @@ int		 purge = PURGE_INTERVAL;
 	    oops_stat.hits0 = 0;
 	    oops_stat.timestamp0 = oops_stat.timestamp;
 	    oops_stat.timestamp = global_sec_timer;
+	    oops_stat.drops0 = 0;
 
 	    oops_stat.requests_icp1 = oops_stat.requests_icp0;
 	    oops_stat.requests_icp0 = 0;
@@ -166,7 +141,7 @@ int		 purge = PURGE_INTERVAL;
 	group = groups ;
 	if ( group ) {
 	    while ( group ) {
-		my_xlog(LOG_DBG, "statistics(): transfer : %d bytes/sec\n", MID(bytes));
+		/* my_xlog(LOG_DBG, "statistics(): transfer : %d bytes/sec\n", MID(bytes)); */
 		pthread_mutex_lock(&group->group_mutex);
 		group->cs_total.bytes += group->cs0.bytes;
 		group->cs_total.requests += group->cs0.requests;
@@ -197,7 +172,7 @@ int		 purge = PURGE_INTERVAL;
 
 	    if ( statl ) {
 		fprintf(statl,"clients      : %d\n", (int)temp_stat.clients);
-		fprintf(statl,"uptime       : %d sec.\n", (unsigned)(global_sec_timer-start_time));
+		fprintf(statl,"uptime       : %d sec.\n", (utime_t)(global_sec_timer-start_time));
 		fprintf(statl,"http_requests: %d\n", (unsigned)temp_stat.requests_http);
 		fprintf(statl,"http_hits    : %d\n", (unsigned)temp_stat.hits);
 		fprintf(statl,"icp_requests : %d\n", (unsigned)temp_stat.requests_icp);
