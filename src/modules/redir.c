@@ -31,11 +31,11 @@
 
 #include	"../oops.h"
 #include	"../modules.h"
-#include	"gnu_regex.h"
+#include	"../gnu_regex.h"
 
 char	module_type   = MODULE_REDIR ;
 char	module_name[] = "redir" ;
-char	module_info[] = "URL Redirector" ;
+char	module_info[] = "Regex URL Redirector" ;
 
 struct	redir_rule {
 	char			*redirect;	/* if not null send HTTP redirect */
@@ -50,7 +50,7 @@ static	rwl_t	redir_lock;
 #define	UNLOCK_REDIR_CONFIG	rwl_unlock(&redir_lock)
 
 #define	NMYPORTS	4
-static	u_short		myports[NMYPORTS];	/* my ports		*/
+static	myport_t	myports[NMYPORTS];	/* my ports		*/
 int			nmyports;		/* actual number	*/
 
 static	char		redir_rules_file[MAXPATHLEN];
@@ -158,11 +158,16 @@ struct	buff		*body = NULL;
     my_log("redir called\n");
     if ( !rq ) return(MOD_CODE_OK);
     if ( nmyports > 0 ) {
-	int	n = nmyports;
-	u_short *mp = myports, port = ntohs(rq->my_sa.sin_port);
+	int		n = nmyports;
+	myport_t 	*mp = myports;
+	u_short		port = ntohs(rq->my_sa.sin_port);
+
 	/* if this is not on my port */
 	while( n ) {
-	    if ( *mp == port ) break;
+	    if (    mp->port == port
+	         && (  (mp->in_addr.s_addr == INADDR_ANY)
+	             ||(mp->in_addr.s_addr == rq->my_sa.sin_addr.s_addr) ) )
+	         break;
 	    n--;mp++;
 	}
 	if ( !n ) return(MOD_CODE_OK);	/* not my */

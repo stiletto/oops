@@ -54,7 +54,7 @@ static	void		reload_template();
 #define	RDLOCK_ERR_CONFIG	rwl_rdlock(&err_config_lock)
 #define	UNLOCK_ERR_CONFIG	rwl_unlock(&err_config_lock)
 
-char	*messages[2][7] = {
+char	*messages[2][8] = {
 
 	/*-- LANG_EN --*/
 	{ "Bad formed url",
@@ -63,7 +63,8 @@ char	*messages[2][7] = {
 	  "DNS error, can't resolve",
 	  "INternal error",
 	  "Access Denied",
-	  "Data transfer error"
+	  "Data transfer error",
+	  "Denied by ACL"
 	},
 
 	/*-- LANG RU --*/
@@ -73,7 +74,8 @@ char	*messages[2][7] = {
 	 "Ошибка DNS, невозможно определить адрес машины",
 	 "Внутренняя ошибка",
 	 "Доступ запрещен",
-	 "Ошибка передачи данных"}
+	 "Ошибка передачи данных",
+	 "Доступ запрещен ACL"}
 };
 
 int
@@ -221,6 +223,10 @@ struct	buff		*body;
 			    attach_data(": ", 2, body);
 			    attach_data(reason, strlen(reason), body);
 			}
+			if ( code == ERR_ACL_DENIED ) {
+			    attach_data(": ", 2, body);
+			    attach_data(reason, strlen(reason), body);
+			}
 			tptr = proc+2;
 			break;
 		case 'M':
@@ -232,6 +238,10 @@ struct	buff		*body;
 			    attach_data(reason, strlen(reason), body);
 			}
 			if ( code == ERR_TRANSFER ) {
+			    attach_data(": ", 2, body);
+			    attach_data(reason, strlen(reason), body);
+			}
+			if ( code == ERR_ACL_DENIED ) {
 			    attach_data(": ", 2, body);
 			    attach_data(reason, strlen(reason), body);
 			}

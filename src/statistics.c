@@ -41,7 +41,7 @@ struct group	*group ;
 int		cbytes, bw;
 
     /* LOCK_CONFIG must be done, but this slow things down */
-    group = inet_to_group(&rq->client_sa.sin_addr);
+    group = rq_to_group(rq);
     if ( group ) {
 	bw = group->bandwidth;
 	cbytes = MID(bytes);
@@ -58,7 +58,7 @@ update_transfer_rate(struct request *rq, int size)
 struct group	*group ;
 
     /* LOCK_CONFIG must be done, but this slow things down */
-    group = inet_to_group(&rq->client_sa.sin_addr);
+    group = rq_to_group(rq);
     if ( group ) {
 	pthread_mutex_lock(&group->group_mutex);
 	group->cs0.bytes += size;

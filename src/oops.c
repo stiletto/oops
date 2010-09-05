@@ -259,6 +259,11 @@ int	format_storages = 0;
     global_sec_timer = time(NULL);
     bzero(&oops_stat, sizeof(oops_stat));
     pthread_mutex_init(&oops_stat.s_lock, NULL);
+    named_acls = NULL;
+    global_refresh_pattern = NULL;
+    charsets = NULL;
+    acl_allow = acl_deny = NULL;
+    stop_cache_acl = NULL;
 #ifdef	MODULES
     if ( !check_config_only )
 	load_modules();
@@ -290,6 +295,10 @@ run:
     http_port		= 3128;
     icp_port		= 3130;
     internal_http_port	= 3129;
+    if ( bind_addr ) {
+	free(bind_addr);
+	bind_addr = NULL;
+    }
     ns_configured	= 0;
     always_check_freshness  = FALSE;
     last_modified_factor = 10;
@@ -352,6 +361,27 @@ run:
     }
 
     if ( tcpports ) free_tcp_ports_in_use();
+
+    if ( named_acls ) {
+	free_named_acls(named_acls);
+	named_acls = NULL;
+    }
+    if ( global_refresh_pattern ) {
+	free_refresh_patterns(global_refresh_pattern);
+	global_refresh_pattern = NULL;
+    }
+    if ( acl_allow ) {
+	free_acl_access(acl_allow);
+	acl_allow = NULL;
+    }
+    if ( acl_deny ) {
+	free_acl_access(acl_deny);
+	acl_deny = NULL;
+    }
+    if ( stop_cache_acl ) {
+	free_acl_access(stop_cache_acl);
+	stop_cache_acl = NULL;
+    }
 
     /* go read config */
     if ( readconfig(configfile) ) exit(1);
@@ -503,10 +533,12 @@ struct	cidr_net	*nets, *next_net;
 	    free(nets);
 	    nets = next_net;
 	}
+	if ( groups->srcdomains ) free_dom_list(groups->srcdomains);
 	if ( groups->denytimes ) free_denytimes(groups->denytimes);
 	if ( groups->badports ) free(groups->badports);
-	if ( groups->auth_mods ) free_string_list(groups->auth_mods);
-	if ( groups->redir_mods ) free_string_list(groups->redir_mods);
+	if ( groups->auth_mods ) leave_l_string_list(groups->auth_mods);
+	if ( groups->redir_mods ) leave_l_string_list(groups->redir_mods);
+	if ( groups->networks_acl ) free_acl_access(groups->networks_acl);
 	free_acl(groups->http);
 	free_acl(groups->icp);
 	if ( groups->dstdomain_cache )

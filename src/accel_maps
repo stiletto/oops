@@ -1,0 +1,73 @@
+##
+#	Rewrite 'Host:' header
+#	Yes, by default
+##
+#	rewrite_host            yes
+
+##
+#	Use hash to speed-up maps lookup.
+#	Attention! Can change order of map lookup:
+#	acl and regex maps are checked after all usual maps.
+#	number in this directive is size of the hash-table.
+##
+#	use_host_hash		64
+
+##
+#	How long wait server answer, before mark it dead. (in sec.)
+##
+#	dead_timeout            20
+
+##
+#	How long bypass dead server
+##
+#	sleep_timeout           600
+
+
+##
+#	refresh_pattern		ACL		min lmfactor max
+##
+	refresh_pattern		WWWPACO		10 5% 2000
+##
+#  Maps
+##
+#  map_regex_charset	client-charset server-charset regex destination ...
+#	Map activates when request destination match regex
+#	This map will convert charset and headers for text/* documents
+##
+#	map_regex_charset	koi8-r windows-1251 koi\.paco\.net:8081/(.*) www-win.paco.odessa.ua/$1
+
+##
+#  map_charset		client-charset server-charset source destination ...
+#	Map activates when request destination match 'source' (not regex)
+#	This map will convert charset and headers for text/* documents
+##
+#	map_charset		koi8-r koi8-r stat.paco.net:8081 stat.paco.net
+
+##
+# map_regex
+#	Map activates when request destination match regex
+##
+#	map_regex		zipper\.paco\.net:8081/(.*) zipper.paco.odessa.ua/~igor/$1
+##
+#	map			source destination ...
+#	Map activates when request destination match 'source'
+##
+#	map			www.topping.com.ua:8081 ss5.paco.net:80 www.paco.net:8080
+
+##
+#	map_acl		ACL regex destination ...
+#	Map activates when request match ACL and regex.
+##
+#	map_acl			WINUSER http://www(.*) www-win$1 ss5.paco.net
+
+##
+#	default - if nothing matches
+##
+#	default			www.paco.net:80
+
+##
+#	rewrite_location	ACL	regex	dest
+#	If you need to rewrite 'Location:' header.
+#	When request match ACL, then 'Location' header will be rewritten
+##
+#	rewrite_location	REWRITEPORTS www(.*)ru:.* www$1.ru

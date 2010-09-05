@@ -1,4 +1,4 @@
-%a 7000
+%a 8000
 %o 15000
 %p 5000
 %n 1000
@@ -15,7 +15,7 @@ int	parser_errors;
 %}
 
 %s	groupst peerst
-%s	httpst icpst
+%s	httpst icpst aclst
 %s	storagest modulest modulebody
 
 nl	\n
@@ -103,6 +103,12 @@ line		[^\n]+
 {networks}	{
 		return(NETWORKS);
 		}
+<groupst>[Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]_[Aa][Cc][Ll] {
+		return(NETWORKS_ACL_T);
+		}
+<groupst>[Ss][Rr][Cc][Dd][Oo][Mm][Aa][Ii][Nn][Ss] {
+		return(SRCDOMAINS_T);
+		}
 <INITIAL>{logfile}	{
 		return(LOGFILE);
 		}
@@ -118,6 +124,9 @@ line		[^\n]+
 <INITIAL>{nameserver}	{
 		return(NAMESERVER);
 		}
+<INITIAL>[Bb][Ii][Nn][Dd] {
+		return(BIND_T);
+		}
 <INITIAL>{connect_from}	{
 		return(CONNECT_FROM);
 		}
@@ -132,6 +141,10 @@ line		[^\n]+
 		}
 <INITIAL>{expire_value}	{
 		return(EXPIRE_VALUE);
+		}
+<INITIAL>[Aa][Cc][Ll] {
+		BEGIN(aclst);
+		return(ACL_T);
 		}
 <INITIAL>[Ff][Tt][Pp]-[Ee][Xx][Pp][Ii][Rr][Ee]-[Vv][Aa][Ll][Uu][ee] {
 		return(FTP_EXPIRE_VALUE_T);
@@ -160,6 +173,9 @@ line		[^\n]+
 <INITIAL>[Aa][Ll][Ww][Aa][Yy][Ss]_[Cc][Hh][Ee][Cc][Kk]_[Ff][Rr][Ee][Ss][Hh][Nn][Ee][Ss][Ss] {
 		return(ALWAYS_CHECK_FRESHNESS_T);
 		}
+<INITIAL>[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-][Pp][Aa][Tt][Tt][Ee][Rr][Nn] {
+		return(REFRESH_PATTERN_T);
+		}
 <peerst>{parent} {
 		return(PEER_PARENT_T);
 		}
@@ -178,6 +194,10 @@ line		[^\n]+
 		}
 <INITIAL>{stop_cache}	{
 		return(STOP_CACHE);
+		}
+<INITIAL>[Ss][Tt][Oo][Pp]_[Cc][Aa][Cc][Hh][Ee]_[Aa][Cc][Ll] {
+		BEGIN(aclst);
+		return(STOP_CACHE_ACL_T);
 		}
 <INITIAL>{maxresident}	{
 		return(MAXRESIDENT);
@@ -221,6 +241,14 @@ line		[^\n]+
 <INITIAL>[Ll][Oo][Gg][Ss]_[Bb][Uu][Ff][Ff][Ee][Rr][Ee][Dd]	{
 		return(LOGS_BUFFERED_T);
 		}
+<INITIAL>[Aa][Cc][Ll]_[Dd][Ee][Nn][Yy] {
+		BEGIN(aclst);
+		return(ACL_DENY_T);
+		}
+<INITIAL>[Aa][Cc][Ll]_[Aa][Ll][Ll][Oo][Ww] {
+		BEGIN(aclst);
+		return(ACL_ALLOW_T);
+		}
 {number}	{
 		yylval.INT = atoi(yytext);
 		return(NUMBER);
@@ -246,15 +274,15 @@ line		[^\n]+
 \;		{
 		return(';');
 		}
-<peerst>\}	{
+<peerst>^[ \t]*\}[ \t]*	{
 		BEGIN(INITIAL);
 		return('}');
 		}
-<groupst>\}	{
+<groupst>^[ \t]*\}[ \t]*	{
 		BEGIN(INITIAL);
 		return('}');
 		}
-<modulebody>\}	{
+<modulebody>^[ \t]*\}[ \t]*	{
 		BEGIN(INITIAL);
 		return('}');
 		}
@@ -316,6 +344,16 @@ line		[^\n]+
 		}
 \,		{
 		return(',');
+		}
+<aclst>{line}	{
+		yylval.STRPTR=(char*)xmalloc(strlen(yytext)+1, "string");
+		strcpy(yylval.STRPTR, yytext);
+		return(STRING);
+		}
+<aclst>{nl}	{
+		atline++;
+		BEGIN(INITIAL);
+		return(L_EOS);
 		}
 {string}	{
 		yylval.STRPTR=(char*)xmalloc(strlen(yytext)+1, "string");

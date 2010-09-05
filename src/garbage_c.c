@@ -110,6 +110,30 @@ time_t			now;
 		    struct	url	*url = &obj->url;
 		    char		*url_str, time_buf[16];
 
+		    if ( TEST(obj->flags, ANSW_HDR_CHANGED) && obj->headers) {
+			/* headers can be changed because of redirect
+			   rewrite for example */
+			struct	av	*header;
+			struct	buff	*new_hdrs;
+
+			my_xlog(LOG_STOR, "Headers changed - put new headers\n");
+			header = obj->headers;
+			new_hdrs = alloc_buff(512);
+			if ( new_hdrs ) {
+			    while(header) {
+				attach_av_pair_to_buff(header->attr, header->val, new_hdrs);
+				header = header->next;
+			    }
+			    obj->insertion_point = new_hdrs->used-2;
+			    obj->tail_length = 4;
+			    attach_av_pair_to_buff("", "", new_hdrs);
+			    new_hdrs->next = obj->container->next;
+			    obj->size += new_hdrs->used - obj->container->used;
+			    obj->container->next = NULL;
+			    free_container(obj->container);
+			    obj->container = new_hdrs;
+			}
+		    }
 		    /* add my own headers */
 		    /* add obj->X-oops-times...*/
 		    if ( obj->request_time ) {
@@ -125,6 +149,11 @@ time_t			now;
 		    if ( obj->x_content_length ) {
 			sprintf(time_buf, "%d", obj->x_content_length);
 			insert_header("X-oops-internal-content-length:",
+					time_buf, obj);
+		    }
+		    if ( TEST(obj->flags, ANSW_EXPIRES_ALTERED) ) {
+			sprintf(time_buf, "%d", obj->times.expires);
+			insert_header("X-oops-internal-alt-expires:",
 					time_buf, obj);
 		    }
 		    blk = move_obj_to_storage(obj, &storage, &chain);

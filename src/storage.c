@@ -364,7 +364,7 @@ free_storage(struct storage_st *storage)
  * request n free blocks from the storage
  * if failed - return 0, nothing changed for storage
  * if succeed - return reference to start block of the allocated chain
- * Must be called for locked stoarge
+ * Must be called for locked storage
  */
 char*
 request_free_blks(struct storage_st * storage, uint32_t n)
@@ -703,7 +703,7 @@ r:  next_read = MIN(BLKSIZE, to_load);
 	goto err;
     if ( !(a.state & GOT_HDR) ) {
 	attach_data(answer, rc, obj->container);
-	if ( check_server_headers(&a, obj, b) )
+	if ( check_server_headers(&a, obj, b, NULL) )
 	    goto err;
         if ( a.state & GOT_HDR ) {
 	    obj->times 		= a.times;

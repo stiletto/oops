@@ -36,7 +36,6 @@ char	module_type   = MODULE_OUTPUT ;
 char	module_name[] = "lang" ;
 char	module_info[] = "National languages handling module" ;
 
-static	struct charset	*charsets;
 static	rwl_t		lang_config_lock;
 static	int		writet_cs(int, char *, int, struct charset*, int);
 static	char		default_charset[64];
@@ -82,7 +81,20 @@ mod_config_beg()
 int
 mod_config_end()
 {
+charset_t	*cs;
 
+    WRLOCK_LANG_CONFIG ;
+    if ( default_charset[0]
+      && (cs = add_new_charset(&charsets, default_charset)) ) {
+
+	cs->Table = malloc(128);
+	if ( cs->Table ) {
+	    int i;
+	    for(i=0;i<128;i++)
+		cs->Table[i] = i+128;
+	}
+    }
+    UNLOCK_LANG_CONFIG ;
 }
 
 int

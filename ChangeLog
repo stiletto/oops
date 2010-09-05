@@ -1,7 +1,17 @@
-06.11.99 - version 1.2d
+Version 1.2e
+	29.12.99 - more acls, groups using acls, stop_cache using acls
+		   load acls from file, host hash for accel.
+	13.12.99 - mod accel, acl, refresh_patterns
+		   two bugfixes
+	28.11.99 - oopsctl stop, rotate
+	04.11.99
+		switch to send(), recv in send_from_buff_no_wait, readt,
+			writet
+Version 1.2d
 	30.10.99
-		ftp - correct '~' handling.
-			Parent directory patch from doka@kiev.sovam.com
+		ftp:
+		    correct ~ processing, 'Parent Directory', other emprovements:
+			patch from doka@kiev.sovam.com
 	19.10.99 - 1.2d3
 		module vary
 	14.10.99

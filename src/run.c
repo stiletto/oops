@@ -96,6 +96,9 @@ struct	pollarg		*pollarg;
 	my_log("http_listen on descriptor %d\n", server_so);
     }
     /* bind */
+    bzero(&Me, sizeof(Me));
+    if ( bind_addr )
+	str_to_sa(bind_addr, (struct sockaddr*)&Me);
     Me.sin_port = htons(http_port);
     setsockopt(server_so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
     if ( bind(server_so, (struct sockaddr*)&Me, sizeof(Me)) == -1 ) {
@@ -124,6 +127,9 @@ struct	pollarg		*pollarg;
     } else {
 	my_log("icp_listen  on descriptor %d\n", icp_so);
     }
+    bzero(&Me, sizeof(Me));
+    if ( bind_addr )
+	str_to_sa(bind_addr, (struct sockaddr*)&Me);
     Me.sin_port = htons(icp_port);
     if ( bind(icp_so, (struct sockaddr*)&Me, sizeof(Me)) == -1 ) {
 	my_log("Can't bind icp: %s\n", strerror(errno));

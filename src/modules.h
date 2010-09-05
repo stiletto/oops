@@ -1,9 +1,10 @@
 #define	MOD_CODE_OK	0
 #define	MOD_CODE_ERR	1
 
-#define	MOD_AFLAG_OK	1	/* can continue with next module	*/
-#define	MOD_AFLAG_BRK	2	/* do not continue with next module	*/
-#define	MOD_AFLAG_OUT	4	/* module did some output		*/
+#define	MOD_AFLAG_OK	1	/* can continue with next module		*/
+#define	MOD_AFLAG_BRK	2	/* do not continue with next module		*/
+#define	MOD_AFLAG_OUT	4	/* module did some output			*/
+#define	MOD_AFLAG_CKACC	8	/* check access after rewrite url modiles	*/
 
 #define	MODULE_LOG	1
 #define	MODULE_ERR	2
@@ -12,12 +13,15 @@
 #define	MODULE_REDIR	5
 #define	MODULE_LISTENER	6
 #define	MODULE_HEADERS	7
+#define	MODULE_PRE_BODY	8
 
 #define	MODNAMELEN	16
+#define	MODINFOLEN	80
 
 #define	MOD_NEXT(m)		(m->general.next)
 #define	MOD_HANDLE(m)		(m->general.handle)
 #define	MOD_NAME(m)		(m->general.name)
+#define	MOD_INFO(m)		(m->general.info)
 #define	MOD_LOAD(m)		(m->general.load)
 #define	MOD_UNLOAD(m)		(m->general.unload)
 #define	MOD_CONFIG(m)		(m->general.config)
@@ -39,6 +43,7 @@ struct	general_module {
 	int			(*config)(char*);
 	struct general_module	*next_global;
 	int			type;
+	char			info[MODINFOLEN];
 };
 
 struct	log_module {
@@ -58,6 +63,8 @@ struct	auth_module {
 struct	redir_module {
 	struct	general_module	general;
 	int	(*redir)(int, struct group*, struct request*, int*);
+	int	(*redir_connect)(int*, struct request*, int*);
+	int	(*redir_rewrite_header)(char **, struct request*, int*);
 };
 
 struct	output_module {
@@ -74,6 +81,11 @@ struct	listener_module {
 struct	headers_module {
 	struct	general_module	general;
 	int	(*match_headers)(struct mem_obj *, struct request *, int*);
+};
+
+struct	pre_body_module {
+	struct	general_module	general;
+	int	(*pre_body)(int, struct mem_obj *, struct request *, int*);
 };
 
 struct	general_module	*module_by_name(char*);

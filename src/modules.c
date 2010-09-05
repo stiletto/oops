@@ -43,6 +43,7 @@ struct	output_module		*output_first = NULL;
 struct	redir_module		*redir_first = NULL;
 struct	listener_module		*listener_first = NULL;
 struct	headers_module		*headers_first = NULL;
+struct	pre_body_module		*pre_body_first = NULL;
 
 struct	output_module		*lang_mod = NULL;
 
@@ -94,6 +95,12 @@ struct general_module	*res;
 	    return(res);
 	res = res->next;
     }
+    res = (struct general_module*)pre_body_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return(res);
+	res = res->next;
+    }
     return(res);
 }
 
@@ -128,7 +135,10 @@ check_auth(int so, struct request *rq, struct group *group, int *flag)
 {
 int			rc = MOD_CODE_OK;
 struct	auth_module	*module;
-struct	string_list	*mod_list = group->auth_mods;
+struct	l_string_list	*gr_mods = group->auth_mods;
+struct	string_list	*mod_list = NULL;
+
+    if ( gr_mods ) mod_list = gr_mods->list;
 
     while( mod_list && (rc == MOD_CODE_OK) ) {
 	module = NULL;
@@ -146,8 +156,11 @@ check_redirect(int so, struct request *rq, struct group *group, int *flag)
 {
 int			rc = MOD_CODE_OK;
 struct	redir_module	*module;
-struct	string_list	*mod_list = group->redir_mods;
+struct	l_string_list	*gr_mods = group->redir_mods;
+struct	string_list	*mod_list = NULL;
 
+    if ( gr_mods ) mod_list = gr_mods->list;
+     
     if ( flag ) *flag = 0;
     while( mod_list && (rc == MOD_CODE_OK) ) {
 	module = NULL;
@@ -163,15 +176,81 @@ struct	string_list	*mod_list = group->redir_mods;
 }
 
 int
+check_redir_connect(int *so, struct request *rq, int *flag)
+{
+int			rc = MOD_CODE_OK;
+struct	redir_module	*module;
+struct	l_string_list	*gr_mods = rq->redir_mods;
+struct	string_list	*mod_list = NULL;
+
+    if ( gr_mods ) mod_list = gr_mods->list;
+     
+    if ( !so ) return(rc);
+    if ( flag ) *flag = 0;
+    *so = -1;
+    while( mod_list && (rc == MOD_CODE_OK) && (*so == -1) ) {
+	module = NULL;
+	if ( mod_list->string ) module = redir_module_by_name(mod_list->string);
+	if ( module && module->redir_connect ) {
+	    rc = module->redir_connect(so, rq, flag);
+	}
+	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
+	    return(MOD_CODE_ERR);
+	mod_list = mod_list->next;
+    }
+    return(rc);
+}
+
+int
+do_redir_rewrite_header(char **hdr, struct request *rq, int *flag)
+{
+int			rc = MOD_CODE_OK;
+struct	redir_module	*module;
+struct	l_string_list	*gr_mods;
+struct	string_list	*mod_list = NULL;
+
+    if ( !rq ) return(rc);
+    if ( flag ) *flag = 0;
+    gr_mods = rq->redir_mods;
+    if ( gr_mods ) mod_list = gr_mods->list;
+
+    while( mod_list && (rc == MOD_CODE_OK) ) {
+	module = NULL;
+	if ( mod_list->string ) module = redir_module_by_name(mod_list->string);
+	if ( module && module->redir_rewrite_header ) {
+	    rc = module->redir_rewrite_header(hdr, rq, flag);
+	}
+	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
+	    return(MOD_CODE_ERR);
+	mod_list = mod_list->next;
+    }
+    return(rc);
+}
+
+int
 check_headers_match(struct mem_obj *obj, struct request *rq, int *flags)
 {
 int			rc = MOD_CODE_OK;
 struct headers_module	*mod = headers_first;
 
-    if ( *flags ) flags = 0;
+    if ( flags ) *flags = 0;
     while ( mod && (rc == MOD_CODE_OK) ) {
 	if ( mod->match_headers ) rc = mod->match_headers(obj, rq, flags);
 	mod = (struct headers_module*) mod->general.next;
+    }
+    return(rc);
+}
+
+int
+pre_body(int so, struct mem_obj *obj, struct request *rq, int *flags)
+{
+int			rc = MOD_CODE_OK;
+struct pre_body_module	*mod = pre_body_first;
+
+    if ( flags ) *flags = 0;
+    while ( mod && (rc == MOD_CODE_OK) ) {
+	if ( mod->pre_body ) rc = mod->pre_body(so, obj, rq, flags);
+	mod = (struct pre_body_module*) mod->general.next;
     }
     return(rc);
 }
@@ -193,6 +272,7 @@ struct	redir_module	*redir_module;
 struct	output_module	*output_module;
 struct	listener_module	*listener_module;
 struct	headers_module	*headers_module;
+struct	pre_body_module	*pre_body_module;
 
 char			*nptr;
 
@@ -238,6 +318,10 @@ load_mods:
 		*MOD_NAME(log_module) = 0;
 		if ( nptr )
 		    strncpy(MOD_NAME(log_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(log_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(log_module)[0] = 0;
 		if ( log_module->general.load )
 			(*log_module->general.load)();
 		log_module->general.type = MODULE_LOG;
@@ -262,6 +346,10 @@ load_mods:
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(err_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(err_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(err_module)[0] = 0;
 
 		err_module->err	   = (mod_load_t*)dlsym(modh, "err");
 		if ( MOD_LOAD(err_module) )
@@ -288,6 +376,10 @@ load_mods:
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(auth_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(auth_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(auth_module)[0] = 0;
 
 		auth_module->auth = (mod_load_t*)dlsym(modh, "auth");
 		if ( MOD_LOAD(auth_module) )
@@ -314,8 +406,14 @@ load_mods:
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(redir_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(redir_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(redir_module)[0] = 0;
 
 		redir_module->redir = (mod_load_t*)dlsym(modh, "redir");
+		redir_module->redir_connect = (mod_load_t*)dlsym(modh, "redir_connect");
+		redir_module->redir_rewrite_header = (mod_load_t*)dlsym(modh, "redir_rewrite_header");
 		if ( MOD_LOAD(redir_module) )
 			(*MOD_LOAD(redir_module))();
 		redir_module->general.type = MODULE_REDIR;
@@ -346,6 +444,10 @@ load_mods:
 		    (mod_load_t*)dlsym(modh, "compare_u_agents");
 		if ( MOD_LOAD(output_module) )
 			(*MOD_LOAD(output_module))();
+		if ( mod_info )
+		    strncpy(MOD_INFO(output_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(output_module)[0] = 0;
 		output_module->general.type = MODULE_OUTPUT;
 		insert_module((struct general_module*)output_module,
 			      (struct general_module**)&output_first);
@@ -368,6 +470,10 @@ load_mods:
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(listener_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(listener_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(listener_module)[0] = 0;
 
 		listener_module->process_call = (mod_load_t*)dlsym(modh, "process_call");
 		if ( MOD_LOAD(listener_module) )
@@ -394,13 +500,46 @@ load_mods:
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(headers_module), nptr, MODNAMELEN-1);
-
+		if ( mod_info )
+		    strncpy(MOD_INFO(headers_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(headers_module)[0] = 0;
 		headers_module->match_headers = (mod_load_t*)dlsym(modh, "match_headers");
 		if ( MOD_LOAD(headers_module) )
 			(*MOD_LOAD(headers_module))();
 		headers_module->general.type = MODULE_HEADERS;
 		insert_module((struct general_module*)headers_module,
 			      (struct general_module**)&headers_first);
+		break;
+	      case MODULE_PRE_BODY:
+		printf("(Pre-body)\n");
+		/* allocate module structure */
+		pre_body_module = (struct pre_body_module*)xmalloc(sizeof(*pre_body_module), "");
+		if ( !pre_body_module ) {
+		    dlclose(modh);
+		}
+		bzero(pre_body_module, sizeof(*pre_body_module));
+		MOD_HANDLE(pre_body_module) = modh;
+		MOD_LOAD(pre_body_module)   = (mod_load_t*)dlsym(modh, "mod_load");
+		MOD_UNLOAD(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_unload");
+		MOD_CONFIG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config");
+		MOD_CONFIG_BEG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
+		MOD_CONFIG_END(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		*MOD_NAME(pre_body_module) = 0;
+		nptr = (char*)dlsym(modh, "module_name");
+		if ( nptr )
+		    strncpy(MOD_NAME(pre_body_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(pre_body_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(pre_body_module)[0] = 0;
+
+		pre_body_module->pre_body = (mod_load_t*)dlsym(modh, "pre_body");
+		if ( MOD_LOAD(pre_body_module) )
+			(*MOD_LOAD(pre_body_module))();
+		pre_body_module->general.type = MODULE_PRE_BODY;
+		insert_module((struct general_module*)pre_body_module,
+			      (struct general_module**)&pre_body_first);
 		break;
 	      default:
 		printf(" (Unknown module type. Unload it)\n");
@@ -457,13 +596,17 @@ int		      rc = MOD_CODE_OK;
     return(rc);
 }
 
+/* can be in the form aaa.bbb.ccc.ddd:port
+   or port
+*/
 int
-parse_myports(char *string, u_short *ports, int number)
+parse_myports(char *string, myport_t *ports, int number)
 {
-char	buf[10], *p, *d;
-u_short	port, *pptr=ports;
-int	nres=0, rc, one=-1, so;
-struct	sockaddr_in	sin_addr;
+char		buf[20], *p, *d, *t;
+u_short		port;
+myport_t	*pptr=ports;
+int		nres=0, rc, one=-1, so;
+struct		sockaddr_in	sin_addr;
 
     if ( !ports || !string ) return(0);
     while( string && *string && (nres < number) ) {
@@ -471,28 +614,41 @@ struct	sockaddr_in	sin_addr;
 	if ( !*string ) break;
 	p = string;
 	d = buf;
-	while ( *p && isdigit(*p) ) {
+	while ( *p && !isspace(*p) ) {
 	    *d++ = *p++;
 	}
 	*d = 0;
-	port = atoi(buf);
+	if ( ( t = strchr(buf, ':') ) ) {
+	    *t = 0;
+	    port = atoi(t+1);
+	    bzero(&sin_addr, sizeof(sin_addr));
+	    str_to_sa(buf, (struct sockaddr*)&sin_addr);
+	} else {
+	    port = atoi(buf);
+	    bzero(&sin_addr, sizeof(sin_addr));
+	}
 	if ( port == http_port ) {
 	    nres++;
-	    *pptr++ = port;
+	    bzero(pptr, sizeof(*pptr));
+	    pptr->port = port;
+	    pptr++;
 	} else
 	if ( tcp_port_in_use(port) ) {
 	    nres++;
-	    *pptr++ = port;
+	    bzero(pptr, sizeof(*pptr));
+	    pptr->port = port;
+	    pptr++;
 	} else
 	if ( port && (so = socket(AF_INET, SOCK_STREAM, 0)) >= 0 ) {
 	    setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
-	    bzero(&sin_addr, sizeof(sin_addr));
 	    sin_addr.sin_family = AF_INET;
 	    sin_addr.sin_port   = htons(port);
 	    rc = bind(so, (struct sockaddr*)&sin_addr, sizeof(sin_addr));
 	    if ( rc >=0 ) {
 		nres++;
-		*pptr++ = port;
+		pptr->port = port;
+		pptr->in_addr = sin_addr.sin_addr;
+		pptr++;
 		add_socket_to_listen_list(so, 0, NULL);
 		add_to_tcp_port_in_use(port);
 		listen(so, 128);

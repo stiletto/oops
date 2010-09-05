@@ -69,17 +69,11 @@ readt(int so, char* buf, int len, int tmo)
 {
 int		to_read = len, sr, readed = 0, got;
 char		*p = buf;
-fd_set		fdr;
 struct	pollarg	pollarg;
-struct	timeval tv;
 
 	if ( so < 0 ) return(0);
 	if ( len <= 0 ) return(0);
 
-	FD_ZERO(&fdr);
-	FD_SET(so, &fdr);
-	tv.tv_sec  = tmo;
-	tv.tv_usec = 0;
 	pollarg.fd = so;
 	pollarg.request = FD_POLL_RD;
 	sr = poll_descriptors(1, &pollarg, tmo*1000);
@@ -92,24 +86,20 @@ struct	timeval tv;
 		return(-2);
 	}
 	/* have somethng to read	*/
-	got = read(so, p, to_read);
+	got = recv(so, p, to_read, 0);
 	return(got);
 }
 
 int
 wait_for_read(int so, int tmo_m)
 {
-fd_set		fdr;
 struct	timeval tv;
 int		sr;
 struct	pollarg	pollarg;
 
 	if ( so < 0 ) return(FALSE);
-	FD_ZERO(&fdr);
-	FD_SET(so, &fdr);
 	tv.tv_sec  =  tmo_m/1000;
 	tv.tv_usec = (tmo_m*1000)%1000000;
-/*	sr = select(so+1, &fdr, NULL, NULL, &tv);*/
 	pollarg.fd = so;
 	pollarg.request = FD_POLL_RD;
 	sr = poll_descriptors(1, &pollarg, tmo_m);
@@ -140,7 +130,7 @@ sendstr(int so, char * str)
 {
 
     if ( so < 0 ) return(0);
-    return(writen(so, str, strlen(str)));
+    return(writet(so, str, strlen(str), READ_ANSW_TIMEOUT));
 }
 
 int
@@ -148,7 +138,6 @@ writet(int so, char* buf, int len, int tmo)
 {
 int		to_write = len, sr, got, sent=0;
 char		*p = buf;
-fd_set		fdw;
 struct	timeval tv;
 time_t		start, now;
 struct pollarg	pollarg;
@@ -160,8 +149,6 @@ struct pollarg	pollarg;
     while(to_write > 0) {
 	if ( now - start > tmo )
 		return(-1);
-	FD_ZERO(&fdw);
-	FD_SET(so, &fdw);
 	tv.tv_sec  = tmo - (start-now);
 	tv.tv_usec = 0;
 	pollarg.fd = so;
@@ -175,7 +162,7 @@ struct pollarg	pollarg;
 	   return(-1);
 	}
 	/* have somethng to write	*/
-	got = write(so, p, to_write);
+	got = send(so, p, to_write, 0);
 	if ( got > 0 ) {
 	    to_write -= got;
 	    sent += got;
@@ -188,6 +175,95 @@ struct pollarg	pollarg;
 	}
 	return(got);
     }
+    return(0);
+}
+
+int
+writet_cv_cs(int so, char* buf, int len, int tmo, char *table, int escapes)
+{
+int		to_write = len, sr, got, sent=0;
+char		*p, *recoded = NULL, *d;
+struct	timeval tv;
+time_t		start, now;
+struct pollarg	pollarg;
+u_char		*s;
+
+    if ( so < 0 ) return(-1);
+    if ( len <= 0 ) return(0);
+    recoded = malloc(len);
+    if ( !recoded )
+	return(-1);
+    s = (u_char*)buf; d = recoded;
+    while ( (s-(u_char*)buf) < len ) {
+	u_char	c, cd;
+	if ( escapes && (*s == '%' && isxdigit(*(s+1)) && isxdigit(*(s+2))) ) {
+	    if ( isdigit(*(s+1)) ) {
+		c = 16 * (*(s+1)-'0');
+	    } else
+		c = 16 * (toupper(*(s+1)) - 'A' + 10 );
+	    if ( isdigit(*(s+2)) ) {
+		c += (*(s+2)-'0');
+	    } else
+		c += (toupper(*(s+2)) - 'A' + 10 );
+	    if ( c >= 128 ) {
+		cd = table[c-128];
+		s += 3;
+		*d = '%';
+		sprintf(d, "%%%02X", cd);
+		d+=3;
+	    } else {
+		s += 3;
+		*d = '%';
+		sprintf(d, "%%%02X", c);
+		d+=3;
+	    }
+	    continue;
+	}
+	if ( *s > 128 )
+	    *d = table[(*s)-128];
+	  else
+	    *d = *s;
+	s++;d++;
+    }
+    p = recoded;
+    now = start = global_sec_timer;
+
+    while(to_write > 0) {
+	if ( now - start > tmo ) {
+	    free(recoded);
+	    return(-1);
+	}
+	tv.tv_sec  = tmo - (start-now);
+	tv.tv_usec = 0;
+	pollarg.fd = so;
+	pollarg.request = FD_POLL_WR;
+	sr = poll_descriptors(1, &pollarg, (tmo - (start-now))*1000);
+	if ( sr < 0 ) {
+	    free(recoded);
+	    return(sr);
+	}
+	if ( sr == 0 ) {
+	   /* timeot */
+	    free(recoded);
+	    return(-1);
+	}
+	/* have somethng to write	*/
+	got = send(so, p, to_write, 0);
+	if ( got > 0 ) {
+	    to_write -= got;
+	    sent += got;
+	    if ( to_write>0 ) {
+	        p += got;
+	        now = global_sec_timer;
+	        continue;
+	    }
+	    free(recoded);
+	    return(sent);
+	}
+	free(recoded);
+	return(got);
+    }
+    free(recoded);
     return(0);
 }
 

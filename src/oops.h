@@ -1,4 +1,4 @@
-#include <assert.h>
+#include "gnu_regex.h"
 #include "config.h"
 #include "llt.h"
 #include "hash.h"
@@ -86,7 +86,7 @@ typedef	unsigned	uint32_t;
     {\
 	int	r;\
 	struct  timeval tv;\
-	r = group_traffic_load(inet_to_group(&rq->client_sa.sin_addr));\
+	r = group_traffic_load(rq_to_group(rq));\
 	tv.tv_sec = 0;tv.tv_usec = 0;\
 	if ( r >= 85 ) {\
 	    if ( r < 95 ) /* start to slow down */\
@@ -138,6 +138,7 @@ typedef	unsigned	uint32_t;
 #define	METH_MOVE	11
 #define	METH_LOCK	12
 #define	METH_UNLOCK	13
+#define	METH_PURGE	14
 
 #define	AND_PUT		1
 #define	AND_USE		2
@@ -159,6 +160,8 @@ typedef	unsigned	uint32_t;
 #define	ANSW_LAST_MODIFIED	(1<<8)
 #define	ANSW_SHORT_CONTAINER	(1<<9)
 #define	ANSW_KEEP_ALIVE		(1<<10)
+#define	ANSW_HDR_CHANGED	(1<<11)	/* if some server headers was changed		*/
+#define	ANSW_EXPIRES_ALTERED	(1<<12)	/* if expires was altered because of refr_patt	*/
 
 #define	STATUS_OK		200
 #define	STATUS_NOT_MODIFIED	304
@@ -186,7 +189,7 @@ typedef	unsigned	uint32_t;
 
 #define	ACCESS_DOMAIN		1
 #define ACCESS_PORT		2
-
+#define	ACCESS_METHOD		3
 
 #define	MEM_OBJ_MUST_REVALIDATE	1
 #define	MEM_OBJ_WARNING_110	2
@@ -216,6 +219,7 @@ typedef	unsigned	uint32_t;
 #define	ERR_INTERNAL		5
 #define	ERR_ACC_DENIED		6
 #define	ERR_TRANSFER		7
+#define	ERR_ACL_DENIED		8
 
 #define	LOG_STOR		1
 #define	LOG_FTP			2
@@ -265,29 +269,48 @@ struct	buff {
 	char		*data;
 };
 
+struct	refresh_pattern	{
+	struct  refresh_pattern	*next;	/* if we link them in list	*/
+				int	min;
+				int	lmt;
+				int	max;
+				int	named_acl_index;
+				int	valid;
+};
+typedef	struct  refresh_pattern refresh_pattern_t;
+
 #define	PROTO_HTTP	0
 #define	PROTO_FTP	1
 #define	PROTO_OTHER	2
 struct	request {
-	struct		sockaddr_in client_sa;
-	struct		sockaddr_in my_sa;
-	time_t		request_time;	/* time of request creation	*/
-	int		state;
-	int		http_major;
-	int		http_minor;
-	int		meth;
-	struct	url	url;
-	char		proto;
-	int		headers_off;
-	int		flags;
-	int		content_length;
-	int		leave_to_read;
-	time_t		if_modified_since;
-	int		max_age;
-	int		max_stale;
-	int		min_fresh;
-	struct	av	*av_pairs;
-	struct	buff	*data;		/* for POST */
+	struct			sockaddr_in client_sa;
+	struct			sockaddr_in my_sa;
+	time_t			request_time;	/* time of request creation	*/
+	int			state;
+	int			http_major;
+	int			http_minor;
+	int			meth;
+	char			*method;
+	struct	url		url;
+	char			proto;
+	int			headers_off;
+	int			flags;
+	int			content_length;
+	int			leave_to_read;
+	time_t			if_modified_since;
+	int			max_age;
+	int			max_stale;
+	int			min_fresh;
+	struct	av		*av_pairs;
+	struct	buff		*data;		/* for POST				*/
+	struct	l_string_list	*redir_mods;	/* redir modules			*/
+	refresh_pattern_t	refresh_pattern;/* result of refresh_pattern		*/
+	char			*original_host;	/* original value of Host: if redir-ed	*/
+	char			src_charset[16];
+	char			dst_charset[16];
+	struct	l_string_list	*cs_to_server_table;
+	struct	l_string_list	*cs_to_client_table;
+	char			*matched_acl;
 };
 
 struct	av {
@@ -300,6 +323,11 @@ struct	tcpport	{
 	u_short		port;
 	struct  tcpport *next;
 };
+
+typedef struct	myport_ {
+	u_short		port;
+	struct	in_addr	in_addr;
+} myport_t;
 
 struct	superb {
 	uint32_t		magic;		/* to detect that this is storage	*/
@@ -448,6 +476,14 @@ struct	string_list	{
 	char				*string;
 	struct	string_list		*next;
 };
+typedef	struct string_list	string_list_t;
+
+struct	l_string_list	{
+	struct	string_list		*list;
+	int				refs;
+	pthread_mutex_t			lock;
+};
+typedef	struct	l_string_list l_string_list_t;
 
 struct	domain_list	{
 	char				*domain;
@@ -465,6 +501,8 @@ struct	group_ops_struct {
 #define	OP_AUTH_MODS	7
 #define	OP_REDIR_MODS	8
 #define	OP_DENYTIME	9
+#define	OP_SRCDOMAINS	10
+#define	OP_NETWORKS_ACL	11
 	int				op;
 	void				*val;
 	struct	group_ops_struct	*next;
@@ -484,6 +522,59 @@ struct	range {
 struct	badports {
 	struct	range	ranges[MAXBADPORTS];
 };
+
+struct	urlregex_acl_data {
+	char	*regex;
+	regex_t	preg;
+};
+struct	urlpath_acl_data {
+	char	*regex;
+	regex_t	preg;
+};
+struct	acl_ip_data {
+	int			num;
+	struct	cidr_net	**sorted;
+	struct	cidr_net	*unsorted;
+};
+
+
+#define	MAXACLNAMELEN		32
+#define	ACL_URLREGEX		1
+#define	ACL_PATHREGEX		2
+#define	ACL_URLREGEXI		3
+#define	ACL_PATHREGEXI		4
+#define	ACL_USERCHARSET		5
+#define	ACL_SRC_IP		6
+#define	ACL_METHOD		7
+#define	ACL_PORT		8
+#define	ACL_DSTDOM		9
+#define	ACL_DSTDOMREGEX		10
+#define	ACL_SRCDOM		11
+#define	ACL_SRCDOMREGEX		12
+
+struct	named_acl {
+	struct	named_acl	*next;
+	char			name[MAXACLNAMELEN];
+	char			type;
+	int			internal_number;
+	void			*data;
+};
+typedef	struct	named_acl	named_acl_t;
+
+typedef struct	acl_chk_list_ {
+	struct  acl_chk_list_ 	*next;
+	named_acl_t		*acl;
+	int			sign;
+} acl_chk_list_t;
+
+typedef struct	acl_chk_list_hdr_ {
+	struct  acl_chk_list_		*next;
+	named_acl_t			*acl;
+	int				sign;
+	struct  acl_chk_list_hdr_	*next_list;
+	char				*aclbody;
+} acl_chk_list_hdr_t;
+
 
 struct	acl {
 #define	ACL_DOMAINDST		1
@@ -513,13 +604,14 @@ struct  dstdomain_cache_entry {
 struct	group	{
 	char			*name;
 	struct	cidr_net	*nets;
+	struct	domain_list	*srcdomains;
 	struct	acls		*http;
 	struct	acls		*icp;
 	struct	badports	*badports;
 	int			bandwidth;
 	int			miss_deny;		/* TRUE if deny	*/
-	struct	string_list	*auth_mods;		/* auth modules */
-	struct	string_list	*redir_mods;		/* redir modules */
+	struct	l_string_list	*auth_mods;		/* auth modules */
+	struct	l_string_list	*redir_mods;		/* redir modules */
 	pthread_mutex_t		group_mutex;
 	struct	group_stat	cs0;			/* current	*/
 	struct	group_stat	cs1;			/* prev second	*/
@@ -528,6 +620,7 @@ struct	group	{
 	struct  group		*next;
 	struct	denytime	*denytimes;
 	hash_t			*dstdomain_cache;	/* cashe for dstdom checks */
+	acl_chk_list_hdr_t	*networks_acl;
 };
 
 struct	domain {
@@ -607,9 +700,14 @@ struct  charset {
 	struct  charset		*next;
 	char			*Name;
 	struct  string_list	*CharsetAgent;
-	char			*Table;
+	u_char			*Table;
 };
+typedef	struct charset charset_t;
 
+typedef	struct	u_charset {
+	char		name[16];
+	charset_t	*cs;
+} u_charset_t;
 #define	WORK_NORMAL	1
 #define	WORK_MODULE	2
 typedef	struct	work {
@@ -685,6 +783,7 @@ int		parent_port;
 int		always_check_freshness;
 int		force_http11;
 int		force_completion;
+refresh_pattern_t	*global_refresh_pattern;
 
 struct	domain_list 	*local_domains;
 struct	cidr_net	*local_networks;
@@ -695,6 +794,7 @@ struct	sockaddr_in	ns_sa[MAXNS];
 int			ns_configured;
 u_short 	http_port;
 u_short		icp_port;
+char		*bind_addr;
 struct		string_list	*stop_cache;
 struct		storage_st	*storages, *next_alloc_storage;
 void		*startup_sbrk;
@@ -755,7 +855,11 @@ char		domain_name[MAXHOSTNAMELEN+1];
 char		host_name[MAXHOSTNAMELEN+1];
 int             insert_via;
 int             insert_x_forwarded_for;
-
+named_acl_t	*named_acls;
+struct charset	*charsets;
+acl_chk_list_hdr_t	*acl_allow;
+acl_chk_list_hdr_t	*acl_deny;
+acl_chk_list_hdr_t	*stop_cache_acl;
 
 void		do_exit(int);
 void		run();
@@ -790,7 +894,7 @@ int		attach_data(char*, int, struct buff*);
 char		*htmlize(char*);
 char		*dehtmlize(char*);
 char		*html_escaping(char*);
-int		check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b);
+int		check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b, struct request *);
 int		store_in_chain(char *src, int size, struct mem_obj *obj);
 void		free_chain(struct buff *);
 void		free_avlist(struct av *);
@@ -804,6 +908,7 @@ void		fill_mem_obj(int, struct request *, char *, struct mem_obj*, int sso, int 
 struct	cidr_net **sort_n(struct cidr_net*, int*);
 int		writen(int, char*, int);
 int		writet(int, char*, int, int);
+int		writet_cv_cs(int, char*, int, int, char *, int);
 int		tm_to_time(struct tm *, time_t*);
 int		tm_cmp(struct tm*, struct tm*);
 void		send_error(int, int, char*);
@@ -813,7 +918,7 @@ int		is_attr(struct av*, char*);
 int		send_av_pair(int, char*, char*);
 void		increase_hash_size(struct obj_hash_entry*, int);
 void		decrease_hash_size(struct obj_hash_entry*, int);
-struct	group*	inet_to_group(struct in_addr*);
+struct	group*	rq_to_group(struct request*);
 int		deny_http_access(int, struct request *);
 void		rwl_init(rwl_t*);
 void		rwl_destroy(rwl_t*);
@@ -843,7 +948,6 @@ char		*request_free_blks(struct storage_st*, uint32_t);
 int		release_blks(uint32_t n, struct storage_st *storage, struct disk_ref*);
 int		flush_super(struct storage_st *);
 int		flush_map(struct storage_st *);
-char		*my_inet_ntoa(struct sockaddr_in *);
 int		set_socket_options(int);
 char		*my_inet_ntoa(struct sockaddr_in*);
 void		send_ssl(int, struct request*);
@@ -859,6 +963,7 @@ void		free_string_list(struct string_list*);
 struct search_list *add_to_search_list(struct search_list **, char *, int);
 void		free_search_list(struct search_list*);
 void		free_dns_hash_entry(struct dns_cache*);
+struct	av	*lookup_av_by_attr(struct av*, char*);
 char		*attr_value(struct av*, char*);
 char		*lookup_mime_type(char*);
 char		*build_parent_request(char*, struct url*, char *, struct request *, int);
@@ -881,7 +986,7 @@ int		poll_descriptors_S(int, struct pollarg*, int);
 int		add_socket_to_listen_list(int, int, void* (*f)(void*));
 char		daybit(char*);
 int		denytime_check(struct denytime*);
-int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int, struct mem_obj*);
+int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int, struct mem_obj*, char*);
 void		update_transfer_rate(struct request*, int size);
 int		group_traffic_load(struct group *group);
 char		*format_av_pair(char*, char*);
@@ -891,9 +996,25 @@ void		free_tcp_ports_in_use(void);
 void		flush_mem_cache(int);
 void		init_domain_name();
 char		*fetch_internal_rq_header(struct mem_obj*,char*);
+l_string_list_t *lock_l_string_list(struct l_string_list*);
+l_string_list_t *alloc_l_string_list();
+void		leave_string_list(struct l_string_list*);
+int		parse_named_acl_data(named_acl_t*, char*);
+void		free_named_acl(named_acl_t *);
+char		named_acl_type_by_name(char*);
+void		free_named_acls(named_acl_t *);
+int		acl_index_by_name(char*);
+named_acl_t*	acl_by_name(char*);
+void		set_refresh_pattern(struct request *, refresh_pattern_t*);
+void		free_refresh_patterns(refresh_pattern_t*);
+void		free_acl_list(acl_chk_list_t*);
+void		free_acl_access(acl_chk_list_hdr_t*);
+void		parse_acl_access(acl_chk_list_hdr_t**, char*);
+int		check_acl_access(acl_chk_list_hdr_t*, struct request*);
 #ifdef		MODULES
 int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
 int	check_redirect(int so, struct request *rq, struct group *group, int *flag);
 int	check_auth(int so, struct request *rq, struct group *group, int *flag);
 int	check_headers_match(struct mem_obj*, struct request *, int*);
+int	do_redir_rewrite_header(char **, struct request *, int*);
 #endif

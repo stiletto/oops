@@ -40,6 +40,7 @@ int	free_charset(struct charset *charsets);
 
 int	readt(int, char*, int, int);
 int	my_gethostbyname(char *name);
+char	my_gethostbyaddr(int);
 void	get_hash_stamp(char*, int*, int*);
 
 void    CTIME_R(time_t *a, char *b) {
@@ -192,10 +193,21 @@ do_exit(int code)
    exit(code);
 }
 
+char*
+sa_to_str(struct sockaddr_in *sa)
+{
+    if ( ns_configured > 0 ) {
+
+    } else {
+#if	HAVE_GETHOSTBYNAME_R==1
+#endif
+    }
+    return(my_inet_ntoa(sa));
+}
+
 int
 str_to_sa(char *val, struct sockaddr *sa)
 {
-/*	if ( inet_aton(val, &(((struct sockaddr_in*)sa)->sin_addr)) ) {*/
 	if ( (((struct sockaddr_in*)sa)->sin_addr.s_addr = inet_addr(val)) != -1 ) {
 		/* it is */
 		struct	sockaddr_in *sin = (struct sockaddr_in*)sa;
@@ -300,7 +312,24 @@ char	*t=NULL, tmpname[MAXHOSTNAMELEN+1];
     domain_name[0] = 0;
 }
 
-u_short	q_id = 0;
+static u_short	q_id = 0;
+char
+my_gethostbyaddr(int addr)
+{
+struct	dnsqh {
+	u_short		id:16;
+	u_short		flags:16;
+	u_short		qdcount:16;
+	u_short		ancount:16;
+	u_short		nscount:16;
+	u_short		arcount:16;
+} *qh, *ah;
+u_char		dnsq[512];
+u_char		dnsa[512];
+    
+    return(NULL);
+}
+
 int
 my_gethostbyname(char *name)
 {
@@ -1506,6 +1535,15 @@ char	*t;
 	a->x_content_length = atoi(x);
 	return;
     }
+    if ( !strncasecmp(p, "X-oops-internal-alt-expires: ", 29) ) {
+	char        *x;
+
+	x=p + 29;
+	while( *x && isspace(*x) ) x++;
+	a->times.expires = atoi(x);
+	SET(a->flags, ANSW_EXPIRES_ALTERED | ANSW_HAS_EXPIRES);
+	return;
+    }
     if ( !strncasecmp(p, "Content-length: ", 16) ) {
 	char        *x;
 	/* length */
@@ -1575,7 +1613,8 @@ char	*t;
 	if ( !strncasecmp(x, "close", 5) )
 		a->flags &= ~ANSW_KEEP_ALIVE;
     }
-    if ( !strncasecmp(p, "Expires: ", 9) ) {
+    if (    !TEST(a->flags, ANSW_HAS_EXPIRES) 
+         && !strncasecmp(p, "Expires: ", 9) ) {
 	char        *x;
 	/* length */
 	x=p + 9; /* strlen("Expires: ") */
@@ -1704,7 +1743,7 @@ failed:
 }
 
 int
-check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b)
+check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b, struct request *rq)
 {
 char	*start, *beg, *end, *p;
 char	holder, its_here=0, off;
@@ -1732,6 +1771,7 @@ go:
 	}
 	*p = 0;
 	a->checked = strlen(start);
+	/* this is HTTP XXX yyy "header", which we will never rewrite */
 	analyze_header(start, a);
 	if ( add_header_av(start, obj) ) {
 	    *p = holder;
@@ -1820,6 +1860,8 @@ go:
     while( (p < end) && ( *p == '\r' || *p == '\n' ) ) p++;
     if ( p < end && *p ) {
 	char *t = memchr(p, '\n', end-p);
+	char *tmp, *saved_tmp;
+
 	holder = '\n';
 	if ( !t ) {
 	    t = memchr(p, '\r', end-p);
@@ -1833,10 +1875,27 @@ go:
 	    }
 	}
 	*t = 0;
+#ifdef	MODULES
+	saved_tmp = tmp = strdup(p);
+	if ( !tmp )
+	    return(-1);
+	do_redir_rewrite_header(&tmp, rq, NULL);
+	analyze_header(tmp, a);
+	if ( add_header_av(tmp, obj) ) {
+	    free(tmp);
+	    return(-1);
+	}
+	if ( saved_tmp != tmp ) {
+	    /* header was changed */
+	    if ( obj ) SET(obj->flags, ANSW_HDR_CHANGED);
+	}
+	free(tmp);
+#else
 	analyze_header(p, a);
 	if ( add_header_av(p, obj) ) {
 	    return(-1);
 	}
+#endif
 	*t = holder;
 	if ( p1 ) { *p1 = '\r'; t=p1; p1 = NULL;}
 	a->checked = t - beg;
@@ -2473,7 +2532,7 @@ send_it:;
     r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 ) goto done;
     ssended = sended;
-    if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0, NULL) )
+    if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0, NULL, NULL) )
 	goto done;
     if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
     if ( sended >= obj->body->used )
@@ -2616,4 +2675,131 @@ memcpy_to_lower(char *d, char *s, size_t size)
 	*d = tolower(*s);
 	d++;s++;size--;
     }
+}
+
+struct l_string_list *
+alloc_l_string_list()
+{
+struct l_string_list *new;
+    new = malloc(sizeof(*new));
+    if ( new ) {
+	bzero(new, sizeof(*new));
+	pthread_mutex_init(&new->lock, NULL);
+    }
+    return(new);
+}
+
+
+struct l_string_list *
+lock_l_string_list(struct l_string_list *l_list)
+{
+    if ( l_list ) {
+	pthread_mutex_lock(&l_list->lock);
+	l_list->refs++;
+	pthread_mutex_unlock(&l_list->lock);
+	return(l_list);
+    }
+    return(NULL);
+}
+
+void
+leave_l_string_list(struct l_string_list *l_list)
+{
+    if ( l_list ) {
+	pthread_mutex_lock(&l_list->lock);
+	if ( (l_list->refs == 1) ) {
+		pthread_mutex_destroy(&l_list->lock);
+		free_string_list(l_list->list);
+		free(l_list);
+	} else {
+	    l_list->refs--;
+	    pthread_mutex_unlock(&l_list->lock);
+	}
+    }
+}
+void
+free_refresh_patterns(refresh_pattern_t *r_p)
+{
+refresh_pattern_t	*next;
+
+    if ( !r_p ) return;
+    while ( r_p ) {
+	next = r_p->next;
+	free(r_p);
+	r_p = next;
+    }
+}
+void
+set_refresh_pattern(struct request *rq, refresh_pattern_t *list)
+{
+
+    if ( !rq ) return;
+    while( list ) {
+	if ( rq_match_named_acl_by_index(rq, list->named_acl_index) == TRUE ) {
+	    rq->refresh_pattern = *list;
+	    rq->refresh_pattern.valid = 1;
+	    break;
+	}
+	list = list->next;
+    }
+}
+
+void
+parse_refresh_pattern(refresh_pattern_t **list, char *p)
+{
+char		*t, *f, *tok_ptr;
+char		*aclname = NULL, *minp = NULL, *lmp = NULL, *maxp = NULL;
+int		acl_index, min, max, lm;
+refresh_pattern_t *new, *curr, *next;
+
+    if ( !list || !p )
+	return;
+    /* ACL_NAME MIN LMT% MAX */
+    /* split */
+    t = p;
+    while( ( f = (char*)strtok_r(t, " \t", &tok_ptr) ) ) {
+	t = NULL;
+	if ( !aclname ) {
+	    aclname = f ;
+	    acl_index = acl_index_by_name(aclname);
+	    if ( !acl_index ) {
+		verb_printf("ACL '%s' NOT FOUND\n", aclname);
+		return;
+	    }
+	    continue;
+	}
+	if ( !minp ) {
+	    minp = f;
+	    min = atoi(minp);
+	    continue;
+	}
+	if ( !lmp ) {
+	    lmp = f;
+	    lm = atoi(lmp);
+	    continue;
+	}
+	if ( !maxp ) {
+	    maxp = f;
+	    max = atoi(maxp);
+	    continue;
+	}
+	if ( minp && maxp && lmp ) break;
+    }
+    if ( !minp || !maxp || !lmp )
+	return;
+    new = malloc(sizeof(*new));
+    if ( !new ) return;
+    bzero(new, sizeof(*new));
+    new->min = min;
+    new->max = max;
+    new->lmt = lm;
+    new->named_acl_index = acl_index;
+    if ( !*list ) {
+	*list = new;
+	return;
+    }
+    curr = *list;
+    while ( curr->next )
+	curr = curr->next;
+    curr->next = new;
 }

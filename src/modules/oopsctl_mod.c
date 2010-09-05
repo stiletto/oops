@@ -35,7 +35,7 @@
 
 char	module_type   = MODULE_LISTENER ;
 char	module_name[] = "oopsctl" ;
-char	module_info[] = "Oops contlolling module" ;
+char	module_info[] = "Oops controlling module" ;
 
 static	rwl_t		oopsctl_config_lock;
 
@@ -135,8 +135,11 @@ process_command(int so, char *command)
     if ( !strcasecmp(command, "reconfigure") ) {
 	kill(my_pid, SIGHUP);
     } else
-    if ( !strcasecmp(command, "shutdown") ) {
+    if ( !strcasecmp(command, "shutdown") || !strcasecmp(command, "stop")) {
 	kill(my_pid, SIGTERM);
+    }
+    if ( !strcasecmp(command, "rotate") ) {
+	kill(my_pid, SIGWINCH);
     }
     if ( !strcasecmp(command, "help") ) {
 	print_help(so);
@@ -172,7 +175,7 @@ char	**p, *help_message[] = {"reconfigure - re-read config file (like kill -HUP)
 int
 print_stat(int so)
 {
-char			buf[1024], *type;
+char			buf[1024], *type, *info;
 int			uptime = global_sec_timer - start_time;
 struct	storage_st	*storage;
 struct	general_module	*mod;
@@ -274,10 +277,14 @@ char			ctime_buf[30] = "";
 	case(MODULE_HEADERS):
 	    type = "Document headers check";
 	    break;
+	case(MODULE_PRE_BODY):
+	    type = "Document body begins";
+	    break;
 	default:
 	    break;
 	}
-	sprintf(buf, "%-13s (%s)\n", mod->name, type);
+	info = mod->info?mod->info:"";
+	sprintf(buf, "%-13s %s (%s)\n", mod->name, info, type);
 	write(so, buf, strlen(buf));
 	mod = mod->next_global;
     }
@@ -324,7 +331,7 @@ char			ctime_buf[30] = "";
 int
 print_htmlstat(int so)
 {
-char			buf[1024], *type;
+char			buf[1024], *type, *info;
 int			uptime = global_sec_timer - start_time;
 struct	storage_st	*storage;
 struct	general_module	*mod;
@@ -432,10 +439,17 @@ char			ctime_buf[30];
 	case(MODULE_LISTENER):
 	    type = "Independent port listener";
 	    break;
+	case(MODULE_HEADERS):
+	    type = "Document headers check";
+	    break;
+	case(MODULE_PRE_BODY):
+	    type = "Document body begins";
+	    break;
 	default:
 	    break;
 	}
-	sprintf(buf, "<tr><td>%-13s<td>%s\n", mod->name, type);
+	info = mod->info?mod->info:"";
+	sprintf(buf, "<tr><td>%-13s<td>%s (%s)\n", mod->name, info, type);
 	write(so, buf, strlen(buf));
 	mod = mod->next_global;
     }

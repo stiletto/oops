@@ -185,11 +185,9 @@ int			matched = TRUE, agents_equal;
 	    continue;
 	}
 
-	my_log("Check for %s\n", curr->header);
 	/* if object have this header saved from prev.request - fetch it */
 	old_value = fetch_internal_rq_header(obj, curr->header);
 	req_value = attr_value(rq->av_pairs, curr->header);
-	my_log("ov: %s, rv: %s\n", old_value?old_value:"NULL",req_value?req_value:"NULL");
 	if ( !req_value && old_value) /* ho such header in request */ {
 	    matched = FALSE;
 	    break;
@@ -201,7 +199,6 @@ int			matched = TRUE, agents_equal;
 	switch ( curr->action ) {
 	case(ACTION_BYCHARSET):
 		agents_equal = Compare_Agents(old_value, req_value);
-		my_log("Compare_agents = %d\n", agents_equal);
 		if ( !agents_equal ) {
 		    matched = FALSE;
 		    break;

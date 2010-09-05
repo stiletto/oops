@@ -7,8 +7,10 @@ nameserver 194.93.190.123
 nameserver 193.219.193.130
 
 ##
-#  Ports to use for HTTP and ICP
+#  Ports and address to use for HTTP and ICP
 ##
+
+#bind		ip_addr|hostname
 http_port	3128
 icp_port	3130
 
@@ -116,12 +118,6 @@ disk-low-free	3
 disk-ok-free	5
 
 ##
-#  Never cache objects with URL, containing...
-##
-stop_cache	?
-stop_cache	cgi-bin
-
-##
 #  Force_http11 - turn on http/1.1 for each request to document server
 #  This option required if module 'vary' used.
 ##
@@ -155,6 +151,48 @@ insert_via		yes
 #connect-from	proxy.paco.net
 
 ##
+#	ACLs - currently: urlregex, urlpath, usercharset
+#		each acl can be loaded from file.
+##
+#acl	CACHEABLECGI	urlregex	http://www\.topping\.com\.ua/cgi-bin/pingstat\.cgi\?072199131826
+#acl	WWWPACO		urlregex	www\.paco\.net
+#acl	NO_RLH		urlregex	zipper
+#acl	REWRITEPORTS	urlregex	(www.job.ru|www.sale.ru)
+#acl	REWRITEHOSTS	urlregex	(www.asm.ru|zipper\.paco)
+#acl	WINUSER		usercharset	windows-1251
+#acl	DOSUSER		usercharset	ibm866
+#acl	UNIXUSER	usercharset	koi8-r
+#acl	BADPORTS	port		[0:79],110,138,139,513,[6000:6010]
+#acl	BADDOMAIN	dstdom		baddomain1.com baddomain2.com
+#acl	BADDOMREGEX	dstdom_regex	baddomain\.((com)|(org))
+#acl	LOCAL_NETWORKS	src_ip		include:@prefix@/oops/acl_local_networks
+#acl	BADNETWORKS	src_ip		192.168.10/24
+acl	ADMINS		src_ip		127.0.0.1
+acl	PURGE		method		PURGE
+
+acl_deny PURGE !ADMINS
+
+##
+#  Never cache objects with URL, containing...
+##
+stop_cache	?
+stop_cache	cgi-bin
+
+##
+# Stop cache using ACL
+##
+#stop_cache_acl	WWWPACO
+
+##
+#	refresh_pattern ACLNAME min percent max
+##
+
+#refresh_pattern	CACHEABLECGI	20 50% 200
+#refresh_pattern	WWWPACO		0 0% 0
+
+
+
+##
 # line 'parent ....' will force all connections (except to destinations
 # in local-domain or local-networks) go through parent host
 ##
@@ -184,10 +222,17 @@ local-domain	odessa.net paco.net netsy.net netsy.com te.net.ua
 local-networks	195.114.128/19 10/8 192.168/16
 
 #
-# Access lists
+# Groups
 #
+
 group	paco	{
+##
+#	You can describe group ip adresses here, or using src_ip acl's
+#	with networks_acl directive
+#	networks_acl always have higher preference (checked first)
+##
 	networks	195.114.128/19 127/8 195.5.40.93/32;
+#	networks_acl	LOCAL_NETWORKS !BAD_NETWORKS
 	badports	[0:79],110,138,139,513,[6000:6010];
 	miss		allow;
 ##
@@ -339,6 +384,8 @@ module redir {
 	# myport 3129
 	# which means exactly: bind oops to additional port 3129 and process
 	# requests which come on this port.
+	# myport can be in the next form:
+	# myport [{hostname|ip_addr}:]port
 }
 
 module oopsctl {
@@ -352,3 +399,19 @@ module	vary {
 	user-agent	by_charset
 	accept-charset	ignore
 }
+
+##
+## WWW -accelerator. To use - insert line
+## redir_mods accel;
+## in the group 'world' description
+##
+#module	accel {
+# myport can have next form:
+# myport [{hostname|ip_addr}:]port ...
+#	myport			80
+##
+#	File with maps and other config directives
+#	Checked once per minute. No need to restart oops if maps changed
+##
+#	file			@prefix@/oops/accel_maps
+#}

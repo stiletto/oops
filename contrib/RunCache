@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# Contributed by doka@kiev.sovam.com
+#
+prefix=/usr/local/oops
+logfile=${prefix}/oops.out
+PATH=${prefix}:/bin:/usr/bin; export PATH
+
+ulimit -HS -n unlimited
+ulimit -HS -d unlimited
+ulimit -HS -s unlimited
+ulimit -HS -c unlimited
+
+echo $$ > /var/run/RunCache.pid
+echo `date`: starting RunCache > $logfile
+
+cd ${prefix}
+while : ; do
+	echo `date`: starting oops >> $logfile
+	oops -c oops.cfg >> $logfile 2>&1
+	sleep 10
+done

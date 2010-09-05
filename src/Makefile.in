@@ -11,7 +11,7 @@ SRCS = oops.c lib.c run.c run_client.c common.c http_utils.c ftp_utils.c \
 OBJS = oops.o lib.o run.o run_client.o common.o http_utils.o ftp_utils.o \
 	storage.o garbage_c.o  icp.o acl.o statistics.o list.o \
 	rotate_logs.o clean_disk.o ssl.o y.tab.o lex.yy.o modules.o \
-	worker.o queue.o hash.o
+	worker.o queue.o hash.o gnu_regex.o
 
 SRCS+=@STRTOKSRC@
 OBJS+=@STRTOKOBJ@
@@ -64,6 +64,16 @@ install: all mkinstalldirs
 	   else\
 		$(INSTALL_DATA) redir_template.html @prefix@/oops/redir_template.html ;\
 	fi
+	if [ -f @prefix@/oops/accel_maps ]; then\
+		$(INSTALL_DATA) accel_maps @prefix@/oops/accel_maps.sample ;\
+	   else\
+		$(INSTALL_DATA) accel_maps @prefix@/oops/accel_maps ;\
+	fi
+	if [ -f @prefix@/oops/acl_local_networks ]; then\
+		$(INSTALL_DATA) acl_local_networks @prefix@/oops/acl_local_networks.sample ;\
+	   else\
+		$(INSTALL_DATA) acl_local_networks @prefix@/oops/acl_local_networks ;\
+	fi
 	if test "X@SOFLAGS@" != "X"; then \
 	for m in modules/*so ; do \
 		$(INSTALL) $$m @prefix@/oops/modules ; \
@@ -109,6 +119,8 @@ y.tab.o: y.tab.c oops.h
 malloc.o: malloc.c
 	${CC} ${CFLAGS} ${CDEFS} -DEBUG -c malloc.c
 
+gnu_regex.o: gnu_regex.c
+	${CC} -c -DREGEX ${CFLAGS} gnu_regex.c -o gnu_regex.o
 
 clean:
 	rm -f *o lex.yy.c  y.tab.[ch] version.h oops

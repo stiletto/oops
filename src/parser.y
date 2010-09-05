@@ -12,7 +12,9 @@
 %token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T INCLUDE_T
 %token	ALWAYS_CHECK_FRESHNESS_T FORCE_HTTP11_T FORCE_COMPLETION_T
 %token	LAST_MODIFIED_FACTOR_T MAX_EXPIRE_VALUE_T
-%token	INSERT_X_FORWARDED_FOR_T INSERT_VIA_T
+%token	INSERT_X_FORWARDED_FOR_T INSERT_VIA_T ACL_T REFRESH_PATTERN_T
+%token	ACL_ALLOW_T ACL_DENY_T SRCDOMAINS_T BIND_T STOP_CACHE_ACL_T
+%token	NETWORKS_ACL_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name day
@@ -107,6 +109,7 @@ statement	: logfile
 		| statistics
 		| pidfile
 		| nameserver
+		| bind
 		| connect_from
 		| http_port
 		| icp_port
@@ -140,6 +143,11 @@ statement	: logfile
 		| dbhome
 		| dbname
 		| module
+		| acl
+		| refresh_pattern
+		| acl_allow
+		| acl_deny
+		| stop_cache_acl
 		| error L_EOS {
 			yyerrok;
 		  }
@@ -202,6 +210,91 @@ logs_buffered	: LOGS_BUFFERED_T L_EOS {
 			logs_buffered = TRUE;
 		}
 
+
+refresh_pattern	: REFRESH_PATTERN_T string num string num L_EOS {
+			char	*buf;
+			int	len;
+			len = strlen($2) + strlen($4) + 20 ;
+			buf = malloc(len);
+			if ( buf ) {
+			    sprintf(buf, "%s %d %s %d", $2, $3, $4, $5);
+			    parse_refresh_pattern(&global_refresh_pattern, buf);
+			    free(buf);
+			}
+			free($2);
+			free($4);
+		}
+acl_allow	: ACL_ALLOW_T STRING L_EOS {
+			parse_acl_access(&acl_allow, yylval.STRPTR);
+			free(yylval.STRPTR);
+		}
+acl_deny	: ACL_DENY_T  STRING L_EOS {
+			parse_acl_access(&acl_deny, yylval.STRPTR);
+			free(yylval.STRPTR);
+		}
+stop_cache_acl	: STOP_CACHE_ACL_T  STRING L_EOS {
+			parse_acl_access(&stop_cache_acl, yylval.STRPTR);
+			free(yylval.STRPTR);
+		}
+acl		: ACL_T	STRING L_EOS {
+			char		  *token, *p, *tptr;
+			char		  *n=NULL, *type=NULL, *data=NULL;
+			struct	named_acl *new_acl;
+			int		  acl_type, res;
+
+			printf("Named ACL %s\n", yylval.STRPTR);
+			new_acl = malloc(sizeof(*new_acl));
+			if ( !new_acl ) goto error;
+			bzero(new_acl, sizeof(*new_acl));
+			/* must be 
+			   name type data
+			*/
+			p = yylval.STRPTR;
+			printf("DATA: %s\n", p);
+			tptr = p;
+			while( 1 ) {
+			    char	op;
+			    token = p+1;
+			    while ( *token && isspace(*token) ) token++;
+			    if ( !*token ) break;
+			    p = token; while ( *p && !isspace(*p) ) p++;
+			    op = *p;
+			    *p = 0;
+			    if ( !n ) {
+				n = token;
+				strncpy((char*)&new_acl->name, n, sizeof(new_acl->name)-1);
+				continue;
+			    }
+			    if ( !type ) {
+				type = token;
+				acl_type = named_acl_type_by_name(type);
+				if ( acl_type == -1 ) {
+				    printf("Unknown acl type %s\n", type);
+				    goto error;
+				}
+				new_acl->type = acl_type;
+				continue;
+			    }
+			    if ( !data ) {
+				data = token;
+				*p = op;
+				break;
+			    }
+			}
+			if ( !data ) goto error;
+			res = parse_named_acl_data(new_acl, data);
+			if ( res ) {
+			    printf("Unparsable acl data '%s'\n", data);
+			    goto error;
+			}
+			insert_named_acl_in_list(new_acl);
+			goto done;
+		error:
+			if ( new_acl ) free_named_acl(new_acl);
+		done:;
+			free(yylval.STRPTR);
+		}
+
 statistics	: STATISTICS STRING L_EOS {
 			verb_printf("STATISTICS:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(statisticslog, yylval.STRPTR, sizeof(statisticslog)-1);
@@ -244,10 +337,15 @@ maxresident	: MAXRESIDENT NUMBER L_EOS {
 			maxresident = yylval.INT;
 		}
 
+bind		: BIND_T string L_EOS {
+			bind_addr = $2;
+		}
+
 http_port	: HTTP_PORT NUMBER L_EOS {
 			verb_printf("HTTP_PORT\t<<%d>>\n", yylval.INT);
 			http_port = yylval.INT;
 		}
+
 icp_port	: ICP_PORT NUMBER L_EOS {
 			verb_printf("ICP_PORT\t<<%d>>\n", yylval.INT);
 			icp_port = yylval.INT;
@@ -575,6 +673,9 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 				case OP_NETWORKS:
 					new_grp->nets = ops->val;
 					break;
+				case OP_SRCDOMAINS:
+					new_grp->srcdomains = ops->val;
+					break;
 				case OP_HTTP:
 					new_grp->http = ops->val;
 					break;
@@ -591,15 +692,43 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 					new_grp->miss_deny = (int)ops->val;
 					break;
 				case OP_AUTH_MODS:
-					new_grp->auth_mods = ops->val;
+					if ( ops->val ) {
+					    new_grp->auth_mods =
+						malloc(sizeof(*new_grp->auth_mods));
+					    if (new_grp->auth_mods) {
+						bzero(new_grp->auth_mods, sizeof(*new_grp->auth_mods));
+						new_grp->auth_mods->list = ops->val;
+						new_grp->auth_mods->refs = 1;
+						pthread_mutex_init(&new_grp->auth_mods->lock, NULL);
+					    }
+					} else
+					    new_grp->auth_mods = NULL;;
 					break;
 				case OP_REDIR_MODS:
-					new_grp->redir_mods = ops->val;
+					if ( ops->val ) {
+					    new_grp->redir_mods =
+						malloc(sizeof(*new_grp->redir_mods));
+					    if (new_grp->redir_mods) {
+						bzero(new_grp->redir_mods, sizeof(*new_grp->redir_mods));
+						new_grp->redir_mods->list = ops->val;
+						new_grp->redir_mods->refs = 1;
+						pthread_mutex_init(&new_grp->redir_mods->lock, NULL);
+					    }
+					} else
+					    new_grp->redir_mods = NULL;;
 					break;
 				case OP_DENYTIME:
 					((struct denytime*)(ops->val))->next = 
 						new_grp->denytimes;
 					new_grp->denytimes = ops->val;
+					break;
+				case OP_NETWORKS_ACL:
+					/* list of acl
+					   all must be known, all must be src_ip
+					*/
+					parse_networks_acl(&new_grp->networks_acl,
+							  ops->val);
+					free_string_list(ops->val);
 					break;
 				default:
 					verb_printf("Unknown OP\n");
@@ -625,6 +754,26 @@ group_op	: NETWORKS network_list ';' {
 			new = xmalloc(sizeof(*new), "new group_op");
 			if ( !new ) yyerror();
 			new->op  = OP_NETWORKS;
+			new->val = $2;
+			new->next= NULL;
+			$$ = new;
+		}
+		| SRCDOMAINS_T INCLUDE_T string ';' L_EOS {
+		}
+		| SRCDOMAINS_T domainlist ';' {
+			struct	group_ops_struct	*new;
+			new = xmalloc(sizeof(*new), "new group_op");
+			if ( !new ) yyerror();
+			new->op  = OP_SRCDOMAINS;
+			new->val = $2;
+			new->next= NULL;
+			$$ = new;
+		}
+		| NETWORKS_ACL_T string_list ';' {
+			struct	group_ops_struct	*new;
+			new = xmalloc(sizeof(*new), "new group_op");
+			if ( !new ) yyerror();
+			new->op  = OP_NETWORKS_ACL;
 			new->val = $2;
 			new->next= NULL;
 			$$ = new;

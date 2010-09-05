@@ -87,8 +87,10 @@ int		peer_connect(int, struct sockaddr_in*, struct request *);
 int		srv_connect(int, struct url *url, struct request*);
 struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
 char*		build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags);
-
+void		check_new_object_expiration(struct request*, struct mem_obj*);
+char*		check_rewrite_charset(char *, struct request *, struct av *, int*);
 pthread_mutex_t	icp_so_lock;
+int		can_recode_rq_content(struct request*);
 
 void
 send_not_cached(int so, struct request *rq, char *headers)
@@ -103,6 +105,8 @@ int			delta_tv;
 int			have_code = 0, sent = 0;
 struct mem_obj		*obj;
 int			header_size;
+int			recode_request = FALSE, recode_answer = FALSE;
+char			*table = NULL;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -143,8 +147,18 @@ int			header_size;
     if ( !answer )
 	goto done;
 
+    if ( rq->cs_to_server_table
+		&& rq->cs_to_server_table->list
+		&& rq->cs_to_server_table->list->string
+		&& can_recode_rq_content(rq) )
+	recode_request = TRUE;
+
     /* push whole request to server */
-    r = writet(server_so, answer, strlen(answer), READ_ANSW_TIMEOUT);
+    if ( recode_request )
+	r = writet_cv_cs(server_so, answer, strlen(answer), READ_ANSW_TIMEOUT,
+			rq->cs_to_server_table->list->string, TRUE);
+      else
+	r = writet(server_so, answer, strlen(answer), READ_ANSW_TIMEOUT);
     free(answer); answer = NULL;
     if ( r < 0 ) {
 	say_bad_request(so, "Can't send", strerror(errno), ERR_TRANSFER, rq);
@@ -165,7 +179,11 @@ int			header_size;
 	while ( rest > 0 ) {
 	    int to_send;
 	    to_send = MIN(2048, rest);
-	    r = writet(server_so, cp, to_send, 100);
+	    if ( recode_request )
+		r = writet_cv_cs(server_so, cp, to_send, 100,
+			rq->cs_to_server_table->list->string, TRUE);
+	      else
+		r = writet(server_so, cp, to_send, 100);
 	    if ( r < 0 )
 		goto done;
 	    rest -= r;
@@ -179,7 +197,11 @@ int			header_size;
 		goto done;
 
 	    rq->leave_to_read -= r;
-	    r = writet(server_so, answer, r, READ_ANSW_TIMEOUT);
+	    if ( recode_request )
+		r = writet_cv_cs(server_so, answer, r, READ_ANSW_TIMEOUT,
+			rq->cs_to_server_table->list->string, TRUE);
+	      else
+		r = writet(server_so, answer, r, READ_ANSW_TIMEOUT);
 	    if ( r <= 0 )
 		goto done;
 	}
@@ -214,6 +236,7 @@ int			header_size;
 	}
 	if ( !(answ_state.state & GOT_HDR) ) {
 	    obj->size += r;
+	    sent += r;
 	    if ( !obj->container ) {
 		struct buff *new;
 
@@ -225,11 +248,72 @@ int			header_size;
 		my_log("attach_data\n");
 		goto done;
 	    }
-	    check_server_headers(&answ_state, obj, obj->container);
+	    check_server_headers(&answ_state, obj, obj->container, rq);
 	    if ( answ_state.state & GOT_HDR ) {
+		struct	av	*header;
+		struct	buff	*hdrs_to_send;
+
 		obj->flags|= answ_state.flags;
 		header_size = obj->container->used;
+		header = obj->headers;
+		if ( !header ) goto done ;
+		hdrs_to_send = alloc_buff(512);
+		if ( !hdrs_to_send ) goto done;
+		while(header) {
+	    	/*my_log("Sending ready header '%s'->'%s'\n", header->attr, header->val);*/
+		    if ( !is_oops_internal_header(header) ) {
+
+			if ( rq->src_charset[0] && rq->cs_to_client_table
+				&& rq->cs_to_client_table->list
+				&& rq->cs_to_client_table->list->string
+				&& is_attr(header, "Content-Type") && header->val ) {
+			    char *s = NULL, *d = NULL, ct_buf[64];
+
+			    /* we change charset only in 'text/*' */
+			    if ( strlen(header->val) >= sizeof(ct_buf) ) {
+				s = strdup(header->val);
+			    } else {
+				strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+				s = ct_buf;
+			    }
+			    if ( s
+			    	&& (d = check_rewrite_charset(s, rq, header, &recode_answer)) ) {
+				my_log("rewriten header='%s'\n", d);
+				attach_data(d, strlen(d), hdrs_to_send);
+				attach_data("\r\n", 2, hdrs_to_send);
+				free(d);
+				if ( s && (s != ct_buf) )
+				    free(s);
+				table = rq->cs_to_client_table->list->string;
+				recode_answer = TRUE;
+				header = header->next;
+				continue;
+			    }
+			    if ( s && (s != ct_buf) )
+				free(s);
+			} /* Content-Type: ... */
+			attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
+		    }
+		    header = header->next;
+		}
+		attach_av_pair_to_buff("", "", hdrs_to_send);
+		if ( recode_answer )
+		    writet_cv_cs(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT,
+			table, TRUE);
+		  else
+		    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+		free_container(hdrs_to_send);
+		if ( obj->container && obj->container->next ) {
+		    if ( recode_answer )
+			writet_cv_cs(so, obj->container->next->data, obj->container->next->used, READ_ANSW_TIMEOUT,
+				table, FALSE);
+		      else
+			writet(so, obj->container->next->data, obj->container->next->used, READ_ANSW_TIMEOUT);
+		}
+		if ( obj->content_length && (sent >= obj->content_length) )
+		    goto done;
 	    }
+	    continue ;
 	}
 	to_write = r;
 	p = answer;
@@ -237,9 +321,14 @@ int			header_size;
 	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
 		if ( (++pass)%2 ) SLOWDOWN ;
 		r = MIN(to_write, 512);
+	    } else {
+		r = MIN(to_write, 2048);
 	    }
 	    /* if client close connection we'll note here */
-	    r = writet(so, p, r, READ_ANSW_TIMEOUT);
+	    if ( recode_answer )
+		r = writet_cv_cs(so, p, r, READ_ANSW_TIMEOUT, table, FALSE);
+	      else
+		r = writet(so, p, r, READ_ANSW_TIMEOUT);
 	    if ( r < 0 )
 		goto done;
 	    sent += r;
@@ -251,6 +340,8 @@ int			header_size;
 		    goto done;
 	    }
 	}
+	if ( obj->content_length && (sent >= obj->content_length) )
+	    goto done;
     }
 done:
     if ( obj ) { obj->flags|=FLAG_DEAD; leave_obj(obj);}
@@ -448,7 +539,9 @@ int 		r, sended, received, state, send_hot_pos, pass=0, sf=0, ssended;
 struct	buff	*send_hot_buff;
 char		*transfer_encoding;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
+int		convert_charset = FALSE;
 int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
+char		*table = NULL;
 struct	pollarg	pollarg;
 
     downgrade_flags = downgrade(rq, obj);
@@ -506,11 +599,37 @@ send_ready:
 			/* we must not send Tr.-Enc. and Cont.-Len. if we convert
 			 * from chunked							*/
 
-	    	   !(convert_from_chunked && is_attr(header, "Transfer-Encoding")) &&
+		   !(convert_from_chunked && is_attr(header, "Transfer-Encoding")) &&
 	    	   !(convert_from_chunked && is_attr(header, "Content-Length")) ){
 
 		if ( !content_length_sent )
 		    content_length_sent = is_attr(header, "Content-Length");
+		if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
+		    char *s = NULL, *d = NULL, ct_buf[64];
+
+		    /* we change charset only in 'text/*' */
+		    if ( strlen(header->val) >= sizeof(ct_buf) ) {
+			s = strdup(header->val);
+		    } else {
+			strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+			s = ct_buf;
+		    }
+		    if ( s
+		    	&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
+			my_log("rewriten header='%s'\n", d);
+			attach_data(d, strlen(d), hdrs_to_send);
+			attach_data("\r\n", 2, hdrs_to_send);
+			free(d);
+			if ( s && (s != ct_buf) )
+			    free(s);
+			table = rq->cs_to_client_table->list->string;
+			convert_charset = TRUE;
+			header = header->next;
+			continue;
+		    }
+		    if ( s && (s != ct_buf) )
+			free(s);
+		} /* Content-Type: ... */
 		attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 	    }
 	    header = header->next;
@@ -536,12 +655,21 @@ send_ready:
 	}
 	/* end of headers */
 	attach_av_pair_to_buff("","", hdrs_to_send);
-	writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+	if ( convert_charset && rq->cs_to_client_table
+			     && rq->cs_to_client_table->list
+			     && rq->cs_to_client_table->list->string)
+	    writet_cv_cs(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT,
+		rq->cs_to_client_table->list->string, TRUE);
+	  else
+	    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
 	free_container(hdrs_to_send);
 	if ( !obj->container ) goto done;
 	send_hot_pos = 0;
 	send_hot_buff = obj->container->next;
 	sended = obj->container->used;
+#if	defined(MODULES)
+	pre_body(so, obj, rq, NULL);
+#endif
     }
     if ( (state == OBJ_READY) && (sended >= obj->size) ) {
 	my_xlog(LOG_HTTP, "obj is ready\n");
@@ -558,7 +686,9 @@ send_ready:
 	sf |= RQ_HAS_BANDWIDTH;
     if ( convert_from_chunked )
 	sf |= RQ_CONVERT_FROM_CHUNKED;
-    if ((r=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL)) ) {
+    if ( IS_HUPED(&pollarg) )
+	goto done;
+    if ((r=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL, table)) ) {
 	my_xlog(LOG_HTTP, "send_data_from_mem: send error: %s\n", strerror(errno));
 	goto done;
     }
@@ -639,7 +769,14 @@ struct	buff		*to_server_request = NULL;
     r = attach_data(answer, strlen(answer), to_server_request);
     if ( r || attach_data("\r\n", 2, to_server_request) )
 	goto validate_err;
-    r = writet(server_so, to_server_request->data, to_server_request->used,
+    if ( rq->cs_to_server_table
+		&& rq->cs_to_server_table->list
+		&& rq->cs_to_server_table->list->string)
+	r = writet_cv_cs(server_so, to_server_request->data,
+				    to_server_request->used, READ_ANSW_TIMEOUT,
+				rq->cs_to_server_table->list->string, TRUE);
+      else
+	r = writet(server_so, to_server_request->data, to_server_request->used,
     		READ_ANSW_TIMEOUT);
     free(answer); answer = NULL;
     free(fake_header); fake_header = NULL;
@@ -674,9 +811,13 @@ struct	buff		*to_server_request = NULL;
 	    my_log("select: timed out on new_obj\n");
 	    goto validate_err;
 	}
+	if ( IS_HUPED(&pollarg) ) {
+	    my_log("check_validity: server closed connection too early\n");
+	    goto validate_err;
+	}
 	if ( !IS_READABLE(&pollarg) )
 	    continue;
-	r = read(server_so, answer, ANSW_SIZE);
+	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r <  0 ) {
 	    if ( errno == EAGAIN ) {
 		my_log("Hmm, again select say ready, but read fails\n");
@@ -686,7 +827,7 @@ struct	buff		*to_server_request = NULL;
 	    goto validate_err;
 	}
 	if ( r == 0 ) {
-	    my_log("fill_new_obj: server closed connection too early\n");
+	    my_log("check_validity: server closed connection too early\n");
 	    goto validate_err;
 	}
 	if ( !new_obj->container ) {
@@ -704,7 +845,7 @@ struct	buff		*to_server_request = NULL;
 		my_log("attach_data error\n");
 		goto validate_err;
 	    }
-	    if ( check_server_headers(&answer_stat, new_obj, new_obj->container) ) {
+	    if ( check_server_headers(&answer_stat, new_obj, new_obj->container, rq) ) {
 		my_log("check_server_headers\n");
 		goto validate_err;
 	    }
@@ -722,10 +863,7 @@ struct	buff		*to_server_request = NULL;
 		new_obj->flags|= answer_stat.flags;
 		new_obj->times = answer_stat.times;
 		if ( !new_obj->times.date ) new_obj->times.date = time(NULL);
-		if ( answer_stat.flags & ANSW_HAS_EXPIRES ) {
-		    if ( new_obj->times.expires < new_obj->times.date )
-			new_obj->flags |= ANSW_NO_STORE;
-		}
+		check_new_object_expiration(rq, new_obj);
 		if ( new_obj->status_code == STATUS_OK ) {
 		    process_vary_headers(obj, rq);
 		    goto validate_done;
@@ -775,7 +913,9 @@ char			*content_type, ctbuf[40], origin[MAXHOSTNAMELEN];
 struct	sockaddr_in	peer_sa;
 int			source_type, downgrade_flags;
 int			body_size, header_size, sf = 0, rest_in_chunk = 0;
+char			*table = NULL;
 struct	av		*header = NULL;
+int			convert_charset = FALSE;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -940,7 +1080,14 @@ struct	av		*header = NULL;
     }
     free(answer); answer = NULL;
 
-    r = writet(server_so, to_server_request->data, to_server_request->used, READ_ANSW_TIMEOUT);
+    if ( rq->cs_to_server_table
+		&& rq->cs_to_server_table->list
+		&& rq->cs_to_server_table->list->string)
+	r = writet_cv_cs(server_so, to_server_request->data,
+				    to_server_request->used, READ_ANSW_TIMEOUT,
+				rq->cs_to_server_table->list->string, TRUE);
+      else
+	r = writet(server_so, to_server_request->data, to_server_request->used, READ_ANSW_TIMEOUT);
     free_container(to_server_request);
 
     if ( r < 0 ) {
@@ -977,7 +1124,7 @@ struct	av		*header = NULL;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
 	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
-		r = group_traffic_load(inet_to_group(&rq->client_sa.sin_addr));
+		r = group_traffic_load(rq_to_group(rq));
 		tv.tv_sec = 0;tv.tv_usec = 0;
 		if ( r < 75 ) /* low load */
 		    goto ignore_bw_overload;
@@ -1022,7 +1169,7 @@ struct	av		*header = NULL;
 		so = -1;
 		goto client_so_closed;
 	    }
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj)) )
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) )
 		so = -1;
 	    if ( rest_in_chunk == -1 ) { /* was last chunk */
 		obj->state = OBJ_READY;
@@ -1077,7 +1224,7 @@ struct	av		*header = NULL;
 	    }
 	    continue;
 	}
-	r = read(server_so, answer, ANSW_SIZE);
+	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r < 0  ) {
 	    /* Error reading from server */
 	    if ( errno == EAGAIN ) {
@@ -1111,8 +1258,10 @@ struct	av		*header = NULL;
 		/*r = select(so+1, NULL, &wset, NULL, &tv);*/
 		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
+		if ( IS_HUPED(&pollarg) )
+		    goto done;
 		ssended = sended;
-		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj)) )
+		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) )
 		    so = -1;
 		if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
 	    }
@@ -1139,7 +1288,8 @@ struct	av		*header = NULL;
 		change_state(obj, OBJ_READY);
 		goto error;
 	    }
-	    if ( (obj->state < OBJ_INPROGR) && check_server_headers(&answ_state, obj, obj->container) ) {
+	    if ( (obj->state < OBJ_INPROGR)
+	         && check_server_headers(&answ_state, obj, obj->container, rq) ) {
 		my_log("check_server_headers\n");
 		/*
 		    If we can't parse server header - let client do it.
@@ -1162,11 +1312,7 @@ struct	av		*header = NULL;
 		obj->flags|= answ_state.flags;
 		obj->times = answ_state.times;
 		if ( !obj->times.date ) obj->times.date = global_sec_timer;
-		if ( answ_state.flags & ANSW_HAS_EXPIRES ) {
-		    if ( obj->times.expires < obj->times.date ) {
-			obj->flags |= ANSW_NO_STORE;
-		    }
-		}
+		check_new_object_expiration(rq, obj);
 		obj->status_code = answ_state.status_code;
 		if ( obj->status_code != STATUS_OK )
 			obj->flags |= FLAG_DEAD;
@@ -1236,15 +1382,51 @@ struct	av		*header = NULL;
 			/* we must not send Tr.-Enc. and Cont.-Len. if we convert
 			 * from chunked							*/
 
-			   !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding")) &&
-			   !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) ){
+			   !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding"))
+			   && !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) 
+			   && !is_oops_internal_header(header) ) {
+			if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
+			    char *s = NULL, *d = NULL, ct_buf[64];
+
+			    /* we change charset only in 'text/*' */
+			    if ( strlen(header->val) >= sizeof(ct_buf) ) {
+				s = strdup(header->val);
+			    } else {
+				strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+				s = ct_buf;
+			    }
+			    if ( s
+			    	&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
+				my_log("rewriten header='%s'\n", d);
+				attach_data(d, strlen(d), hdrs_to_send);
+				attach_data("\r\n", 2, hdrs_to_send);
+				free(d);
+				if ( s && (s != ct_buf) )
+				    free(s);
+				table = rq->cs_to_client_table->list->string;
+				convert_charset = TRUE;
+				header = header->next;
+				continue;
+			    }
+			    if ( s && (s != ct_buf) )
+				free(s);
+			} /* Content-Type: ... */
 			attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 		    }
 		    header = header->next;
 		}
 		attach_av_pair_to_buff("", "", hdrs_to_send);
-		writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+		if ( convert_charset && rq->cs_to_client_table
+				     && rq->cs_to_client_table->list
+				     && rq->cs_to_client_table->list->string)
+		    writet_cv_cs(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT,
+			rq->cs_to_client_table->list->string, TRUE);
+		  else
+		    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
 		free_container(hdrs_to_send);
+#if		defined(MODULES)
+		pre_body(so, obj, rq, NULL);
+#endif
 		sended = obj->container->used;
 		send_hot_buff = obj->container;
 		send_hot_pos  = obj->container->used;
@@ -1370,6 +1552,9 @@ struct	timeval		tv;
 int			r, rest_in_chunk = 0, downgrade_flags = 0;
 char			*answer=NULL;
 struct	av		*header;
+char			*table = NULL;
+struct	buff		*hdrs_to_send = NULL;
+int			convert_charset = FALSE;
 
     received = received0 = obj->size;
     send_hot_buff = obj->container;
@@ -1379,8 +1564,10 @@ struct	av		*header;
     my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
     header = obj->headers;
     if ( !header ) goto error ;
+    hdrs_to_send = alloc_buff(512);
+    if ( !hdrs_to_send ) goto done;
     if ( TEST(downgrade_flags, DOWNGRADE_ANSWER) ) {
-	send_av_pair(so, "HTTP/1.0", header->val);
+	attach_av_pair_to_buff("HTTP/1.0", header->val, hdrs_to_send);
 	header = header->next;
     }
     while(header) {
@@ -1391,11 +1578,46 @@ struct	av		*header;
 		!(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding")) &&
 		!(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) ){
 
-	    send_av_pair(so, header->attr, header->val);
+	    if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
+		char *s = NULL, *d = NULL, ct_buf[64];
+
+		/* we change charset only in 'text/*' */
+		if ( strlen(header->val) >= sizeof(ct_buf) ) {
+		    s = strdup(header->val);
+		} else {
+		    strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+		    s = ct_buf;
+		}
+		if ( s
+			&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
+		    my_log("rewriten header='%s'\n", d);
+		    attach_data(d, strlen(d), hdrs_to_send);
+		    attach_data("\r\n", 2, hdrs_to_send);
+		    free(d);
+		    if ( s && (s != ct_buf) )
+			free(s);
+		    table = rq->cs_to_client_table->list->string;
+		    convert_charset = TRUE;
+		    header = header->next;
+		    continue;
+		}
+		if ( s && (s != ct_buf) )
+		    free(s);
+	    } /* Content-Type: ... */
+	    attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 	}
 	header = header->next;
     }
-    send_av_pair(so, "", "");
+    attach_av_pair_to_buff("", "", hdrs_to_send);
+    if ( convert_charset && rq->cs_to_client_table
+		     && rq->cs_to_client_table->list
+		     && rq->cs_to_client_table->list->string)
+	writet_cv_cs(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT,
+			rq->cs_to_client_table->list->string, TRUE);
+	  else
+	writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+		free_container(hdrs_to_send);
+
     sended = obj->container->used;
     send_hot_buff = obj->container;
     send_hot_pos  = obj->container->used;
@@ -1424,7 +1646,7 @@ struct	av		*header;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
 	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
-		r = group_traffic_load(inet_to_group(&rq->client_sa.sin_addr));
+		r = group_traffic_load(rq_to_group(rq));
 		tv.tv_sec = 0;tv.tv_usec = 0;
 		if ( r < 75 ) /* low load */
 		    goto ignore_bw_overload;
@@ -1463,8 +1685,13 @@ struct	av		*header;
 	}
 	if ( (so != -1) && (IS_WRITEABLE(&pollarg[1])||IS_HUPED(&pollarg[1])) ) {
 	   r--;
-	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj) ) {
+	   if ( IS_HUPED(&pollarg[1]) ) {
 		so = -1;
+		goto are_we_alone;
+	   }
+	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table) ) {
+		so = -1;
+		goto are_we_alone;
 	   }
 	   if ( rest_in_chunk == -1 ) {
 		my_log("We sent last chunk, rec-sent=%d\n", received-sended);
@@ -1478,6 +1705,7 @@ struct	av		*header;
 		}
 	   }
 	}
+   are_we_alone:
 	if ( so == -1 ) {
 	    lock_obj(obj);
 	    if ( (obj->refs <= 1) && !FORCE_COMPLETION(obj) ) /* we are only who refers to this obj */ {
@@ -1505,7 +1733,7 @@ struct	av		*header;
 	    }
 	    continue;
 	}
-	r = read(server_so, answer, ANSW_SIZE);
+	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r < 0  ) {
 	    if ( errno == EAGAIN)  {
 		my_log("Hmm in continue load\n");
@@ -1534,8 +1762,10 @@ struct	av		*header;
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
+		if ( IS_HUPED(&pollarg) )
+		    goto done;
 		ssended = sended;
-		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj)) )
+		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) )
 		    so = -1;
 		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, sended-ssended);
 	    }
@@ -1604,13 +1834,25 @@ do_it:
     goto do_it;
 }
 
+/* send data from memory buffs
+   so 		- socket to client
+   hot		- current buff
+   pos		- offset in buff data
+   sended	- address of 'sended' variable (updated in accordance with progress
+   rest_in_chunk- for chunked content
+   flags	- flags ( chunked, BW-control, ...)
+   obj		- object ( we need it to set x-content_len for chunked content)
+   recode	- recode table if we do charset conversion on the fly
+*/
 int
-send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj)
+send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
 {
 int		r, to_send, cz_here, faked_sent, chunk_size;
 struct	buff	*b = *hot;
 char		*cb, *ce, *cd;
 char		ch_sz[16];	/* buffer to collect chunk size	*/
+u_char		recode_buff[2048];
+char		*source;
 
     if ( !*hot )
 	return(-1);
@@ -1642,7 +1884,26 @@ do_it:
     if ( TEST(flags, RQ_HAS_BANDWIDTH) ) to_send = MIN(to_send, 512);
 	else				 to_send = MIN(to_send, 2048);
 
-    r = write(so, b->data+*pos, to_send);
+    if ( table ) {
+	u_char *s, *d;
+	int  i = to_send;
+
+	s = (u_char*)(b->data+*pos);
+	d = recode_buff;
+	i = 0;
+	while ( i < to_send ) {
+	    if ( *s >= 128 )
+		*d = table[*s-128];
+	      else
+		*d = *s;
+	    s++;d++;
+	    i++;
+	}
+	source = (char*)recode_buff;
+    } else
+	source = b->data+*pos;
+
+    r = send(so, source, to_send, 0);
     if ((r < 0) && (errno == EWOULDBLOCK) ) return(0);
     if ( TEST(flags, RQ_HAS_BANDWIDTH) && (r>0) ) {
 	*pos += r; *sended += r;
@@ -1754,7 +2015,25 @@ do_it_chunked:
 	}
 	if ( TEST(flags, RQ_HAS_BANDWIDTH) ) to_send = MIN(to_send, 512);
 	   else				     to_send = MIN(to_send, 2048);
-	r = write(so, b->data+*pos, to_send);
+	if ( table ) {
+	    u_char *s, *d;
+	    int  i = to_send;
+
+	    s = (u_char*)(b->data+*pos);
+	    d = recode_buff;
+	    i = 0;
+	    while ( i < to_send ) {
+		if ( *s >= 128 )
+		    *d = table[*s-128];
+		  else
+		    *d = *s;
+		s++; d++;
+		i++;
+	    }
+	    source = (char*)recode_buff;
+	} else
+	    source = b->data+*pos;
+	r = send(so, source, to_send, 0);
 	if ((r < 0) && (errno == EWOULDBLOCK) ) {
 	    return(0);
 	}
@@ -1870,6 +2149,7 @@ char	*hdr = NULL;
 int
 is_attr(struct av *av, char *attr)
 {
+    if ( !av || !av->attr || !attr ) return(FALSE);
     return(!strncmp(av->attr, attr, strlen(attr)));
 }
 
@@ -1966,6 +2246,17 @@ srv_connect(int client_so, struct url *url, struct request *rq)
 int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
 
+#ifdef	MODULES
+    int			flags = 0;
+
+    r = check_redir_connect(&server_so, rq, &flags);
+    if ( server_so != -1 )
+	return(server_so);
+    if ( r == MOD_CODE_ERR ) {
+	say_bad_request(client_so, "Can't connect to host.", strerror(errno), ERR_TRANSFER, rq);
+	return(-1);
+    }
+#endif
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
@@ -1992,6 +2283,16 @@ srv_connect_silent(int client_so, struct url *url, struct request *rq)
 {
 int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
+#ifdef	MODULES
+    int			flags = 0;
+
+    r = check_redir_connect(&server_so, rq, &flags);
+    if ( server_so != -1 )
+	return(server_so);
+    if ( r == MOD_CODE_ERR ) {
+	return(-1);
+    }
+#endif
 
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
@@ -2449,4 +2750,120 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 	    my_xlog(LOG_HTTP, "Vary=%s\n", vary);
 	 }
     }
+}
+void
+check_new_object_expiration(struct request *rq, struct mem_obj *obj)
+{
+	if ( !rq || !obj ) return;
+	if ( rq->refresh_pattern.valid ) {
+	    int	min,max,lmt, tmpexpires, expires_altered = FALSE;
+
+	    min = rq->refresh_pattern.min;
+	    max = rq->refresh_pattern.max;
+	    lmt = rq->refresh_pattern.lmt;
+	    /* if there was Expires - use it 		*/
+	    if ( TEST(obj->flags, ANSW_HAS_EXPIRES) ) {
+		if ( obj->times.expires < obj->times.date + min ) {
+			obj->times.expires = obj->times.date + min;
+			expires_altered = TRUE;
+		} else
+		if ( obj->times.expires > obj->times.date + max ) {
+			obj->times.expires = obj->times.date + max;
+			expires_altered = TRUE;
+		}  /* else Expires is OK */
+	    } else {
+		/* we don't received Expires - try to use Last-Modified */
+		if ( obj->times.last_modified ) {
+		    int	LM_AGE;
+			    LM_AGE = obj->times.date - obj->times.last_modified;
+		    if ( LM_AGE > 0 ) {
+			tmpexpires = lmt*LM_AGE;
+			if ( (tmpexpires>min) && (tmpexpires<max) ) {
+			    obj->times.expires = obj->times.date+tmpexpires;
+			    expires_altered = TRUE;
+			} else {
+			    obj->times.expires = obj->times.date+min;
+			    expires_altered = TRUE;
+			}
+		    } else { /* no LM_AGE > 0 */
+			obj->times.expires = obj->times.date+min;
+			expires_altered = TRUE;
+		    }
+		} else { /* no last-modified */
+		    obj->times.expires = obj->times.date+min;
+		    expires_altered = TRUE;
+		}
+		SET(obj->flags, ANSW_HAS_EXPIRES);
+	    }
+	    if ( expires_altered == TRUE )
+		SET(obj->flags, ANSW_EXPIRES_ALTERED);
+	    if ( obj->times.expires < obj->times.date ) {
+		obj->flags |= ANSW_NO_STORE;
+	    }
+	}
+	else if ( obj->flags & ANSW_HAS_EXPIRES ) {
+	    if ( obj->times.expires < obj->times.date ) {
+		obj->flags |= ANSW_NO_STORE;
+	    }
+	}
+}
+char*
+check_rewrite_charset(char *s, struct request *rq, struct av *header, int* convert_charset)
+{
+char	*p, *t, *d=NULL, *delim, text = FALSE;
+int	dsize = 0;
+    t = s;
+    while ( (p = (char*)strtok_r(t, ";", &delim)) ) {
+	/* if it is text/...	*/
+	if ( !text ) {
+	    if (!strncasecmp(p, "text/", 5) ) {
+		text = TRUE;
+		t = NULL;
+		/* save this token */
+		dsize = strlen(header->attr)  + 1
+			+ strlen(header->val) + 1
+			+ strlen(rq->src_charset) + 1;
+		d = malloc(dsize);
+		if ( !d )
+		    goto not_text;
+		sprintf(d, "Content-Type: %s", p);
+		continue;
+	    } else
+		goto not_text;
+	}
+	t = NULL;
+	my_log("token: '%s'\n", p);
+	while ( *p && isspace(*p) ) p++;
+	if ( !strncasecmp(p, "charset=", 8) ) {
+	    my_log("Alter charset from %s to %s\n",
+	    	   p+8, rq->src_charset);
+	    strncat(d, "; charset=", dsize-strlen(d)-1);
+	    strncat(d, rq->src_charset, dsize-strlen(d)-1);
+	    if ( convert_charset ) *convert_charset = TRUE;
+	    continue;
+	} else {
+	    /* just attach */
+	    strncat(d, p, dsize-strlen(d)-1);
+	}
+    }
+not_text:
+    return(d);
+}
+
+int
+can_recode_rq_content(struct request *rq)
+{
+int	res = FALSE;
+char	*cont_type;
+    if ( rq && rq->av_pairs ) {
+	cont_type = attr_value(rq->av_pairs, "Content-Type:");
+	if ( cont_type ) {
+	    my_log("rq->content_type = %s\n", cont_type);
+	    res = TRUE;
+	} else {
+	    my_log("No cont type in rq\n");
+	    res = TRUE;
+	}
+    }
+    return(res);
 }
