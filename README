@@ -15,7 +15,7 @@ It's main fetures
 4) easy-to-read/understand config file and acl's
 
 5) modular structure. Several module types exist: logging, access, output,
-   error reporting, URL filtering.
+   error reporting, URL filtering, ....
 
 6) objects are stored in large files: no file per object scheme.
    these large files can be raw devices.

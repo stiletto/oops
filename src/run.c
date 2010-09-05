@@ -34,17 +34,22 @@ pthread_t 	dl_thread = (pthread_t)NULL;
 pthread_t	stat_thread = (pthread_t)NULL;
 dataq_t		wq;
 
-int	current_workers = 0;
-int	max_workers = 512;
 int	wq_init = 0;
+int	killed, huped;
 
-int		huped=0, killed = 0;
 sigset_t	newset, oset;
 pthread_attr_t	p_attr;
 
+struct	run_mod_arg {
+	int	(*f)(int);
+	int	so;
+};
+
 void	*run_client(void*);
+void	*run_module(int, void* (*f)(void*));
 void	cleanup(void);
 void	*worker(void*);
+void	add_workers();
 
 void
 huphandler(int arg)
@@ -66,12 +71,13 @@ run()
 {
 int	r, res;
 int	one = -1;
-int			cli_addr_len;
+int			cli_addr_len, descriptors;
 fd_set			rq;
 int			icp_sa_len;
 struct	sockaddr_in	cli_addr, icp_sa;
-struct	pollarg		pollarg[2];
+struct	pollarg		*pollarg;
 
+    huped = killed = 0;
     if ( server_so != -1 )
     	close(server_so);
     server_so = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -170,6 +176,16 @@ struct	pollarg		pollarg[2];
     signal(SIGINT, &killhandler);
     signal(SIGTERM, &killhandler);
     pthread_sigmask(SIG_UNBLOCK, &newset, &oset);
+    if ( listen_so_list ) {
+	struct	listen_so_list	*list = listen_so_list;
+	int			k=0;
+	while(list) {
+	    k++;
+	    list = list->next;
+	}
+	pollarg = xmalloc((2+k)*sizeof(struct pollarg),"");
+    } else
+	pollarg = xmalloc(2*sizeof(struct pollarg),"");
 
 wait_clients:
     FD_ZERO(&rq);
@@ -179,14 +195,30 @@ wait_clients:
     pollarg[0].request = FD_POLL_RD;
     pollarg[1].fd = icp_so;
     pollarg[1].request = FD_POLL_RD;
-/*    r = select(MAX(server_so, icp_so)+1, &rq, NULL, NULL, NULL);*/
-    r = poll_descriptors(2, &pollarg[0], -1);
+    if ( listen_so_list ) {
+	struct	listen_so_list	*list = listen_so_list;
+	int			k=2;
+	while(list) {
+	    pollarg[k].fd 	= list->so;
+	    pollarg[k].request	= FD_POLL_RD;
+	    k++;
+	    list = list->next;
+	}
+	descriptors = k;
+    } else
+	descriptors = 2;
+#ifdef	FREEBSD
+    r = poll_descriptors_S(descriptors, &pollarg[0], -1);
+#else
+    r = poll_descriptors(descriptors, &pollarg[0], -1);
+#endif
     if ( r == -1 || huped || killed ) {
 	if ( huped ) {
 	    my_log("reconfigure request\n");
 	    huped = 0;
 	    pthread_sigmask(SIG_SETMASK, &oset, NULL);
 	    pthread_attr_destroy(&p_attr);
+	    xfree(pollarg);
 	    return;
 	}
 	if ( killed ) {
@@ -205,24 +237,20 @@ wait_clients:
 	} else {
 	    process_icp_msg(icp_so, icp_buf, r, &icp_sa);
 	}
+	r--; /* one descriptor processed */
     }
     if ( IS_READABLE(&pollarg[0]) ) {
 	cli_addr_len = sizeof(cli_addr);
 	r = accept(server_so, (struct sockaddr*)&cli_addr, &cli_addr_len);
 	if ( r >= 0 ) {
 	    if ( use_workers ) {
-		work_t	*work = xmalloc(sizeof(*work),"");
+	        work_t  *work = xmalloc(sizeof(*work),"");
 		if ( work ) {
 		    work->so = r;
 		    work->f  = run_client;
+		    work->flags = WORK_NORMAL;
 		    dataq_enqueue(&wq, (void*)work);
-		    if ( (clients_number >= current_workers) &&
-		         (current_workers < max_workers) ) {
-			pthread_t thread;
-			pthread_create(&thread, NULL, worker, NULL);
-			current_workers++;
-			printf("Current_workers now: %d\n", current_workers);
-		    }
+		    add_workers();
 		} else { /* failed to create worker */
 		    close(r);
 		}
@@ -231,13 +259,76 @@ wait_clients:
 		pthread_sigmask(SIG_BLOCK, &newset, &oset);
 		/* well, process with this client */
 		res = pthread_create(&cli_thread, &p_attr, run_client, (void*)r);
-		if ( res )
+		if ( res ) {
 		    my_log("Can't pthread_create\n");
+		    close(r);
+		}
 		pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
 	    }
 	}
+	r--; /* one descriptor processed */
+    }
+    if ( r && listen_so_list ) {
+	struct	listen_so_list	*list = listen_so_list;
+	struct	sockaddr	cli_addr;
+	int			k=2, rc, cli_addr_len = sizeof(cli_addr);
+	while(list) {
+	    if (IS_READABLE(&pollarg[k]) ) {
+		/* accept it */
+		rc = accept(pollarg[k].fd, &cli_addr, &cli_addr_len);
+		if ( rc < 0 ) goto acc_f;
+		if ( list->process_call ) {
+		    run_module(rc, list->process_call);
+		} else {
+		    pthread_t 	cli_thread;
+		    pthread_sigmask(SIG_BLOCK, &newset, &oset);
+		    /* well, process with this client */
+		    res = pthread_create(&cli_thread, &p_attr, run_client, (void*)r);
+		    if ( res ) {
+			my_log("Can't pthread_create\n");
+			close(rc);
+		    }
+		    pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
+		}
+	    }
+	acc_f:
+	    k++;
+	    list = list->next;
+	}
     }
     goto wait_clients;
+}
+
+void*
+run_module(int so, void *(f)(void*))
+{
+pthread_t 		cli_thread;
+int			res;
+
+    my_log("Runnig module\n");
+    if ( use_workers ) {
+	work_t  *work = xmalloc(sizeof(*work),"");
+	if ( work ) {
+	    work->so = so;
+	    work->f  = f;
+	    work->flags = WORK_MODULE;
+	    dataq_enqueue(&wq, (void*)work);
+	    add_workers();
+	} else { /* failed to create worker */
+	    close(so);
+	}
+    } else {
+	pthread_sigmask(SIG_BLOCK, &newset, &oset);
+	/* well, process with this client */
+	res = pthread_create(&cli_thread, &p_attr, f, (void*)so);
+	if ( res ) {
+	    my_log("Can't pthread_create\n");
+	    close(so);
+	    return(NULL);
+	}
+	pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
+    }
+    return(NULL);
 }
 
 FILE	*logf;
@@ -273,4 +364,17 @@ struct storage_st	*storage;
     }
     if ( logf )
 	fclose(logf);
+}
+void
+add_workers()
+{
+    if ( (clients_number >= current_workers) &&
+	(current_workers < max_workers) ) {
+	pthread_t thread;
+	pthread_sigmask(SIG_BLOCK, &newset, &oset);
+	pthread_create(&thread, NULL, worker, NULL);
+	pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
+	current_workers++;
+	printf("Current_workers now: %d\n", current_workers);
+    }
 }

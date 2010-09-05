@@ -1,6 +1,15 @@
-04.07.99 version 1.1pl1 -------------------------------------------
-		linuxthreads deadlock workaround
-		using workers threads
+		FreeBSD threads bug workaround: now under FreeBSD
+		sessions will not be broken after SIGHUP
+19.07.99 version 1.2a ---------------------------------------------
+		listeners (oopsctl - first listener module).
+		Expire process at startup delayed untill storages checked.
+		thread pool implemented to workaround LinuxThreads bug.
+		thread pool can be turned on with -w <N> option. It is
+		turned on authomatically under Linux.
+	28.06.99
+		stdout and stderr are unbuffered now. Default mode
+		for logs also "unbuffered", but can be changed in
+		oops.cfg
 28.06.99 version 1.1 ----------------------------------------------
 	22.06.99
 		some performance emprovements: bt_pagesize=16k, instead

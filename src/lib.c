@@ -1041,6 +1041,148 @@ int	rc=-1;
 	struct	pollarg *pa;
 	struct timeval	tv, *tvp = &tv;
 
+   restart:
+	if ( msec >= 0 ) {
+	    tv.tv_sec =  msec/1000 ;
+	    tv.tv_usec = (msec%1000)*1000 ;
+	} else {
+	    tvp = NULL;
+	}
+	FD_ZERO(&rset);
+	FD_ZERO(&wset);
+	pa = args;
+	for(i=0;i<n;i++){
+	    if ( pa->request & FD_POLL_RD ) {
+		have_read = 1;
+		FD_SET(pa->fd, &rset);
+		maxfd = MAX(maxfd, pa->fd);
+	    }
+	    if ( pa->request & FD_POLL_WR ) {
+		have_write = 1;
+		FD_SET(pa->fd, &wset);
+		maxfd = MAX(maxfd, pa->fd);
+	    }
+	    pa->answer = 0;
+	    pa++;
+	}
+	if ( have_read && !have_write  )
+	    rc = select(maxfd+1, &rset, NULL, NULL, tvp);
+	else if ( !have_read && have_write  )
+	    rc = select(maxfd+1, NULL, &wset, NULL, tvp);
+	else if ( have_read && have_write   )
+	    rc = select(maxfd+1, &rset, &wset, NULL, tvp);
+	else if ( !have_read && !have_write )
+	    rc = select(maxfd+1, NULL, NULL, NULL, tvp);
+	if ( rc <= 0 ) {
+#ifdef	FREEBSD
+	    if ( rc < 0 && errno == EINTR )
+		goto restart;
+#endif
+	    return(rc);
+	}
+	/* copy results back */
+	pa = args;
+	for(i=0;i<n;i++){
+	    if ( pa->request & FD_POLL_RD ) {
+		/* was request on read */
+		if ( FD_ISSET(pa->fd, &rset) )
+			pa->answer |= FD_POLL_RD;
+	    }
+	    if ( pa->request & FD_POLL_WR ) {
+		/* was request on write */
+		if ( FD_ISSET(pa->fd, &wset) )
+			pa->answer |= FD_POLL_WR;
+	    }
+	    pa++;
+	}
+	return(rc);
+#endif
+
+    } else {
+
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+	rc = poll(NULL, 0, msec);
+#else
+	struct timeval	tv;
+   restart0:
+	tv.tv_sec =  msec/1000 ;
+	tv.tv_usec = (msec%1000)*1000 ;
+	rc = select(1, NULL, NULL, NULL, &tv);
+#ifdef	FREEBSD
+	if ( (rc < 0) && (errno == EINTR) )
+		goto restart0;
+#endif
+#endif
+
+    }
+    return(rc);
+}
+#ifdef	FREEBSD
+/* Under FreeBSD all threads get poll/select interrupted (even in
+   threads with signals blocked, so we need version of poll_descriptors
+   which can detect interrupts, and version which ignore interrupts
+   This function don't ignore and must be called from main thread
+   only.
+ */
+int
+poll_descriptors_S(int n, struct pollarg *args, int msec)
+{
+int	rc=-1;
+
+    if ( n > 0 ) {
+
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
+			    *pollfdsaved = NULL, *pfdc;
+	struct	pollarg *pa;
+	int		i;
+
+	if ( msec < 0 ) msec = -1;
+	if ( n > MAXPOLLFD ) {
+	    pollfdsaved = pollptr = xmalloc(n*sizeof(struct pollfd),"");
+	    if ( !pollptr ) return(-1);
+	} else
+	    pollptr = pollfd;
+	/* copy args to poll argument */
+	pfdc = pollptr;
+	bzero(pollptr, n*sizeof(struct pollfd));
+	pa = args;
+	for(i=0;i<n;i++) {
+	    if ( pa->fd>0)
+		pfdc->fd = pa->fd;
+	      else
+		pfdc->fd = -1;
+	    pfdc->revents = 0;
+	    if ( pa->request & FD_POLL_RD ) pfdc->events |= POLLIN;
+	    if ( pa->request & FD_POLL_WR ) pfdc->events |= POLLOUT;
+	    if ( !(pfdc->events & (POLLIN|POLLOUT) ) )
+		pfdc->fd = -1;
+	    pa->answer = 0;
+	    pa++;
+	    pfdc++;
+	}
+	rc = poll(pollptr, n, msec);
+	if ( rc <= 0 ) {
+	    if ( pollfdsaved ) xfree(pollfdsaved);
+	    return(rc);
+	}
+	/* copy results back */
+	pfdc = pollptr;
+	pa = args;
+	for(i=0;i<n;i++) {
+	    if ( pfdc->revents & (POLLIN|POLLHUP) ) pa->answer  |= FD_POLL_RD;
+	    if ( pfdc->revents & (POLLOUT|POLLHUP) ) pa->answer |= FD_POLL_WR;
+	    pa++;
+	    pfdc++;
+	}
+	if ( pollfdsaved ) xfree(pollfdsaved);
+	return(rc);
+#else
+	fd_set	rset, wset;
+	int	maxfd = 0,i, have_read = 0, have_write = 0;
+	struct	pollarg *pa;
+	struct timeval	tv, *tvp = &tv;
+
 
 	if ( msec >= 0 ) {
 	    tv.tv_sec =  msec/1000 ;
@@ -1108,7 +1250,7 @@ int	rc=-1;
     }
     return(rc);
 }
-
+#endif
 char*
 my_inet_ntoa(struct sockaddr_in * sa)
 {

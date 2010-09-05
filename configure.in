@@ -218,4 +218,4 @@ AC_SUBST(STRTOKSRC)
 AC_SUBST(STRTOKOBJ)
 AC_SUBST(SOFLAGS)
 
-AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg)
+AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg src/config.h)

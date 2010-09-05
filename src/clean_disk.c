@@ -36,6 +36,7 @@ time_t		last_expire = 0;
 
 void		check_expire();
 void		sync_storages();
+int		forced_cleanup = 0;
 
 long
 count_total_free()
@@ -64,21 +65,43 @@ long		  res = 0;
     return(res);
 }
 
+int
+start_cleanup(int total_blks, int total_free, int low_free)
+{
+    if ( forced_cleanup )
+	return(1);
+    if ( ( low_free > 0 ) && ((total_free*100)/total_blks < low_free) )
+	return(1);
+    if ( !low_free && ( total_free < 128 ) )
+	return(1);
+    return(0);
+}
+int
+continue_cleanup(int total_blks, int total_free, int hi_free)
+{
+    if ( (hi_free > 0) && ((total_free*100)/total_blks < hi_free) )
+	return(1);
+    if ( !hi_free && ( total_free < 512 ) )
+	return(1);
+    return(0);
+}
+
 void*
 clean_disk(void *arg)
 {
 struct	storage_st	*storage;
 DBC			*dbcp;
 DBT			key, data;
-int			rc, forced_cleanup = 0;
+int			rc;
 long			total_free, total_blks;
 struct	disk_ref	*disk_ref;
 time_t			now;
 
     arg = arg ;
     while(1) {
-
-	check_expire();
+	pthread_mutex_lock(&st_check_in_progr_lock);
+	if ( !st_check_in_progr ) check_expire();
+	pthread_mutex_unlock(&st_check_in_progr_lock);
 
 	now = time(NULL);
 
@@ -99,7 +122,7 @@ time_t			now;
 	    my_sleep(10);
 	    continue;
 	}
-	if ( (total_free*100)/total_blks < disk_low_free || forced_cleanup ) {
+	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
 	    my_log("Need disk clean up: free: %d/total: %d\n", total_free, total_blks);
 	    /* 1. create db cursor */
 	    rc = dbp->cursor(dbp, NULL, &dbcp
@@ -112,7 +135,7 @@ time_t			now;
 		goto err;
 	    }
 	    WRLOCK_DB ;
-	    while ((total_free*100)/total_blks < disk_hi_free ) {
+	    while ( continue_cleanup(total_blks, total_free, disk_hi_free) ) {
 		bzero(&key, sizeof(key));
 		bzero(&data, sizeof(data));
 		key.flags = data.flags = DB_DBT_MALLOC;

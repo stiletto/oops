@@ -47,6 +47,8 @@ int		r;
 		my_log("Rotate File %s\n", logfile);
 		rwl_wrlock(&log_lock);
 		rotate_file(logfile,&logf,log_num);
+		if ( logf && !logs_buffered )
+		    setbuf(logf, NULL);
 		rwl_unlock(&log_lock);
 	    } else
 	    	my_log("No need to rotate %s\n", logfile);
@@ -59,6 +61,8 @@ int		r;
 		my_log("Rotate File %s\n", accesslog);
 		pthread_mutex_lock(&accesslog_lock);
 		rotate_file(accesslog,&accesslogf,accesslog_num);
+		if ( accesslogf && !logs_buffered )
+		    setbuf(accesslogf, NULL);
 		pthread_mutex_unlock(&accesslog_lock);
 	    } else
 		my_log("No need to rotate %s\n", accesslog);

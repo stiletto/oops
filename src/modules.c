@@ -41,6 +41,7 @@ struct	err_module	*err_first = NULL;
 struct	auth_module	*auth_first = NULL;
 struct	output_module	*output_first = NULL;
 struct	redir_module	*redir_first = NULL;
+struct	listener_module	*listener_first = NULL;
 
 void	insert_module(struct general_module*, struct general_module**);
 
@@ -73,6 +74,12 @@ struct general_module	*res;
 	res = res->next;
     }
     res = (struct general_module*)output_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return(res);
+	res = res->next;
+    }
+    res = (struct general_module*)listener_first;
     while( res ) {
 	if ( !strcasecmp(res->name, name) )
 	    return(res);
@@ -158,8 +165,11 @@ struct	err_module	*err_module;
 struct	auth_module	*auth_module;
 struct	redir_module	*redir_module;
 struct	output_module	*output_module;
+struct	listener_module	*listener_module;
+
 char			*nptr;
 
+    global_mod_chain = NULL;
     bzero(&globbuf, sizeof(globbuf));
     if ( glob("./modules/*.so", 0, NULL, &globbuf) ) {
 	printf("can't glob on ./modules\n");
@@ -194,6 +204,7 @@ char			*nptr;
 		    strncpy(MOD_NAME(log_module), nptr, MODNAMELEN-1);
 		if ( log_module->general.load )
 			(*log_module->general.load)();
+		log_module->general.type = MODULE_LOG;
 		insert_module((struct general_module*)log_module,
 			      (struct general_module**)&log_first);
 		break;
@@ -219,6 +230,7 @@ char			*nptr;
 		err_module->err	   = (mod_load_t*)dlsym(modh, "err");
 		if ( MOD_LOAD(err_module) )
 			(*MOD_LOAD(err_module))();
+		err_module->general.type = MODULE_ERR;
 		insert_module((struct general_module*)err_module,
 			      (struct general_module**)&err_first);
 		break;
@@ -244,6 +256,7 @@ char			*nptr;
 		auth_module->auth = (mod_load_t*)dlsym(modh, "auth");
 		if ( MOD_LOAD(auth_module) )
 			(*MOD_LOAD(auth_module))();
+		auth_module->general.type = MODULE_AUTH;
 		insert_module((struct general_module*)auth_module,
 			      (struct general_module**)&auth_first);
 		break;
@@ -269,6 +282,7 @@ char			*nptr;
 		redir_module->redir = (mod_load_t*)dlsym(modh, "redir");
 		if ( MOD_LOAD(redir_module) )
 			(*MOD_LOAD(redir_module))();
+		redir_module->general.type = MODULE_REDIR;
 		insert_module((struct general_module*)redir_module,
 			      (struct general_module**)&redir_first);
 		break;
@@ -294,8 +308,35 @@ char			*nptr;
 		output_module->output = (mod_load_t*)dlsym(modh, "output");
 		if ( MOD_LOAD(output_module) )
 			(*MOD_LOAD(output_module))();
+		output_module->general.type = MODULE_OUTPUT;
 		insert_module((struct general_module*)output_module,
 			      (struct general_module**)&output_first);
+		break;
+	      case MODULE_LISTENER:
+		printf("(Listener module)\n");
+		/* allocate module structure */
+		listener_module = (struct listener_module*)xmalloc(sizeof(*listener_module), "for listener_module");
+		if ( !listener_module ) {
+		    dlclose(modh);
+		}
+		bzero(listener_module, sizeof(*listener_module));
+		MOD_HANDLE(listener_module) = modh;
+		MOD_LOAD(listener_module)   = (mod_load_t*)dlsym(modh, "mod_load");
+		MOD_UNLOAD(listener_module) = (mod_load_t*)dlsym(modh, "mod_unload");
+		MOD_CONFIG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config");
+		MOD_CONFIG_BEG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
+		MOD_CONFIG_END(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		*MOD_NAME(listener_module) = 0;
+		nptr = (char*)dlsym(modh, "module_name");
+		if ( nptr )
+		    strncpy(MOD_NAME(listener_module), nptr, MODNAMELEN-1);
+
+		listener_module->process_call = (mod_load_t*)dlsym(modh, "process_call");
+		if ( MOD_LOAD(listener_module) )
+			(*MOD_LOAD(listener_module))();
+		listener_module->general.type = MODULE_LISTENER;
+		insert_module((struct general_module*)listener_module,
+			      (struct general_module**)&listener_first);
 		break;
 	      default:
 		printf(" (Unknown module type. Unload it)\n");
@@ -318,12 +359,23 @@ struct	general_module *first = *list;
 	return;
     if (!first) {
 	*list = mod;
-	return;
+	goto gi;
     }
     while (first->next) {
 	first = first->next;
     }
     first->next = mod;
+gi:
+    /* insert in global chain */
+    first = global_mod_chain;
+    if ( !first ) {
+	global_mod_chain = mod;
+	return;
+    }
+    while (first->next_global) {
+	first = first->next_global;
+    }
+    first->next_global = mod;
 }
 
 int

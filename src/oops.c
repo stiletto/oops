@@ -39,6 +39,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -46,6 +47,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	<db.h>
 
+#include	"config.h"
 #include	"oops.h"
 #include	"version.h"
 
@@ -59,6 +61,7 @@ char	hostname[64];
 struct	sockaddr_in	Me;
 int	run_daemon = 0;
 int	pid_d = -1;
+int	check_config_only;
 struct	hash_entry	hash_table[HASH_SIZE];
 int	skip_check=0, checked=0;
 void	print_networks(struct cidr_net **, int, int), print_acls(), free_acl(struct acls *);
@@ -73,7 +76,12 @@ static	int	my_bt_compare(const DBT*,const DBT*);
 int
 usage(void)
 {
-    printf("usage: addrd [-{C|c} config_filename]\n");
+    printf("usage: addrd [-{C|c} config_filename] [-{Z|z}] [-V] [-w num] [-W num]\n");
+    printf("-C|c filename	- path to config file\n");
+    printf("-z|Z		- format storages\n");
+    printf("-V		- show version info\n");
+    printf("-w number	- use thread pool. number define initial size of the pool.\n");
+    printf("-W number	- limit thread pool size to number\n");
     return(0);
 }
 
@@ -85,18 +93,38 @@ int	i, rc;
 int	format_storages = 0;
 
     use_workers = 0;
+    max_workers = 0;
+    current_workers = 0;
+    check_config_only = FALSE;
+    my_pid = getpid();
+    /* set stdout unbuffered					*/
+    setbuf(stdout, NULL);
+    /* stderr by default is unbuffered, but this wont hurt 	*/
+    setbuf(stderr, NULL);
+
     if ( argc > 1)
-    while( (c=getopt(argc, argv, "Zzw:c:C:hDds")) != EOF ) {
+    while( (c=getopt(argc, argv, "W:w:Zzc:C:hDdsV")) != EOF ) {
 	switch(c) {
-	case('c'):
+	case('V'):
+		printf("oops version %s\n\n", VERSION);
+		printf("CC=%s\n\n", OOPS_CC);
+		printf("CFLAGS=%s\n\n", OOPS_CFLAGS);
+		printf("LIBS=%s\n\n", OOPS_LIBS);
+		exit(0);
 	case('C'):
+	    check_config_only = TRUE;
+	case('c'):
 	    /* configfile */
 	    configfile = optarg;
 	    continue;
 	case('w'):
 	    /* workers */
 	    use_workers = atoi(optarg);
-	    continue;
+	    break;
+	case('W'):
+	    /* workers */
+	    max_workers = atoi(optarg);
+	    break;
 	case('H'):
 	case('h'):
 	    usage();
@@ -130,8 +158,20 @@ int	format_storages = 0;
 
 #ifdef	LINUX
     if ( !use_workers ) use_workers = 10;
+#ifdef	RLIM_NPROC
+    {
+	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
+	    max_workers = rl.rlim_cur;
+	} else
+	    max_workers = 250;
+    }
+#else
+    max_workers = 256;
 #endif
-
+#endif
+    if ( (use_workers > 0) && (max_workers <= 0) ) {
+	max_workers = 512;
+    }
     remove_limits();
     for(i=0;i<HASH_SIZE;i++) {
 	bzero(&hash_table[i], sizeof(hash_table[i]));
@@ -165,6 +205,7 @@ int	format_storages = 0;
     local_networks	= NULL;
     local_networks_sorted = NULL;
     local_networks_sorted_counter = 0;
+    listen_so_list = NULL;
     oldest_obj = youngest_obj = NULL;
     pthread_mutex_init(&obj_chain, NULL);
     pthread_mutex_init(&malloc_mutex, NULL);
@@ -172,6 +213,7 @@ int	format_storages = 0;
     pthread_mutex_init(&accesslog_lock, NULL);
     pthread_mutex_init(&icp_resolver_lock, NULL);
     pthread_mutex_init(&dns_cache_lock, NULL);
+    pthread_mutex_init(&st_check_in_progr_lock, NULL);
     rwl_init(&config_lock);
     rwl_init(&log_lock);
     rwl_init(&db_lock);
@@ -181,12 +223,16 @@ int	format_storages = 0;
     bzero(&oops_stat, sizeof(oops_stat));
     pthread_mutex_init(&oops_stat.s_lock, NULL);
 #ifdef	MODULES
-    load_modules();
+    if ( !check_config_only )
+	load_modules();
 #endif
     base_64_init();
 
 run:
     reconfig_request = 1;
+    pthread_mutex_lock(&st_check_in_progr_lock);
+    st_check_in_progr = TRUE;
+    pthread_mutex_unlock(&st_check_in_progr_lock);
     WRLOCK_CONFIG;
     bzero(base,		sizeof(base));
     bzero(logfile,	sizeof(logfile));  log_num = log_size = 0;
@@ -215,6 +261,7 @@ run:
     maxresident		= DEFAULT_MAXRESIDENT;
     dns_ttl		= DEFAULT_DNS_TTL;
     icp_timeout		= DEFAULT_ICP_TIMEOUT;
+    logs_buffered	= FALSE;
 
     bzero(&dbenv, sizeof(dbenv));
     bzero(&dbinfo,sizeof(dbinfo));
@@ -253,8 +300,15 @@ run:
 	free_peers(peers);
 	peers = NULL;
     }
+
+    if ( listen_so_list ) {
+	close_listen_so_list(listen_so_list);
+	listen_so_list = NULL;
+    }
+
     /* go read config */
     if ( readconfig(configfile) ) exit(1);
+    if ( check_config_only ) exit(0);
 
     sort_networks();
     (void)print_networks(sorted_networks_ptr,sorted_networks_cnt, TRUE);
@@ -279,6 +333,8 @@ run:
 	    fclose(logf);
 	logf = fopen(logfile, "a");
 	if ( !logf ) printf("%s: %s\n", logfile, strerror(errno));
+	if ( logf && !logs_buffered )
+	    setbuf(logf, NULL);
 	rwl_unlock(&log_lock);
     }
     if ( accesslog[0] != 0 ) {
@@ -286,6 +342,8 @@ run:
 	    fclose(accesslogf);
 	accesslogf = fopen(accesslog, "a");
 	if ( !accesslogf ) printf("%s: %s\n", accesslog, strerror(errno));
+	if ( accesslogf && !logs_buffered )
+	    setbuf(accesslogf, NULL);
     }
 
     next_alloc_storage = NULL;
@@ -324,8 +382,12 @@ run:
     }
     prepare_storages();
     my_log( "oops%sStarted\n", VERSION);
+    version = VERSION;
 #ifdef	DB_VERSION_STRING
     my_log("DB engine by %s\n", DB_VERSION_STRING);
+    db_ver = DB_VERSION_STRING;
+#else
+    db_ver = "Unknown";
 #endif
     if ( pidfile[0] != 0 ) {
 	char	pid[11];
@@ -695,4 +757,38 @@ my_bt_compare(const DBT* a, const DBT* b)
 {
     if ( a->size != b->size ) return(a->size-b->size);
     return(memcmp(a->data, b->data, a->size));
+}
+
+int
+close_listen_so_list(struct listen_so_list *list)
+{
+struct listen_so_list *next;
+
+    while(list) {
+	next = list->next;
+	if ( list->so != -1 ) close(list->so);
+	xfree(list);
+	list = next;
+    }
+}
+int
+add_socket_to_listen_list(int so, int flags, void* (*f)(void*))
+{
+struct	listen_so_list *new = xmalloc(sizeof(*new),""), *next;
+
+    if ( !new ) return(1);
+    new->so = so;
+    new->flags = flags;
+    new->process_call = f;
+    new->next = NULL;
+    if ( !listen_so_list ) {
+	listen_so_list = new;
+	return(0);
+    } else {
+	next = listen_so_list;
+	while (next->next)
+	    next = next->next;
+	next->next = new;
+    }
+    return(0);
 }

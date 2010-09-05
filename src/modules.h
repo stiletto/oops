@@ -10,6 +10,7 @@
 #define	MODULE_AUTH	3
 #define	MODULE_OUTPUT	4
 #define	MODULE_REDIR	5
+#define	MODULE_LISTENER	6
 
 #define	MODNAMELEN	16
 
@@ -24,6 +25,8 @@
 
 typedef	int (mod_load_t)();
 
+struct	general_module		*global_mod_chain;
+
 struct	general_module {
 	struct general_module	*next;
 	void			*handle;
@@ -33,6 +36,8 @@ struct	general_module {
 	int			(*config_beg)();
 	int			(*config_end)();
 	int			(*config)(char*);
+	struct general_module	*next_global;
+	int			type;
 };
 
 struct	log_module {
@@ -57,6 +62,11 @@ struct	redir_module {
 struct	output_module {
 	struct	general_module	general;
 	int	(*output)(int, struct output_object*, struct request*, int*);
+};
+
+struct	listener_module {
+	struct	general_module	general;
+	int	(*process_call)(int);
 };
 
 struct	general_module	*module_by_name(char*);

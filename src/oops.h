@@ -492,6 +492,10 @@ struct	peer	{
 	int			addr_age;	/* resolve only after some timeout */
 	struct	sockaddr_in	addr;
 	int			state;		/* state like UP/DOWN...	*/
+	int			rq_sent;	/* tot. requests sent	*/
+	int			an_recvd;	/* tot. answers		*/
+	int			hits_recvd;	/* tot. hits received	*/
+	int			rq_recvd;	/* tot. reqs received	*/
 };
 
 struct	icp_queue_elem {
@@ -523,12 +527,22 @@ struct  charset {
 	struct  string_list	*CharsetAgent;
 	char			*Table;
 };
-                                
-typedef struct	work {
+
+#define	WORK_NORMAL	1
+#define	WORK_MODULE	2
+typedef	struct	work {
 	int	so;		/* socket		*/
 	void*	(*f)(void*);	/* processor or NULL	*/
+	int	flags;
 } work_t;
 
+
+struct	listen_so_list	{
+	int			so;
+	int			flags;
+	void			*(*process_call)(void*);/* this will be called after accept() */
+	struct	listen_so_list	*next;
+};
 
 #define	LOCK_STATISTICS(s)	pthread_mutex_lock(&s.s_lock)
 #define	UNLOCK_STATISTICS(s)	pthread_mutex_unlock(&s.s_lock)
@@ -541,6 +555,8 @@ struct	oops_stat {
 	uint32_t	requests_icp;	/* total icp requests processed		*/
 	uint32_t	requests_http0;	/* current minute requests		*/
 	uint32_t	hits0;		/* current minute hits			*/
+	uint32_t	requests_http1;	/* last minute requests			*/
+	uint32_t	hits1;		/* last minute hits			*/
 	uint32_t	storages_free;	/* current free storage %%		*/
 };
 
@@ -556,6 +572,7 @@ struct	pollarg {
 	short	answer;
 };
 
+time_t		start_time;
 struct		mem_obj	*youngest_obj, *oldest_obj;
 rwl_t		config_lock;
 rwl_t		log_lock;
@@ -599,6 +616,7 @@ int		kill_request, reconfig_request;
 time_t		global_sec_timer;
 int		dns_ttl;
 int		icp_timeout;
+int		logs_buffered;
 
 pthread_mutex_t	obj_chain;
 pthread_mutex_t	malloc_mutex;
@@ -606,18 +624,26 @@ pthread_mutex_t	clients_lock;
 pthread_mutex_t	accesslog_lock;
 pthread_mutex_t	icp_resolver_lock;
 pthread_mutex_t	dns_cache_lock;
+pthread_mutex_t	st_check_in_progr_lock;
 
 DB_ENV			dbenv;
 DB_INFO			dbinfo;
 
 int			use_workers;
+int			current_workers;
+int			max_workers;
 int			total_alloc;
 int			clients_number;
 int			total_objects;
+char			*version;
+char			*db_ver;
+pid_t			my_pid;
+int			st_check_in_progr;
 struct	oops_stat	oops_stat;
 struct	peer		*peers;
 struct	group		*groups;
 struct	cidr_net	**sorted_networks_ptr;
+struct	listen_so_list	*listen_so_list;
 int			sorted_networks_cnt;
 void			sort_networks();
 void			add_to_stop_cache(char*);
@@ -740,3 +766,7 @@ int		miss_deny(struct group*);
 int		put_av_pair(struct av **, char *, char*);
 struct	av	*lookup_av_by_attr(struct av*, char*);
 int		poll_descriptors(int, struct pollarg*, int);
+#ifdef		FREEBSD
+int		poll_descriptors_S(int, struct pollarg*, int);
+#endif
+int		add_socket_to_listen_list(int, int, void* (*f)(void*));

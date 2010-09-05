@@ -106,12 +106,6 @@ struct	peer	*peer;
     icp_opt		= 0;
     peer = peers;
     while ( peer ) {
-	/* skip if we don't want to use this peers for this domain */
-	if ( !is_domain_allowed(rq->url.host, peer->acls) ) {
-	    peer = peer->next;
-	    continue;
-	}
-	my_log("sending to: %s\n", peer->name);
 	if ( rq->request_time - peer->addr_age >= ADDR_AGE ) {
 	    struct	sockaddr_in	sa;
 
@@ -136,12 +130,20 @@ struct	peer	*peer;
 	    }
 	    pthread_mutex_unlock(&icp_resolver_lock);
 	}
+	/* skip if we don't want to use this peers for this domain */
+	if ( !is_domain_allowed(rq->url.host, peer->acls) ) {
+	    peer = peer->next;
+	    continue;
+	}
+	my_log("sending to: %s\n", peer->name);
 	rr = sendto(icp_so, buf, len, 0, (struct sockaddr*)&peer->addr, sizeof(struct sockaddr_in));
 	if ( rr != -1 ) {
 	    if ( !TEST(peer->state, PEER_DOWN) ) succ++;
 	} else {
 	    my_log("Sendto: %s\n", strerror(errno));
 	}
+	/* as is just statistics, let it only approximate */
+	peer->rq_sent++;
 	peer = peer->next;
     }
     xfree(buf);
@@ -190,6 +192,15 @@ struct	icp_lookup	icp_lookup;
 		LOCK_STATISTICS(oops_stat);
 		    oops_stat.requests_icp++;
 		UNLOCK_STATISTICS(oops_stat);
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( peer ) {
+		    /* here update peer statistics			*/
+		    peer->rq_recvd++;
+		} else {
+		    my_log("Peer not found\n");
+		}
+		UNLOCK_CONFIG ;
 		if ( len != ntohs(icp_msg_len) ) {
 		    my_log("Wrong len\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
@@ -252,6 +263,8 @@ struct	icp_lookup	icp_lookup;
 		    break;
 		}
 		/* here update peer statistics			*/
+		peer->an_recvd++;
+		peer->hits_recvd++;
 		icp_lookup.sa  = *sa;
 		icp_lookup.sa.sin_port = htons(peer->http_port);
 		icp_lookup.type= peer->type;
@@ -275,6 +288,7 @@ struct	icp_lookup	icp_lookup;
 		    break;
 		}
 		/* here update peer statistics			*/
+		peer->an_recvd++;
 		icp_lookup.sa  = *sa;
 		icp_lookup.sa.sin_port = htons(peer->http_port);
 		icp_lookup.type= peer->type;
@@ -285,16 +299,100 @@ struct	icp_lookup	icp_lookup;
 		list_traverse(&icp_requests_list, process_miss, &icp_lookup);
 		break;
 	case ICP_OP_ERR:
+		if ( len != ntohs(icp_msg_len) ) {
+		    my_log("Wrong len\n");
+		    return;
+		}
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( !peer ) {
+		    UNLOCK_CONFIG;
+		    my_log("Msg from unknown peer\n");
+		    break;
+		}
+		/* here update peer statistics			*/
+		peer->an_recvd++;
+		UNLOCK_CONFIG;
 		break;
 	case ICP_OP_SECHO:
+		if ( len != ntohs(icp_msg_len) ) {
+		    my_log("Wrong len\n");
+		    return;
+		}
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( !peer ) {
+		    UNLOCK_CONFIG;
+		    my_log("Msg from unknown peer\n");
+		    break;
+		}
+		/* here update peer statistics			*/
+		UNLOCK_CONFIG;
+		peer->an_recvd++;
 		break;
 	case ICP_OP_DECHO:
+		if ( len != ntohs(icp_msg_len) ) {
+		    my_log("Wrong len\n");
+		    return;
+		}
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( !peer ) {
+		    UNLOCK_CONFIG;
+		    my_log("Msg from unknown peer\n");
+		    break;
+		}
+		/* here update peer statistics			*/
+		peer->an_recvd++;
+		UNLOCK_CONFIG;
 		break;
 	case ICP_OP_MISS_NOFETCH:
+		if ( len != ntohs(icp_msg_len) ) {
+		    my_log("Wrong len\n");
+		    return;
+		}
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( !peer ) {
+		    UNLOCK_CONFIG;
+		    my_log("Msg from unknown peer\n");
+		    break;
+		}
+		/* here update peer statistics			*/
+		peer->an_recvd++;
+		UNLOCK_CONFIG;
 		break;
 	case ICP_OP_DENIED:
+		if ( len != ntohs(icp_msg_len) ) {
+		    my_log("Wrong len\n");
+		    return;
+		}
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( !peer ) {
+		    UNLOCK_CONFIG;
+		    my_log("Msg from unknown peer\n");
+		    break;
+		}
+		/* here update peer statistics			*/
+		peer->an_recvd++;
+		UNLOCK_CONFIG;
 		break;
 	case ICP_OP_HIT_OBJ:
+		if ( len != ntohs(icp_msg_len) ) {
+		    my_log("Wrong len\n");
+		    return;
+		}
+		RDLOCK_CONFIG;
+		peer = peer_by_addr(sa);
+		if ( !peer ) {
+		    UNLOCK_CONFIG;
+		    my_log("Msg from unknown peer\n");
+		    break;
+		}
+		/* here update peer statistics			*/
+		peer->an_recvd++;
+		UNLOCK_CONFIG;
 		break;
 	default:
 	     return;

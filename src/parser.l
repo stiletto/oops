@@ -194,6 +194,9 @@ line		[^\n]+
 <INITIAL>{dbname}	{
 		return(DBNAME);
 		}
+<INITIAL>[Ll][Oo][Gg][Ss]_[Bb][Uu][Ff][Ff][Ee][Rr][Ee][Dd]	{
+		return(LOGS_BUFFERED_T);
+		}
 {number}	{
 		yylval.INT = atoi(yytext);
 		return(NUMBER);
@@ -300,7 +303,7 @@ line		[^\n]+
 yyerror()
 {
 	parser_errors++;
-	printf("lex: error on \"%s\" at line %d\n", yytext, atline);
-	return(0);
+	fprintf(stderr, "lex: error on \"%s\" at line %d\n", yytext, atline);
+	exit(1);
 }
 

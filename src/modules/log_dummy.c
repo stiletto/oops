@@ -33,7 +33,7 @@
 
 char	module_type = MODULE_LOG;
 char	module_info[] ="Dummy logging module";
-
+char	module_name[] ="DummyLog";
 int
 mod_load()
 {

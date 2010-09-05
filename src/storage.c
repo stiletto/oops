@@ -975,12 +975,16 @@ abor:
 void
 check_storages(struct storage_st *storage)
 {
+    pthread_mutex_lock(&st_check_in_progr_lock);
+    st_check_in_progr = TRUE;
     while(storage) {
 	check_storage(storage);
 	if ( MUST_BREAK )
 	    break;
 	storage=storage->next;
     }
+    st_check_in_progr = FALSE;
+    pthread_mutex_unlock(&st_check_in_progr_lock);
     return;
 }
 

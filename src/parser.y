@@ -9,7 +9,7 @@
 %token	DSTDOMAIN
 %token	STORAGE SIZE PATH DBNAME DBHOME
 %token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T
-%token	L_EOS ICP_TIMEOUT MODULE
+%token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name
@@ -72,7 +72,7 @@ static	char	*storage_path = NULL, *storage_db = NULL;
 static	int	storage_size = 0;
 static	int	ns_curr;
 
-static	struct	peer_c	*peerc_ptr;
+static	struct	peer_c	*peerc_ptr = NULL;
 static	struct	range	badports[MAXBADPORTS];
 static	struct	range	*badp_p = NULL;
 FILE	*yyin;
@@ -95,6 +95,7 @@ statements	: statement
 
 statement	: logfile
 		| accesslog
+		| logs_buffered
 		| statistics
 		| pidfile
 		| nameserver
@@ -155,6 +156,11 @@ accesslog	: ACCESSLOG STRING L_EOS {
 			accesslog_num = $4;
 			accesslog_size = $5;
 			free($2);
+		}
+
+logs_buffered	: LOGS_BUFFERED_T L_EOS {
+			printf("Making logs buffered\n");
+			logs_buffered = TRUE;
 		}
 
 statistics	: STATISTICS STRING L_EOS {
@@ -471,6 +477,7 @@ peer		: PEER_T string num num '{' peerops '}' L_EOS {
 			    p->next = peer;
 			}
 			bzero(&peer_c, sizeof(peer_c));
+			peer_c.type = PEER_SIBLING;
 			peerc_ptr = NULL;
 		}
 
@@ -1022,7 +1029,7 @@ int		code;
     yyin = cf;
     atline = 1;
     ns_curr = 0;
-    bzero(&peer_c, sizeof(peer_c));
+    bzero(&peer_c, sizeof(peer_c)); peer_c.type = PEER_SIBLING;
     peerc_ptr = NULL;
     bzero((void*)&badports, sizeof(badports));
     code = yyparse();

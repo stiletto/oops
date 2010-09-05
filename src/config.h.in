@@ -1,0 +1,4 @@
+#define	OOPS_HOME	"@prefix@/oops"
+#define	OOPS_CC		"@CC@"
+#define	OOPS_CFLAGS	"@CFLAGS@"
+#define	OOPS_LIBS	"@LIBS@"

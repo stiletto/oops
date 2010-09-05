@@ -76,7 +76,6 @@ struct group 	 *group;
 struct oops_stat temp_stat;
 int		 counter = 0;
 int		 hits, reqs;
-time_t		 start_time;
 
     arg = arg;
     start_time = time(NULL);
@@ -88,6 +87,8 @@ time_t		 start_time;
 
 	    LOCK_STATISTICS(oops_stat);
 	    memcpy(&temp_stat, &oops_stat, sizeof(oops_stat));
+	    oops_stat.requests_http1 = oops_stat.requests_http0;
+	    oops_stat.hits1 = oops_stat.hits0;
 	    oops_stat.requests_http0 = 0;
 	    oops_stat.hits0 = 0;
 	    UNLOCK_STATISTICS(oops_stat);

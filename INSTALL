@@ -12,12 +12,6 @@ General procedure:
 
 6) ./oops -c oops.cfg    - run proxy
 
-Be warned: modules are read from ./modules directory, so you have to start
-oops from the oops "home" directory. like that:
-
-cd /usr/local/oops ; ./oops &
-
-'&' is required in rc-files, as oops don't go in background.
 
 Known problems:
 1) linux - Don't use MIT_PTHREADS. Use LinuxThreads and glibc later
