@@ -27,6 +27,13 @@
 
 #define		MID3(a,b,c)	((40*a+30*b+30*c)/100)
 
+#define		PURGE_INTERVAL	5
+#define		DSTD_CACHE_TTL	(30*60)
+
+void		purge_old_dstd(void*, void*,void*);
+static	void	destroy_entries(hash_t*, struct string_list*);
+static	struct	string_list *purged_entries = NULL;
+
 void
 check_transfer_rate(struct request *rq, int size)
 {
@@ -64,6 +71,8 @@ group_traffic_load(struct group *group)
 {
 int	cbytes, bw;
 
+     if ( !group ) /* this can happens during reconfigure */
+	return(0);
      if ( !(bw = group->bandwidth) ) return(0);
      cbytes = MID(bytes);
      return((cbytes*100)/bw);
@@ -77,6 +86,7 @@ struct peer	 *peer;
 struct oops_stat temp_stat;
 int		 counter = 0;
 int		 hits, reqs;
+int		 purge = PURGE_INTERVAL;
 
     arg = arg;
     start_time = time(NULL);
@@ -126,6 +136,21 @@ int		 hits, reqs;
 		group->cs1 = group->cs0;
 		memset((void*)&group->cs0, 0, sizeof(group->cs0));
 		pthread_mutex_unlock(&group->group_mutex);
+
+		/* remove stale dstdomain cache entries */
+		if ( group->dstdomain_cache ) {
+		    if ( purge <= 0 ) {
+			hash_operate(group->dstdomain_cache, purge_old_dstd, NULL);
+			if ( purged_entries ) {
+			    /* */
+			    destroy_entries(group->dstdomain_cache, purged_entries);
+			    free_string_list(purged_entries);
+			    purged_entries = NULL;
+			}
+			purge = PURGE_INTERVAL;
+		    } else
+			purge--;
+		}
 		group = group->next;
 	    }
 	}
@@ -150,5 +175,38 @@ int		 hits, reqs;
 	UNLOCK_CONFIG;
 
 	my_sleep(1);
+    }
+}
+
+/* realy delete */
+void
+destroy_entries(hash_t *tbl, struct string_list *list)
+{
+struct dstdomain_cache_entry **dstd_ce, *dstd_ce_data;
+
+    if ( !tbl ) return;
+
+    while( list ) {
+	dstd_ce = (struct dstdomain_cache_entry **)hash_get(tbl, list->string);
+	if ( dstd_ce ) {
+	    dstd_ce_data = (struct dstdomain_cache_entry *)*dstd_ce;
+	    if ( dstd_ce_data ) xfree(dstd_ce_data);
+	    *dstd_ce = NULL;
+	    hash_delete(tbl, (void**)dstd_ce);
+	}
+	list = list->next;
+    }
+}
+
+/* create list for further deletion */
+
+void
+purge_old_dstd(void *a1, void *a2, void *a3)
+{
+struct dstdomain_cache_entry *dstd_entry = (struct dstdomain_cache_entry *)a1;
+char			     *key = (char*)a3;
+
+    if ( global_sec_timer - dstd_entry->when_created > DSTD_CACHE_TTL ) {
+	add_to_string_list(&purged_entries, key);
     }
 }

@@ -11,6 +11,7 @@
 #define	MODULE_OUTPUT	4
 #define	MODULE_REDIR	5
 #define	MODULE_LISTENER	6
+#define	MODULE_HEADERS	7
 
 #define	MODNAMELEN	16
 
@@ -62,11 +63,17 @@ struct	redir_module {
 struct	output_module {
 	struct	general_module	general;
 	int	(*output)(int, struct output_object*, struct request*, int*);
+	int	(*compare_u_agents)(char *, char *);
 };
 
 struct	listener_module {
 	struct	general_module	general;
 	int	(*process_call)(int);
+};
+
+struct	headers_module {
+	struct	general_module	general;
+	int	(*match_headers)(struct mem_obj *, struct request *, int*);
 };
 
 struct	general_module	*module_by_name(char*);

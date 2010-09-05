@@ -51,28 +51,37 @@ int
 is_domain_allowed(char *name, struct acls *acls)
 {
 struct	domain_list	*allow = NULL, *deny = NULL, *best_allow = NULL, *best_deny = NULL;
+struct	domain_list	*best_allow1, *best_deny1, *dom;
 struct	acl		*acl;
 
     acl = acls->allow ;
     while ( acl ) {
 	if ( acl->type == ACL_DOMAINDST ) {
-	    allow = (struct domain_list*)acl->list;
-	    break;
+	    dom = (struct domain_list*)acl->list;
+	    best_allow1 = find_best_dom(dom, name);
+	    if ( !best_allow ) best_allow = best_allow1;
+		else {
+	    if (best_allow && best_allow1 && 
+		(best_allow1->length > best_allow->length))
+		    best_allow = best_allow1;
+	    }
 	}
 	acl = acl->next;
     }
     acl = acls->deny ;
     while ( acl ) {
 	if ( acl->type == ACL_DOMAINDST ) {
-	    deny = (struct domain_list*)acl->list;
-	    break;
+	    dom = (struct domain_list*)acl->list;
+	    best_deny1 = find_best_dom(dom, name);
+	    if ( !best_deny ) best_deny = best_deny1;
+		else {
+		    if (best_deny && best_deny1 && 
+			(best_deny1->length > best_deny->length))
+			  best_deny = best_deny1;
+	    }
 	}
 	acl = acl->next;
     }
-    if ( allow )
-	best_allow = find_best_dom(allow, name);
-    if ( deny  )
-	best_deny = find_best_dom(deny, name);
     if ( best_deny  && !best_allow ) return(FALSE);
     if ( best_allow && !best_deny  ) return(TRUE);
     if ( !best_allow && !best_deny ) return(FALSE);
@@ -85,14 +94,16 @@ struct	acl		*acl;
 int
 deny_http_access(int so, struct request *rq)
 {
-struct  sockaddr_in	peer;
-int			peerlen = sizeof(peer);
-struct  group		*group;
-struct	acl		*acl;
-struct	domain_list	*dom, *best_allow, *best_deny;
-struct	domain_list	*best_allow1, *best_deny1;
-char			host[MAXHOSTNAMELEN], lh[MAXHOSTNAMELEN], *t;
-char			*s;
+struct  sockaddr_in		peer;
+int				peerlen = sizeof(peer);
+struct  group			*group;
+struct	acl			*acl;
+struct	domain_list		*dom, *best_allow, *best_deny;
+struct	domain_list		*best_allow1, *best_deny1;
+char				host[MAXHOSTNAMELEN], lh[MAXHOSTNAMELEN], *t;
+char				*s;
+int				dstdomain_cache_result = DSTDCACHE_NOTFOUND;
+struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 
     strncpy(host, (*rq).url.host, sizeof(host)-1);
     if ( !strchr(host, '.') ) {
@@ -126,23 +137,33 @@ char			*s;
 	return(ACCESS_DOMAIN);
     }
     if ( s ) xfree(s);
+
+    /* first, check it in the dstdomain cache */
+    if ( group->dstdomain_cache ) {
+	dst_he = (struct dstdomain_cache_entry**)hash_get(group->dstdomain_cache, host);
+        if ( dst_he ) dst_he_data = *dst_he;
+	if ( dst_he_data ) dstdomain_cache_result = dst_he_data->access;
+    }
+
     best_allow = best_deny = NULL;
     /* find longest allow str */
     acl = group->http->allow;
     while ( acl ) {
 	if ( acl )switch( acl->type ) {
 	case ACL_DOMAINDST:
-		dom = (struct domain_list*)acl->list;
-		best_allow1 = find_best_dom(dom, host);
+		if ( dstdomain_cache_result == DSTDCACHE_NOTFOUND ) {
+		    dom = (struct domain_list*)acl->list;
+		    best_allow1 = find_best_dom(dom, host);
+		    if ( !best_allow ) best_allow = best_allow1;
+			else {
+		    if (best_allow && best_allow1 && 
+		    	(best_allow1->length > best_allow->length))
+			    best_allow = best_allow1;
+		    }
+		}
 		break;
 	default:
 		break;
-	}
-	if ( !best_allow ) best_allow = best_allow1;
-	    else {
-		if (best_allow && best_allow1 && 
-		    (best_allow1->length > best_allow->length))
-		    	best_allow = best_allow1;
 	}
 	acl = acl->next;
     }
@@ -151,27 +172,55 @@ char			*s;
     while( acl ) {
 	if ( acl ) switch( acl->type ) {
 	case ACL_DOMAINDST:
-		dom = (struct domain_list*)acl->list;
-		best_deny1 = find_best_dom(dom, host);
+		if ( dstdomain_cache_result == DSTDCACHE_NOTFOUND ) {
+		    dom = (struct domain_list*)acl->list;
+		    best_deny1 = find_best_dom(dom, host);
+		    if ( !best_deny ) best_deny = best_deny1;
+			else {
+			    if (best_deny && best_deny1 && 
+				(best_deny1->length > best_deny->length))
+				  best_deny = best_deny1;
+		    }
+		}
 		break;
 	default:
 		break;
 	}
-	if ( !best_deny ) best_deny = best_deny1;
-	    else {
-		if (best_deny && best_deny1 && 
-		    (best_deny1->length > best_deny->length))
-		    	best_deny = best_deny1;
-	}
 	acl = acl->next;
     }
-    if ( best_deny  && !best_allow ) return(ACCESS_DOMAIN);
-    if ( best_allow && !best_deny  ) return(port_deny(group, rq));
-    if ( !best_allow && !best_deny ) return(ACCESS_DOMAIN);
-    if ( best_deny->length >= best_allow->length )
-		return(ACCESS_DOMAIN);
-	else
+    if ( dstdomain_cache_result != DSTDCACHE_NOTFOUND ) {
+	if ( group->dstdomain_cache && dst_he )
+	    hash_release(group->dstdomain_cache, (void**)dst_he);
+	if ( dstdomain_cache_result == DSTDCACHE_ALLOW )
 		return(port_deny(group, rq));
+	return(ACCESS_DOMAIN);
+    } else {	/* we must insert data in cache */
+	struct dstdomain_cache_entry	*new;
+
+	if ( best_deny  && !best_allow )
+		dstdomain_cache_result = DSTDCACHE_DENY;
+	else if ( best_allow && !best_deny )
+		dstdomain_cache_result = DSTDCACHE_ALLOW;
+	else if ( !best_allow && !best_deny )
+		dstdomain_cache_result = DSTDCACHE_DENY;
+	else {
+	    if ( best_deny->length >= best_allow->length )
+		dstdomain_cache_result = DSTDCACHE_DENY;
+	      else
+		dstdomain_cache_result = DSTDCACHE_ALLOW;
+	}
+	new = xmalloc(sizeof(*new), "dstdhe");
+	if ( new ) {
+	    new->access = dstdomain_cache_result;
+	    new->when_created = global_sec_timer;
+	    *dst_he = (void*)new;
+	}
+	hash_release(group->dstdomain_cache, (void**)dst_he);
+    }
+    if ( dstdomain_cache_result == DSTDCACHE_ALLOW )
+	    return(port_deny(group, rq));
+	else
+	    return(ACCESS_DOMAIN);
 }
 
 int
@@ -231,10 +280,10 @@ char			*d, *s;
 	    s = &doml->domain[doml->length - 1];
 	    d = &host[hostlen - 1];
 	    while ( i ) {
-		if ( tolower(*s) != tolower(*d) ) break;
+		if ( *s != *d ) break;
 		i--; s--; d--;
 	    }
-	    if ( !i ) {
+	    if ( !i && ((doml->length == hostlen) || *d=='.') ) {
 		if ( !best )
 			best = doml;
 		    else {

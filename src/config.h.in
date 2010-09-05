@@ -2,3 +2,6 @@
 #define	OOPS_CC		"@CC@"
 #define	OOPS_CFLAGS	"@CFLAGS@"
 #define	OOPS_LIBS	"@LIBS@"
+
+#define	HAVE_GETHOSTBYNAME_R	@HAVE_GETHOSTBYNAME_R@
+

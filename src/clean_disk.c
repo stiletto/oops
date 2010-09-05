@@ -165,7 +165,7 @@ time_t			now;
 		}
 		free(key.data);
 		free(data.data);
-		if ( time(NULL) - now >= KEEP_NO_LONGER_THAN || MUST_BREAK ) {
+		if ( global_sec_timer - now >= KEEP_NO_LONGER_THAN || MUST_BREAK ) {
 		    forced_cleanup = TRUE ;
 		    dbcp->c_close(dbcp);
 		    UNLOCK_DB ;
@@ -223,12 +223,12 @@ run:
 	    UNLOCK_DB ;
 	    UNLOCK_CONFIG ;
 	    my_log("EXPIRE Finished: %d expires, %d seconds, %d total\n",
-	    	expired_cnt, time(NULL)-started, total_cnt);
+	    	expired_cnt, global_sec_timer-started, total_cnt);
 	    return ;
 	}
     }
     my_log("EXPIRE started, %d total, %d expired\n", total_cnt, expired_cnt);
-    now = time(NULL);
+    now = global_sec_timer;
     get_counter = 0 ;
     while ( 1 ) {
 	bzero(&key, sizeof(key));
@@ -260,7 +260,7 @@ run:
 	free(key.data);
 	free(data.data);
 	if ( (get_counter > 20) &&
-	     (time(NULL)-now >= KEEP_NO_LONGER_THAN) ) {
+	     (global_sec_timer-now >= KEEP_NO_LONGER_THAN) ) {
 		/* must break */
 	    UNLOCK_DB ;
 	    /* cursor used acros runs, so we can't release CONFIG */
@@ -275,7 +275,7 @@ nodb:
 	dbcp->c_close(dbcp);
     UNLOCK_CONFIG ;
     my_log("EXPIRE Finished: %d expires, %d seconds, %d total\n",
-	expired_cnt, time(NULL)-started, total_cnt);
+	expired_cnt, global_sec_timer-started, total_cnt);
 }
 
 void

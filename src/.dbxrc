@@ -1,3 +1,10 @@
 dbxenv suppress_startup_message 4.0
 ignore SIGLWP
 ignore SIGHUP
+alias p='print'
+alias n='next'
+alias s='step'
+alias c='cont'
+alias l='list'
+alias t='threads'
+alias f='frame'

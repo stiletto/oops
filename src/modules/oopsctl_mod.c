@@ -40,6 +40,7 @@ char	module_info[] = "Oops contlolling module" ;
 static	rwl_t		oopsctl_config_lock;
 
 static	char		socket_path[MAXPATHLEN];
+static	int		html_refresh;
 
 int	oopsctl_so	= -1;
 
@@ -55,6 +56,7 @@ mod_load()
     printf("oopsctl started\n");
     rwl_init(&oopsctl_config_lock);
     socket_path[0] = 0;
+    html_refresh = 0;
     return(MOD_CODE_OK);
 }
 int
@@ -71,6 +73,7 @@ mod_config_beg()
     WRLOCK_OOPSCTL_CONFIG ;
     oopsctl_so = -1;		/* was closed in core */
     socket_path[0] = 0;
+    html_refresh = 0;
     UNLOCK_OOPSCTL_CONFIG ;
 }
 
@@ -97,6 +100,11 @@ char	*p = config;
 	p += 11;
 	while (*p && isspace(*p) ) p++;
 	strncpy(socket_path, p, sizeof(socket_path) -1 );
+    }
+    if ( !strncasecmp(p, "html_refresh", 12) ) {
+	p += 12;
+	while (*p && isspace(*p) ) p++;
+	html_refresh = atoi(p);
     }
 done:
     UNLOCK_OOPSCTL_CONFIG ;
@@ -170,6 +178,8 @@ struct	storage_st	*storage;
 struct	general_module	*mod;
 struct	peer		*peer;
 int			last_min_req_rate, last_min_hit_rate;
+int			tot_req_rate, tot_hit_rate;
+char			ctime_buf[30] = "";
 
     if ( oops_stat.requests_http1 ) {
 	last_min_req_rate = oops_stat.requests_http1/6;
@@ -177,12 +187,24 @@ int			last_min_req_rate, last_min_hit_rate;
     } else {
 	last_min_req_rate = last_min_hit_rate = 0;
     }
+    if ( uptime ) {
+	tot_req_rate = (oops_stat.requests_http*10)/uptime;
+	if ( oops_stat.requests_http )
+		tot_hit_rate = (oops_stat.hits*1000)/oops_stat.requests_http;
+	    else
+		tot_hit_rate = 0;
+    } else {
+	tot_req_rate = tot_hit_rate = 0;
+    }
     write(so, "## --  General info   --\n", 25);
-    sprintf(buf, "Version: %s, db version: %s\n", version, db_ver);
+    sprintf(buf, "Version      : %s, DB version: %s\n", version, db_ver);
     write(so, buf, strlen(buf));
     sprintf(buf, "Uptime       : %dsec, (%dday(s), %dhour(s), %dmin(s))\n",
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
 			(uptime%3600)/60);
+    write(so, buf, strlen(buf));
+    CTIME_R(&global_sec_timer, ctime_buf);
+    sprintf(buf,  "Last update  : %s", ctime_buf);
     write(so, buf, strlen(buf));
     sprintf(buf, "Clients      : %d\n", clients_number);
     write(so, buf, strlen(buf));
@@ -192,11 +214,17 @@ int			last_min_req_rate, last_min_hit_rate;
     write(so, buf, strlen(buf));
     sprintf(buf, "Total hits   : %d\n", oops_stat.hits);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Thread pool  : %d ready to serve (out of %d max)\n", current_workers, max_workers);
-    write(so, buf, strlen(buf));
+    if ( current_workers ) {
+	sprintf(buf, "Thread pool  : %d ready to serve (out of %d max)\n", current_workers, max_workers);
+	write(so, buf, strlen(buf));
+    }
     sprintf(buf, "Curr.req.rate: %d.%d req/sec\n", last_min_req_rate/10, last_min_req_rate%10);
     write(so, buf, strlen(buf));
     sprintf(buf, "Curr.hit.rate: %d.%d %%\n", last_min_hit_rate/10, last_min_hit_rate%10);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "Tot.req.rate : %d.%d req/sec\n", tot_req_rate/10, tot_req_rate%10);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "Tot.hit.rate : %d.%d %%\n", tot_hit_rate/10, tot_hit_rate%10);
     write(so, buf, strlen(buf));
     /* storages */
     write(so, "## --    storages     --\n", 25);
@@ -242,6 +270,9 @@ int			last_min_req_rate, last_min_hit_rate;
 	    break;
 	case(MODULE_LISTENER):
 	    type = "Independent port listener";
+	    break;
+	case(MODULE_HEADERS):
+	    type = "Document headers check";
 	    break;
 	default:
 	    break;
@@ -299,23 +330,41 @@ struct	storage_st	*storage;
 struct	general_module	*mod;
 struct	peer		*peer;
 int			last_min_req_rate, last_min_hit_rate;
+int			tot_req_rate, tot_hit_rate;
+char			ctime_buf[30];
 
     if ( oops_stat.requests_http1 ) {
 	last_min_req_rate = oops_stat.requests_http1/6;
-	last_min_hit_rate = (oops_stat.hits1*10)/oops_stat.requests_http1;
+	last_min_hit_rate = (oops_stat.hits1*1000)/oops_stat.requests_http1;
     } else {
 	last_min_req_rate = last_min_hit_rate = 0;
     }
 
-    sprintf(buf, "<html><title>Oops stat</title><body bgcolor=white>\n");
+    if ( uptime ) {
+	tot_req_rate = (oops_stat.requests_http*10)/uptime;
+	if ( oops_stat.requests_http )
+		tot_hit_rate = (oops_stat.hits*1000)/oops_stat.requests_http;
+	    else
+		tot_hit_rate = 0;
+    } else {
+	tot_req_rate = tot_hit_rate = 0;
+    }
+    sprintf(buf, "<html><title>Oops stat</title>\n");
     write(so, buf, strlen(buf));
-    sprintf(buf, "<table><tr bgcolor=blue><td><font color=yellow>General Info<td>&nbsp</font>\n");
+    if ( html_refresh ) {
+	sprintf(buf, "<META HTTP-EQUIV=\"Refresh\" CONTENT=\"%d\">\n", html_refresh);
+	write(so, buf, strlen(buf));
+    }
+    sprintf(buf, "<body bgcolor=white><table><tr bgcolor=blue><td><font color=yellow>General Info<td>&nbsp</font>\n");
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td valign=top>Version<td>%s, db version: %s\n", version, db_ver);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Uptime<td>%dsec, (%dday(s), %dhour(s), %dmin(s))\n",
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
 			(uptime%3600)/60);
+    write(so, buf, strlen(buf));
+    CTIME_R(&global_sec_timer, ctime_buf);
+    sprintf(buf,  "<tr><td>Last update<td>%s", ctime_buf);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Clients<td>%d\n", clients_number);
     write(so, buf, strlen(buf));
@@ -325,11 +374,17 @@ int			last_min_req_rate, last_min_hit_rate;
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Total hits<td>%d\n", oops_stat.hits);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Thread pool<td>%d ready to serve (out of %d max)\n", current_workers, max_workers);
-    write(so, buf, strlen(buf));
+    if ( current_workers ) {
+	sprintf(buf, "<tr><td>Thread pool<td>%d ready to serve (out of %d max)\n", current_workers, max_workers);
+	write(so, buf, strlen(buf));
+    }
     sprintf(buf, "<tr><td>Curr.req.rate<td>%d.%d req/sec\n", last_min_req_rate/10, last_min_req_rate%10);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Curr.hit.rate<td>%d.%d %%\n", last_min_hit_rate/10, last_min_hit_rate%10);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "<tr><td>Tot.req.rate<td>%d.%d req/sec\n", tot_req_rate/10, tot_req_rate%10);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "<tr><td>Tot.hit.rate<td>%d.%d %%\n", tot_hit_rate/10, tot_hit_rate%10);
     write(so, buf, strlen(buf));
     /* storages */
     sprintf(buf, "<tr bgcolor=blue><td><font color=yellow>Storages</font><td>&nbsp\n");
@@ -346,7 +401,7 @@ int			last_min_req_rate, last_min_hit_rate;
 					(storage->super.blks_free*4096)/(1024*1024));
 	write(so, buf, strlen(buf));
 	sprintf(buf, "<tr><td>State<td>%s\n", (storage->flags&ST_READY)?
-					"READY":"NOT_READY");
+					"READY":"<font color=red>NOT_READY</font>");
 	write(so, buf, strlen(buf));
 	sprintf(buf, "<tr><td>Fileno<td>%d\n", storage->fd);
 	write(so, buf, strlen(buf));

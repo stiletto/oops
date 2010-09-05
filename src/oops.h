@@ -1,5 +1,7 @@
 #include <assert.h>
+#include "config.h"
 #include "llt.h"
+#include "hash.h"
 
 #if	!defined(HAVE_UINT32_T)
 typedef	unsigned	uint32_t;
@@ -88,15 +90,19 @@ typedef	unsigned	uint32_t;
 	tv.tv_sec = 0;tv.tv_usec = 0;\
 	if ( r >= 85 ) {\
 	    if ( r < 95 ) /* start to slow down */\
-		tv.tv_usec = 250;\
+		tv.tv_usec = 2500;\
 	    else if ( r < 100 )\
-		tv.tv_usec = 500;\
+		tv.tv_usec = 5000;\
 	    else\
 		tv.tv_sec = MIN(2,r/100);\
-	    r = select(0, NULL, NULL, NULL, &tv);\
+	    r = poll_descriptors(0, NULL, tv.tv_sec*1000+tv.tv_usec/1000);\
 	}\
     }
 
+#define	FORCE_COMPLETION(obj) \
+	( obj && obj->content_length && obj->size && obj->container && \
+	  !TEST(obj->flags, FLAG_DEAD) && \
+	  ( ((obj->size - obj->container->used)*100)/obj->content_length >= force_completion))
 
 #define MID(A)		((40*group->cs0.A + 30*group->cs1.A + 30*group->cs2.A)/100)
 #if	!defined(ABS)
@@ -124,6 +130,14 @@ typedef	unsigned	uint32_t;
 #define	METH_PUT	3
 #define	METH_CONNECT	4
 #define	METH_TRACE	5
+#define	METH_PROPFIND	6
+#define	METH_PROPPATCH	7
+#define	METH_DELETE	8
+#define	METH_MKCOL	9
+#define	METH_COPY	10
+#define	METH_MOVE	11
+#define	METH_LOCK	12
+#define	METH_UNLOCK	13
 
 #define	AND_PUT		1
 #define	AND_USE		2
@@ -144,6 +158,7 @@ typedef	unsigned	uint32_t;
 #define	ANSW_PROXY_REVALIDATE	(1<<7)
 #define	ANSW_LAST_MODIFIED	(1<<8)
 #define	ANSW_SHORT_CONTAINER	(1<<9)
+#define	ANSW_KEEP_ALIVE		(1<<10)
 
 #define	STATUS_OK		200
 #define	STATUS_NOT_MODIFIED	304
@@ -162,6 +177,12 @@ typedef	unsigned	uint32_t;
 #define	RQ_HAS_CLOSE_CONNECTION (1<<11)
 #define	RQ_HAS_BANDWIDTH	(1<<12)
 #define	RQ_CONVERT_FROM_CHUNKED (1<<13)
+#define RQ_NO_ICP		(1<<15)
+#define RQ_FORCE_DIRECT		(1<<16)
+#define RQ_HAS_HOST		(1<<17)
+
+#define	DOWNGRADE_ANSWER	1
+#define	UNCHUNK_ANSWER		2
 
 #define	ACCESS_DOMAIN		1
 #define ACCESS_PORT		2
@@ -322,7 +343,7 @@ struct	mem_obj {
 	struct	mem_obj		*prev;		/* in hash			*/
 	struct	mem_obj		*older;		/* older object			*/
 	struct	mem_obj		*younger;	/* younger			*/
-	struct	hash_entry	*hash_back;	/* back pointer to hash chain	*/
+	struct	obj_hash_entry	*hash_back;	/* back pointer to hash chain	*/
 	pthread_mutex_t		lock;		/* for refs and obj as whole	*/
 	int			refs;		/* references			*/
 	int			readers;	/* readers from obj in mem	*/
@@ -332,6 +353,8 @@ struct	mem_obj {
 	pthread_cond_t		decision_cond;
 	struct	mem_obj		*child_obj;	/* after reload decision	*/
 	struct	url		url;		/* url				*/
+	int			httpv_major;
+	int			httpv_minor;
 	int			state;
 	int			flags;
 	pthread_mutex_t		state_lock;
@@ -339,6 +362,8 @@ struct	mem_obj {
 	time_t			filled;		/* when filled			*/
 	size_t			size;		/* current data size		*/
 	size_t			content_length;	/* what server say about content */
+	size_t			x_content_length; /* if doc was received in chunks - actual content size */
+	size_t			x_content_length_sum;
 	size_t			resident_size;	/* size of object in memory	*/
 	struct	buff		*container;	/* data storage			*/
 	struct	buff		*hot_buff;	/* buf to write			*/
@@ -359,7 +384,7 @@ struct	output_object {
 	int		flags;
 };
 
-struct	hash_entry {
+struct	obj_hash_entry {
 	struct	mem_obj		*next;
 	pthread_mutex_t		lock;
 	int			size;		/* size of objects in this hash */
@@ -371,12 +396,15 @@ struct	server_answ {
 	int			state;
 	int			flags;
 	size_t			content_len;
+	size_t			x_content_length;
 	int			checked;
 	int			status_code;
 	struct	obj_times	times;
 	struct	av		*headers;
 	time_t			response_time;	/* these times can be filled	*/
 	time_t			request_time;	/* when we load obj from disk	*/
+	int			httpv_major;
+	int			httpv_minor;
 };
 
 struct	ftp_r {
@@ -390,6 +418,7 @@ struct	ftp_r {
 	struct	request	*request;	/* referer from orig	*/
 	struct	mem_obj	*obj;		/* object		*/
 	char		*dehtml_path;	/* de-hmlized path	*/
+	char		*server_path;	/* path as server report*/
 	struct	buff	*server_log;	/* ftp server answers	*/
 	struct	string_list *nlst;	/* NLST results		*/
 	int		received;	/* how much data received */
@@ -472,6 +501,15 @@ struct	group_stat {
 	int	bytes;
 };
 
+struct  dstdomain_cache_entry {
+	char	*host;			/* hostname 		*/
+#define	DSTDCACHE_NOTFOUND	0
+#define	DSTDCACHE_ALLOW		1
+#define	DSTDCACHE_DENY		2
+	int	access;			/* access check result	*/
+	time_t	when_created;		/* when created		*/
+};
+
 struct	group	{
 	char			*name;
 	struct	cidr_net	*nets;
@@ -479,16 +517,17 @@ struct	group	{
 	struct	acls		*icp;
 	struct	badports	*badports;
 	int			bandwidth;
-	int			miss_deny;	/* TRUE if deny	*/
-	struct	string_list	*auth_mods;	/* auth modules */
-	struct	string_list	*redir_mods;	/* redir modules */
+	int			miss_deny;		/* TRUE if deny	*/
+	struct	string_list	*auth_mods;		/* auth modules */
+	struct	string_list	*redir_mods;		/* redir modules */
 	pthread_mutex_t		group_mutex;
-	struct	group_stat	cs0;		/* current	*/
-	struct	group_stat	cs1;		/* prev second	*/
-	struct	group_stat	cs2;		/* pre-prev sec */
-	struct	group_stat	cs_total;	/* total	*/
+	struct	group_stat	cs0;			/* current	*/
+	struct	group_stat	cs1;			/* prev second	*/
+	struct	group_stat	cs2;			/* pre-prev sec */
+	struct	group_stat	cs_total;		/* total	*/
 	struct  group		*next;
 	struct	denytime	*denytimes;
+	hash_t			*dstdomain_cache;	/* cashe for dstdom checks */
 };
 
 struct	domain {
@@ -606,8 +645,10 @@ struct	oops_stat {
 #define	MAXPOLLFD	(64)
 #define	FD_POLL_RD	(1)
 #define	FD_POLL_WR	(2)
+#define	FD_POLL_HU	(4)
 #define	IS_READABLE(a)	(((a)->answer)&FD_POLL_RD)
 #define	IS_WRITEABLE(a)	(((a)->answer)&FD_POLL_WR)
+#define	IS_HUPED(a)	(((a)->answer)&FD_POLL_HU)
 
 struct	pollarg {
 	int	fd;
@@ -641,6 +682,10 @@ u_short 	internal_http_port;
 char    	connect_from[64];
 char		parent_host[64];
 int		parent_port;
+int		always_check_freshness;
+int		force_http11;
+int		force_completion;
+
 struct	domain_list 	*local_domains;
 struct	cidr_net	*local_networks;
 struct	cidr_net	**local_networks_sorted;
@@ -654,8 +699,10 @@ struct		string_list	*stop_cache;
 struct		storage_st	*storages, *next_alloc_storage;
 void		*startup_sbrk;
 int		default_expire_value;
+int		max_expire_value;
 int		ftp_expire_value;
 int		default_expire_interval;
+int		last_modified_factor;
 int		disk_low_free, disk_hi_free;
 int		kill_request, reconfig_request;
 time_t		global_sec_timer;
@@ -698,12 +745,18 @@ void			sort_networks();
 void			add_to_stop_cache(char*);
 int		mem_max_val, hi_mark_val, lo_mark_val;
 u_short		internal_http_port;
-extern	struct	hash_entry	hash_table[HASH_SIZE];
+extern	struct	obj_hash_entry	hash_table[HASH_SIZE];
 struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
 #ifdef		SOLARIS
 int		daemon(int, int);
 #endif
 list_t		icp_requests_list;
+char		domain_name[MAXHOSTNAMELEN+1];
+char		host_name[MAXHOSTNAMELEN+1];
+int             insert_via;
+int             insert_x_forwarded_for;
+
+
 void		do_exit(int);
 void		run();
 void		*garbage_collector(void*);
@@ -729,7 +782,7 @@ int		http_date(char *date, time_t*);
 int		mk1123time(time_t, char*, int);
 int		str_to_sa(char*, struct sockaddr*);
 struct mem_obj	*create_obj();
-struct mem_obj	*locate_in_mem(struct url*, int, int*);
+struct mem_obj	*locate_in_mem(struct url*, int, int*, struct request *);
 void		leave_obj(struct mem_obj*);
 void		change_state(struct mem_obj*, int);
 struct	buff	*alloc_buff(int);
@@ -747,6 +800,7 @@ void		free_container(struct buff *buff);
 void		free_url(struct url*);
 void		free_net_list(struct cidr_net*);
 void		ftp_fill_mem_obj(int, struct request *, char *, struct mem_obj*);
+void		fill_mem_obj(int, struct request *, char *, struct mem_obj*, int sso, int type, struct sockaddr_in *psa);
 struct	cidr_net **sort_n(struct cidr_net*, int*);
 int		writen(int, char*, int);
 int		writet(int, char*, int, int);
@@ -757,8 +811,8 @@ time_t		current_obj_age(struct mem_obj *);
 time_t		obj_freshness_lifetime(struct mem_obj *);
 int		is_attr(struct av*, char*);
 int		send_av_pair(int, char*, char*);
-void		increase_hash_size(struct hash_entry*, int);
-void		decrease_hash_size(struct hash_entry*, int);
+void		increase_hash_size(struct obj_hash_entry*, int);
+void		decrease_hash_size(struct obj_hash_entry*, int);
 struct	group*	inet_to_group(struct in_addr*);
 int		deny_http_access(int, struct request *);
 void		rwl_init(rwl_t*);
@@ -807,6 +861,7 @@ void		free_search_list(struct search_list*);
 void		free_dns_hash_entry(struct dns_cache*);
 char		*attr_value(struct av*, char*);
 char		*lookup_mime_type(char*);
+char		*build_parent_request(char*, struct url*, char *, struct request *, int);
 struct	peer	*peer_by_http_addr(struct sockaddr_in*);
 void		base_64_init(void);
 char		*base64_encode(char*);
@@ -826,15 +881,19 @@ int		poll_descriptors_S(int, struct pollarg*, int);
 int		add_socket_to_listen_list(int, int, void* (*f)(void*));
 char		daybit(char*);
 int		denytime_check(struct denytime*);
-int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int);
+int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int, struct mem_obj*);
 void		update_transfer_rate(struct request*, int size);
 int		group_traffic_load(struct group *group);
 char		*format_av_pair(char*, char*);
 int		tcp_port_in_use(u_short);
 void		add_to_tcp_port_in_use(u_short);
 void		free_tcp_ports_in_use(void);
+void		flush_mem_cache(int);
+void		init_domain_name();
+char		*fetch_internal_rq_header(struct mem_obj*,char*);
 #ifdef		MODULES
 int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
 int	check_redirect(int so, struct request *rq, struct group *group, int *flag);
 int	check_auth(int so, struct request *rq, struct group *group, int *flag);
+int	check_headers_match(struct mem_obj*, struct request *, int*);
 #endif

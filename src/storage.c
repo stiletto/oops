@@ -708,9 +708,10 @@ r:  next_read = MIN(BLKSIZE, to_load);
         if ( a.state & GOT_HDR ) {
 	    obj->times 		= a.times;
 	    obj->response_time  = a.response_time;
-	    obj->request_time  = a.request_time;
+	    obj->request_time	= a.request_time;
 	    obj->status_code 	= a.status_code;
 	    obj->flags	       |= a.flags;
+	    obj->x_content_length = a.x_content_length;
 	}
     } else {
 	if ( store_in_chain(answer, rc, obj) )

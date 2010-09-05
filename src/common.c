@@ -83,7 +83,6 @@ struct	timeval tv;
 	pollarg.fd = so;
 	pollarg.request = FD_POLL_RD;
 	sr = poll_descriptors(1, &pollarg, tmo*1000);
-/*	sr = select(so+1, &fdr, NULL, NULL, &tv); */
 	if ( sr < 0 ) {
 		if ( errno == EINTR ) return(readed);
 		return(sr);
@@ -156,7 +155,7 @@ struct pollarg	pollarg;
 
     if ( so < 0 ) return(-1);
     if ( len <= 0 ) return(0);
-    now = start = time(NULL);
+    now = start = global_sec_timer;
 
     while(to_write > 0) {
 	if ( now - start > tmo )
@@ -165,7 +164,6 @@ struct pollarg	pollarg;
 	FD_SET(so, &fdw);
 	tv.tv_sec  = tmo - (start-now);
 	tv.tv_usec = 0;
-/*	sr = select(so+1, NULL, &fdw, NULL, &tv);*/
 	pollarg.fd = so;
 	pollarg.request = FD_POLL_WR;
 	sr = poll_descriptors(1, &pollarg, (tmo - (start-now))*1000);
@@ -183,7 +181,7 @@ struct pollarg	pollarg;
 	    sent += got;
 	    if ( to_write>0 ) {
 	        p += got;
-	        now = time(NULL);
+	        now = global_sec_timer;
 	        continue;
 	    }
 	    return(sent);

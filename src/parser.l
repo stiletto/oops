@@ -1,5 +1,5 @@
-%a 6000
-%o 10000
+%a 7000
+%o 15000
 %p 5000
 %n 1000
 %e 2000
@@ -136,6 +136,12 @@ line		[^\n]+
 <INITIAL>[Ff][Tt][Pp]-[Ee][Xx][Pp][Ii][Rr][Ee]-[Vv][Aa][Ll][Uu][ee] {
 		return(FTP_EXPIRE_VALUE_T);
 		}
+<INITIAL>[Mm][Aa][Xx]-[Ee][Xx][Pp][Ii][Rr][Ee]-[Vv][Aa][Ll][Uu][ee] {
+		return(MAX_EXPIRE_VALUE_T);
+		}
+<INITIAL>[Ll][Aa][Ss][Tt]-[Mm][Oo][Dd][Ii][Ff][Ii][Ee][Dd]-[Ff][Aa][Cc][Tt][Oo][Rr] {
+		return(LAST_MODIFIED_FACTOR_T);
+		}
 <INITIAL>{expire_interval} {
 		return(EXPIRE_INTERVAL);
 		}
@@ -150,6 +156,9 @@ line		[^\n]+
 		}
 <INITIAL>{local_networks} {
 		return(LOCAL_NETWORKS_T);
+		}
+<INITIAL>[Aa][Ll][Ww][Aa][Yy][Ss]_[Cc][Hh][Ee][Cc][Kk]_[Ff][Rr][Ee][Ss][Hh][Nn][Ee][Ss][Ss] {
+		return(ALWAYS_CHECK_FRESHNESS_T);
 		}
 <peerst>{parent} {
 		return(PEER_PARENT_T);
@@ -191,11 +200,23 @@ line		[^\n]+
 <INITIAL>{hi_mark}	{
 		return(HI_MARK);
 		}
+<INITIAL>[Ii][Nn][Ss][Ee][Rr][Tt]_[Xx]_[Ff][Oo][Rr][Ww][Aa][Rr][Dd][Ee][Dd]_[Ff][Oo][Rr] {
+		return(INSERT_X_FORWARDED_FOR_T);
+		}
+<INITIAL>[Ii][Nn][Ss][Ee][Rr][Tt]_[Vv][Ii][Aa] {
+		return(INSERT_VIA_T);
+		}
 <INITIAL>{dbhome} 	{
 		return(DBHOME);
 		}
 <INITIAL>{dbname}	{
 		return(DBNAME);
+		}
+<INITIAL>[Ff][Oo][Rr][Cc][Ee]_[Hh][Tt][Tt][Pp]11	{
+		return(FORCE_HTTP11_T);
+		}
+<INITIAL>[Ff][Oo][Rr][Cc][Ee]_[Cc][Oo][Mm][Pp][Ll][Ee][Tt][Ii][Oo][Nn]	{
+		return(FORCE_COMPLETION_T);
 		}
 <INITIAL>[Ll][Oo][Gg][Ss]_[Bb][Uu][Ff][Ff][Ee][Rr][Ee][Dd]	{
 		return(LOGS_BUFFERED_T);

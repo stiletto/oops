@@ -7,11 +7,11 @@ INSTALL_DATA = @INSTALL@ -m 644
 SRCS = oops.c lib.c run.c run_client.c common.c http_utils.c ftp_utils.c \
 	storage.c garbage_c.c  icp.c acl.c y.tab.c lex.yy.c \
 	rotate_logs.c clean_disk.c ssl.c list.c modules.c \
-	worker.c queue.c
+	worker.c queue.c hash.c
 OBJS = oops.o lib.o run.o run_client.o common.o http_utils.o ftp_utils.o \
 	storage.o garbage_c.o  icp.o acl.o statistics.o list.o \
 	rotate_logs.o clean_disk.o ssl.o y.tab.o lex.yy.o modules.o \
-	worker.o queue.o
+	worker.o queue.o hash.o
 
 SRCS+=@STRTOKSRC@
 OBJS+=@STRTOKOBJ@
@@ -92,7 +92,7 @@ statistics.o:	statistics.c oops.h
 list.o:		list.c llt.h oops.h
 modules.o:	modules.c modules.h
 version.h:	version
-		echo "#define VERSION \"" `cat version` "\""> version.h
+		echo "#define VERSION \""`cat version`"\""> version.h
 
 lex.yy.o: lex.yy.c y.tab.h oops.h
 	${CC} ${CFLAGS} ${CDEFS} -c lex.yy.c

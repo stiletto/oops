@@ -29,6 +29,7 @@
 extern	char	icons_host[MAXPATHLEN];
 extern	char	icons_path[MAXPATHLEN];
 extern	char	icons_port[64];
+int	no_direct_connections;
 int	server_connect(struct ftp_r *);
 int	get_server_greeting(struct ftp_r *);
 int	send_user_pass_type(struct ftp_r *);
@@ -48,18 +49,20 @@ void	send_ftp_err(struct ftp_r *);
 char	*in_nlst(char *, struct string_list *);
 int	recv_ftp_nlst(struct ftp_r *req);
 int	request_list(struct ftp_r *ftp_r);
+void	send_401_answer(int, struct request *);
 
 void
 ftp_fill_mem_obj(int so, struct request *rq,
 		 char *headers, struct mem_obj *obj)
 {
 int			server_so = -1;
-int			r;
+int			r, source_type;
 struct	url		*url = &rq->url;
 struct	ftp_r		ftp_request;
-struct  sockaddr_in     dst_sa;
+struct  sockaddr_in     dst_sa, peer_sa;
 struct timeval		start_tv, stop_tv;
 int			delta_tv;
+char			*answer = NULL;
 
     my_xlog(LOG_FTP, "Ftp...\n");
     if ( parent_port ) {
@@ -69,23 +72,142 @@ int			delta_tv;
 		bzero(&dst_sa, sizeof(dst_sa));
 	}
 	if ( !is_local_dom(rq->url.host) && !is_local_net(&dst_sa) ) {
-	    fill_mem_obj(so, rq, headers, obj);
+	    fill_mem_obj(so, rq, headers, obj, 0, 0, NULL);
 	    return;
 	}
     }
+
     gettimeofday(&start_tv, NULL);
+    if ( peers && (icp_so != -1) && (rq->meth == METH_GET) && !is_local_dom(rq->url.host) ) {
+	struct icp_queue_elem *new_qe;
+	struct timeval tv = start_tv;
+
+	bzero((void*)&peer_sa, sizeof(peer_sa));
+	my_xlog(LOG_HTTP, "sending icp_requests\n");
+	new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"icp_q_e");
+	if ( !new_qe ) goto icp_failed;
+	bzero(new_qe, sizeof(*new_qe));
+	pthread_cond_init(&new_qe->icpr_cond, NULL);
+	pthread_mutex_init(&new_qe->icpr_mutex, NULL);
+	new_qe->waitors = 1;
+	/* XXX make rq_n generation more random */
+	new_qe->rq_n    = tv.tv_sec+tv.tv_usec;
+	pthread_mutex_lock(&new_qe->icpr_mutex);
+	if ( !send_icp_requests(rq, new_qe) ) {
+	    /* was placed in queue	*/
+	    struct timespec  ts;
+	    tv.tv_sec  += icp_timeout/1000000;
+	    tv.tv_usec += icp_timeout%1000000;
+	    if ( tv.tv_usec > 1000000 ) {
+		tv.tv_sec++;
+		tv.tv_usec-=1000000;
+	    }
+	    ts.tv_sec  = tv.tv_sec;
+	    ts.tv_nsec = tv.tv_usec*1000;
+	    /* wait for answers */
+	    if ( pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
+		/* failed */
+		my_xlog(LOG_HTTP, "icp timedout\n");
+	    } else {
+		/* success */
+		my_xlog(LOG_HTTP, "icp_success\n");
+	    }
+	    new_qe->rq_n = 0;
+	    pthread_mutex_unlock(&new_qe->icpr_mutex);
+	    if ( new_qe->status ) {
+		my_xlog(LOG_HTTP, "Fetch from neighbour\n");
+		peer_sa = new_qe->peer_sa;
+		source_type = new_qe->type;
+		server_so = peer_connect(so, &new_qe->peer_sa, rq);
+		icp_request_destroy(new_qe);
+		xfree(new_qe);
+		goto server_connect_done;
+	    } else {
+		if ( no_direct_connections ) {
+		   /* what now ? */
+		}
+		my_xlog(LOG_HTTP, "Direct\n");
+	    }
+	    icp_request_destroy(new_qe);
+	    xfree(new_qe);
+	    goto icp_failed;
+	} else {
+	    pthread_mutex_unlock(&new_qe->icpr_mutex);
+	    pthread_mutex_destroy(&new_qe->icpr_mutex);
+	    pthread_cond_destroy(&new_qe->icpr_cond);
+	    xfree(new_qe);
+	}
+	goto icp_failed;
+ server_connect_done:;
+	if ( server_so < 0 )
+	    goto icp_failed;
+	/* fetch from parent */
+	fill_mem_obj(so, rq, headers, obj, server_so, source_type, &peer_sa);
+	return;
+
+ icp_failed:;
+    } /* all icp things */
     bzero(&ftp_request, sizeof(ftp_request));
     ftp_request.client	= so;
     ftp_request.obj	= obj;
     ftp_request.request = rq;
     ftp_request.control = -1;
     ftp_request.data    = -1;
-    ftp_request.dehtml_path = dehtmlize(url->path);
+    if ( *(url->path+1) == '~' )
+	ftp_request.dehtml_path = dehtmlize(url->path+1);
+      else {
+	if ( !strncasecmp(url->path+1, "%7e", 3) ) {
+	    ftp_request.dehtml_path = dehtmlize(url->path+1);
+	}
+	  else
+	    ftp_request.dehtml_path = dehtmlize(url->path);
+    }
     ftp_request.server_log  = alloc_buff(CHUNK_SIZE);
     ftp_request.type	= "text/html";
     ftp_request.container = alloc_buff(CHUNK_SIZE);
     if ( ! ftp_request.container )
 	   goto error;
+    if ( rq->url.login && !rq->url.password ) {
+	char *authorization, *data;
+	/* there must be Authorization header */
+	authorization = attr_value(rq->av_pairs, "Authorization");
+	if ( !authorization ) {
+	create_aur:;
+	    /* create 401 answer */
+	    send_401_answer(so, rq);
+	    goto done;
+	}
+        if ( !strncasecmp(authorization, "Basic", 5 ) ) {
+	    char  *up, *u, *p;
+
+	    data = authorization + 5;
+	    while ( *data && isspace(*data) ) data++;
+            if ( *data ) up = base64_decode(data);
+	    if ( up ) {
+                /* up = username:password */
+                u = up;
+                p = strchr(up, ':');
+                if ( p ) {
+		    *p=0; p++;
+		} else {
+		    free(up);
+		    goto create_aur;
+		}
+		if ( strcmp(rq->url.login,up) ) {
+		    free(up);
+		    goto create_aur;
+		}
+		rq->url.password = strdup(p);
+                free(up);
+		goto have_p;
+            } /* up != NULL */
+	    goto create_aur;
+        }
+	/* not Basic */
+        /* we do not support any schemes except Basic */
+	goto create_aur;
+    }
+have_p:
     server_so = server_connect(&ftp_request);
     if ( server_so == -1 ) goto done;
     ftp_request.control = server_so;
@@ -156,6 +278,7 @@ free_ftp_resources:
     if ( ftp_request.data != -1 ) close(ftp_request.data);
     if ( ftp_request.control != -1 ) close(ftp_request.control);
     if ( ftp_request.dehtml_path ) free(ftp_request.dehtml_path);
+    if ( ftp_request.server_path ) free(ftp_request.server_path);
     if ( ftp_request.server_log ) free_chain(ftp_request.server_log);
     if ( ftp_request.nlst ) free_string_list(ftp_request.nlst);
     if ( ftp_request.container ) free_container(ftp_request.container);
@@ -197,6 +320,7 @@ char	*mime_type;
 	data = ftp_r->data = r;
     }
     mime_type = lookup_mime_type(ftp_r->obj->url.path);
+    obj->content_length = ftp_r->size;
     ftp_r->type = mime_type;
     if ( !obj->container ) {
 	obj->container = alloc_buff(CHUNK_SIZE);
@@ -217,13 +341,16 @@ char	*mime_type;
 	ftp_r->received += r;
 	buf[r] = 0;
 	if (TEST(rq->flags, RQ_HAS_BANDWIDTH) && ((++pass)%2) ) SLOWDOWN ;
-	if ( writet(client, buf, r, READ_ANSW_TIMEOUT) < 0 ) {
+	if ( (writet(client, buf, r, READ_ANSW_TIMEOUT) < 0) &&
+	      !FORCE_COMPLETION(obj) ) {
 	    my_xlog(LOG_FTP, "Ftp aborted\n");
 	    return(-1);
 	}
 	if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, r);
-	if ( obj && !TEST(obj->flags, FLAG_DEAD) )
+	if ( obj && !TEST(obj->flags, FLAG_DEAD) ) {
 		store_in_chain(buf, r, obj);
+		obj->size += r;
+	}
     }
     my_xlog(LOG_FTP, "Data connection closed\n");
     return(0);
@@ -328,12 +455,13 @@ int
 recv_ftp_list(struct ftp_r *req)
 {
 char	buf[160];
-int	r, received = 0, sa_len, rc = 0;
+int	r, received = 0, sa_len, rc = 0, len;
 int	client = req->client;
 int	data = req->data;
 struct	mem_obj *obj = req->obj;
-char	*tmpbuf = NULL;
+char	*tmpbuf = NULL, *pTmp;
 struct  sockaddr_in sa;
+struct url url = req->request->url;
 
     my_xlog(LOG_FTP, "receiving list\n");
 
@@ -350,7 +478,7 @@ struct  sockaddr_in sa;
     if ( !obj->container ) {
 	obj->container = alloc_buff(CHUNK_SIZE);
         if ( ! obj->container )
-            return(-1);
+	    return(-1);
 	obj->hot_buff = obj->container;
     } else {
 	my_log("something wrong rcv_ftp_list: container already allocated\n");
@@ -360,7 +488,7 @@ struct  sockaddr_in sa;
     if ( r < 0 ) return(r);
     sendstr(client, "<html><head><title>ftp LIST</title>\n");
     store_in_chain("<html><head><title>ftp LIST</title>\n",
-    	    strlen("<html><head><title>ftp LIST</title>\n"), req->obj);
+	    strlen("<html><head><title>ftp LIST</title>\n"), req->obj);
     tmpbuf = xmalloc(strlen((req->obj->url).proto)+
 		strlen((req->obj->url).host)+
 		strlen((req->obj->url).path)+ 256, "recv_ftp_list");
@@ -370,9 +498,51 @@ struct  sockaddr_in sa;
 		req->obj->url.path);
 	sendstr(client, tmpbuf);
 	store_in_chain(tmpbuf, strlen(tmpbuf), req->obj);
+	free(tmpbuf); tmpbuf = NULL;
     }
-    sendstr(client, "</head><body><pre>\n");
-    store_in_chain("</head><body><pre>\n", strlen("</head><body><pre>\n"), req->obj);
+
+    sendstr(client, "</head><body>\n");
+    store_in_chain("</head><body>\n", sizeof("</head><body>\n")-1, req->obj);
+
+    /* Go to up level directory. Patch from doka@kiev.sovam.com */
+    if ( req->server_path && ((len = strlen(req->server_path)) > 1) ) {
+	char	*ls;
+
+	pTmp = malloc(len+1);
+	if ( pTmp ) {
+	    strncpy(pTmp, req->server_path, len+1);
+	    while ( ( len>0 ) && (pTmp[len-1] == '/') ) {
+		len--;
+		pTmp[len] = 0;
+	    }
+	    if ( (ls = strrchr(pTmp, '/') ) ) *(ls+1) = 0;
+	    len += 80 + strlen(url.proto) + strlen(url.host);
+	    if ( url.login )
+		len += strlen(url.login);
+	    tmpbuf = malloc(len);
+	    if ( tmpbuf ) {
+		sprintf (tmpbuf, "<h2><a href=\"%s://", url.proto);
+		if (url.login) sprintf (tmpbuf+strlen(tmpbuf), "%s@", url.login);
+		sprintf(tmpbuf+strlen(tmpbuf), "%s", url.host);
+		if (url.port != 21) sprintf (tmpbuf+strlen(tmpbuf), ":%d", url.port);
+		sprintf (tmpbuf+strlen(tmpbuf), "/%s\">Go to parent directory</a></h2><p>", pTmp+1);
+
+		sendstr(client, tmpbuf);
+		store_in_chain(tmpbuf, strlen(tmpbuf), req->obj);
+		free(tmpbuf); tmpbuf = NULL;
+	    }
+	    free(pTmp);
+	}
+    }
+    tmpbuf = malloc(strlen(url.path)+80);  /* </head><body>... */
+    if (tmpbuf) {
+	sprintf(tmpbuf, "<h2>Directory listing for &lt;%s&gt; follows:</h2>", url.path);
+	sendstr(client, tmpbuf);
+	store_in_chain(tmpbuf, strlen(tmpbuf), req->obj);
+    }
+    sendstr(client, "<p><pre>\n");
+    store_in_chain("<p><pre>\n", strlen("<p><pre>\n"), req->obj);
+
     req->received = 0;
     while((r = readt(data, buf, sizeof(buf)-1, READ_ANSW_TIMEOUT)) > 0) {
 	req->received += r;
@@ -562,6 +732,8 @@ char	*htmlized_path = NULL;
 char	*htmlized_file = NULL;
 char	*htmlized_something = NULL;
 char	myhostname[MAXHOSTNAMELEN];
+char	portb[10];
+
 /* if not in nlst, then assumed line is something like that:
 drwxr-xr-x   2 ms    ms          512 Jul 28 09:52 usr
 -rw-r--r--   1 ms    ms        19739 Jan 17  1997 www.FAQ.alt
@@ -587,6 +759,10 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
     /* well, now we can find is it dir, link or plain file	*/
     if ( !*p ) return(0);
 
+    if ( req->request->url.port != 21 ) {
+	sprintf(portb, ":%d", req->request->url.port);
+    } else
+	portb[0] = 0;
     myhostname[0] = 0;
     gethostname(myhostname, sizeof(myhostname)-1);
     /* allocate space to hold all components */
@@ -594,7 +770,8 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
     if ( req->request->url.login ) {
 	dovesok += strlen(req->request->url.login);
     }
-    if ( req->request->url.password ) {
+    if ( req->request->url.password &&
+	 !TEST(req->request->flags,RQ_HAS_AUTHORIZATION ) ) {
 	dovesok += strlen(req->request->url.password);
     }
     tempbuf = xmalloc(strlen(line)*3 + strlen(myhostname) + dovesok , "list_parser1");
@@ -620,18 +797,36 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
 	    		      htmlized_something);
 	writet(so, tempbuf, strlen(tempbuf), READ_ANSW_TIMEOUT);
 	store_in_chain(tempbuf, strlen(tempbuf), obj);
-	htmlized_path = htmlize((url->path)+1);
+	htmlized_path = htmlize(req->dehtml_path);
 	htmlized_file = htmlize(t);
-	if ( req->request->url.login && req->request->url.password) {
-	    sprintf(tempbuf, "<a href=\"%s://%s:%s@%s/%s%s%s\">%s</a> ",
+	if ( req->request->url.login ) {
+	    if (req->request->url.password &&
+	       !TEST(req->request->flags,RQ_HAS_AUTHORIZATION)) {
+		sprintf(tempbuf, "<a href=\"%s://%s:%s@%s%s%s%s%s%s\">%s</a> ",
 			url->proto,
 			req->request->url.login,req->request->url.password,
-			url->host,htmlized_path,
+			url->host,portb,
+			*htmlized_path=='/'?"":"/",
+			htmlized_path,
 			url->path[strlen(url->path)-1]=='/'?"":"/",
 			htmlized_file, t);
+	    }
+	    if (req->request->url.password &&
+	       TEST(req->request->flags,RQ_HAS_AUTHORIZATION)) {
+		sprintf(tempbuf, "<a href=\"%s://%s@%s%s%s%s%s%s\">%s</a> ",
+			url->proto,
+			req->request->url.login,
+			url->host,portb,
+			*htmlized_path=='/'?"":"/",
+			htmlized_path,
+			url->path[strlen(url->path)-1]=='/'?"":"/",
+			htmlized_file, t);
+	    }
 	} else {
-	    sprintf(tempbuf, "<a href=\"%s://%s/%s%s%s\">%s</a> ",
-			url->proto,url->host,htmlized_path,
+	    sprintf(tempbuf, "<a href=\"%s://%s%s%s%s%s%s\">%s</a> ",
+			url->proto,url->host,portb,
+			*htmlized_path=='/'?"":"/",
+			htmlized_path,
 			url->path[strlen(url->path)-1]=='/'?"":"/",
 			htmlized_file, t);
 	}
@@ -690,18 +885,36 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
 	    tok_cnt++;
 	    continue;
 	case 8:	/* file name */
-	    htmlized_path = htmlize((url->path)+1);
+	    htmlized_path = htmlize(req->dehtml_path);
 	    htmlized_file = htmlize(p);
-	    if ( req->request->url.login && req->request->url.password) {
-	        sprintf(tempbuf, "<a href=\"%s://%s:%s@%s/%s%s%s\">%s</a> ",
+	    if ( req->request->url.login ) {
+		if ( req->request->url.password &&
+		    !TEST(req->request->flags,RQ_HAS_AUTHORIZATION)) {
+		    sprintf(tempbuf, "<a href=\"%s://%s:%s@%s%s%s%s%s%s\">%s</a> ",
 			url->proto,
 			req->request->url.login,req->request->url.password,
-			url->host,htmlized_path,
+			url->host,portb,
+			*htmlized_path=='/'?"":"/",
+			htmlized_path,
 			url->path[strlen(url->path)-1]=='/'?"":"/",
 			htmlized_file, p);
+		}
+		if ( req->request->url.password &&
+		    TEST(req->request->flags,RQ_HAS_AUTHORIZATION)) {
+		    sprintf(tempbuf, "<a href=\"%s://%s@%s%s%s%s%s%s\">%s</a> ",
+			url->proto,
+			req->request->url.login,
+			url->host,portb,
+			*htmlized_path=='/'?"":"/",
+			htmlized_path,
+			url->path[strlen(url->path)-1]=='/'?"":"/",
+			htmlized_file, p);
+		}
 	    } else {
-	        sprintf(tempbuf, "<a href=\"%s://%s/%s%s%s\">%s</a> ",
-			url->proto,url->host,htmlized_path,
+	        sprintf(tempbuf, "<a href=\"%s://%s%s%s%s%s%s\">%s</a> ",
+			url->proto,url->host,portb,
+			*htmlized_path=='/'?"":"/",
+			htmlized_path,
 			url->path[strlen(url->path)-1]=='/'?"":"/",
 			htmlized_file, p);
 	    }
@@ -951,6 +1164,8 @@ done:
     if ( resp_buff ) free_chain(resp_buff);
     return(r);
 error:
+    if ( TEST(ftp_r->request->flags, RQ_HAS_AUTHORIZATION) ) send_401_answer(ftp_r->client,
+		ftp_r->request);
     if ( resp_buff ) free_chain(resp_buff);
     return(-1);
 }
@@ -1286,17 +1501,19 @@ char			answer[ANSW_SIZE+1];
 char			*rq_buff = NULL;
 time_t			started = time(NULL);
 struct	buff		*resp_buff=NULL;
+char			*cwd_path = ftp_r->dehtml_path;
 
     resp_buff = alloc_buff(CHUNK_SIZE);
     started = time(NULL);
     checked = 0;
 
-    rq_buff=xmalloc(strlen(ftp_r->dehtml_path)+strlen("CWD \r\n")+1,"rq_buff");
+    rq_buff=xmalloc(strlen(cwd_path)+strlen("CWD \r\n")+1,"rq_buff");
     if ( !rq_buff ) {
 	my_log("Can't alloc mem\n");
 	goto error;
     }
-    sprintf(rq_buff, "CWD %s\r\n", ftp_r->dehtml_path);
+
+    sprintf(rq_buff, "CWD %s\r\n", cwd_path);
     my_xlog(LOG_FTP, "ftp_srv: %s", rq_buff);
     r = writet(server_so, rq_buff, strlen(rq_buff), READ_ANSW_TIMEOUT);
     if ( r < 0 ) {
@@ -1329,6 +1546,41 @@ w_cwd_ok:
     goto w_cwd_ok;
 
 request_list:
+
+    r = writet(server_so, "PWD\r\n", 5, READ_ANSW_TIMEOUT);
+    if ( r >= 0 ) {
+	r = readt(server_so, answer, ANSW_SIZE, READ_ANSW_TIMEOUT);
+	if ( r > 0 ) {   /* Success */
+	    answer[r]='\0';
+	    /*---- Malloc or realloc memory for server_path */
+	    if ( ftp_r->server_path ) {
+		if ( ftp_r->server_path ) {
+			free(ftp_r->server_path);
+			ftp_r->server_path = NULL;
+		}
+		cwd_path = malloc(r);
+	    } else
+		cwd_path = malloc(r);
+	    /*---- Check if it was successfull */
+	    if ( !cwd_path ) {
+		my_xlog(LOG_FTP, "Can't allocate server_path in try_cwd\n");
+	    } else {
+		int n;
+		n = sscanf(answer, "%d %s", &r_code, cwd_path);
+		if ( (n == 2) && 
+		     (r_code == 257) && 
+		     (*(cwd_path) == '"') && 
+		     ((r = strlen(cwd_path)) > 2 ) ) {
+		    strncpy (cwd_path, cwd_path+1, r-2);
+		    cwd_path[r-2] = '\0';
+		    ftp_r->server_path = cwd_path;
+		    my_xlog(LOG_FTP, "Directory is '%s'\n", ftp_r->server_path);
+		} else
+		    free(cwd_path);
+	    }
+	} /* PWD's read */
+    } /* PWD's write */
+
     r = writet(server_so, "NLST -a\r\n", 9, READ_ANSW_TIMEOUT);
     if ( r < 0 ) {
 	my_log("ftp_srv: error sending NLST\n", strerror(errno));
@@ -1508,7 +1760,7 @@ void
 send_ftp_err(struct ftp_r *ftp_r)
 {
 char	*err_header =
-"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<html><header>FTP error</header><body>Document can't be retrieved.<p>Server answers:<hr><p><pre>";
+"HTTP/1.0 400 Got error during ftp load\r\nContent-Type: text/html\r\n\r\n<html><header>FTP error</header><body>Document can't be retrieved.<p>Server answers:<hr><p><pre>";
 char	*epilog = "</body></html>";
 
     writet(ftp_r->client, err_header, strlen(err_header), READ_ANSW_TIMEOUT);
@@ -1568,4 +1820,46 @@ sss:;
     }
     free_search_list(res);
     return(best);
+}
+
+void
+send_401_answer(int so, struct request *rq)
+{
+struct output_object	*obj;
+struct buff		*body;
+int			rc;
+char			std_template[] = 
+"<html><body>Ftp access failed\n\n</body></html>";
+char			authreqfmt[] = "Basic realm=\"ftp %s\"";
+char			*authreq;
+
+    obj = xmalloc(sizeof(*obj),"");
+    if ( !obj )
+        return;
+
+    bzero(obj, sizeof(*obj));
+
+    if ( rq->url.login ) {
+	authreq = malloc(sizeof(authreqfmt) + strlen(rq->url.login) + 1);
+        sprintf(authreq, authreqfmt, rq->url.login);
+    } else {
+	authreq = malloc(sizeof(authreqfmt) + sizeof("FTP") + 1);
+        sprintf(authreq, authreqfmt, "FTP");
+    }
+    if ( !authreq ) goto done;
+    put_av_pair(&obj->headers,"HTTP/1.0", "401 Authentication Required");
+    put_av_pair(&obj->headers,"WWW-Authenticate:", authreq);
+    put_av_pair(&obj->headers,"Content-Type:", "text/html");
+    free(authreq);
+    body = alloc_buff(CHUNK_SIZE);
+    if ( body ) {
+        obj->body = body;
+	rc = attach_data(std_template, sizeof(std_template), body);
+        if ( !rc )
+	    process_output_object(so, obj, rq);
+    }
+done:
+    free_output_obj(obj);
+    return;
+
 }

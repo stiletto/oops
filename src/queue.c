@@ -1,3 +1,5 @@
+#define	NDEBUG
+
 /* BeginSourceFile queue.c */
 
 #include <stdlib.h>

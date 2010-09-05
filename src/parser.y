@@ -10,6 +10,9 @@
 %token	STORAGE SIZE PATH DBNAME DBHOME
 %token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T DENYTIME_T
 %token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T INCLUDE_T
+%token	ALWAYS_CHECK_FRESHNESS_T FORCE_HTTP11_T FORCE_COMPLETION_T
+%token	LAST_MODIFIED_FACTOR_T MAX_EXPIRE_VALUE_T
+%token	INSERT_X_FORWARDED_FOR_T INSERT_VIA_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name day
@@ -112,8 +115,13 @@ statement	: logfile
 		| icons_path
 		| icons_port
 		| expire_value
+		| max_expire_value
 		| ftp_expire_value
 		| expire_interval
+		| last_modified_factor
+		| always_check_freshness
+		| force_http11
+		| force_completion
 		| disk_low_free
 		| disk_hi_free
 		| parent
@@ -127,6 +135,8 @@ statement	: logfile
 		| group
 		| peer
 		| storage
+		| insert_x_forwarded_for
+		| insert_via
 		| dbhome
 		| dbname
 		| module
@@ -148,6 +158,29 @@ logfile		: LOGFILE STRING L_EOS {
 			log_size = $5;
 			free($2);
 		}
+
+insert_x_forwarded_for : INSERT_X_FORWARDED_FOR_T string L_EOS {
+			if ( !strcasecmp(yylval.STRPTR, "yes") )
+				insert_x_forwarded_for = TRUE;
+			   else
+			if (!strcasecmp(yylval.STRPTR, "no") )
+				insert_x_forwarded_for = FALSE;
+			   else
+				printf("insert_x_forwarded_for can be 'yes' or 'no'\n");
+			free(yylval.STRPTR);
+		}
+
+insert_via	: INSERT_VIA_T string L_EOS {
+			if ( !strcasecmp(yylval.STRPTR, "yes") )
+				insert_via = TRUE;
+			   else
+			if (!strcasecmp(yylval.STRPTR, "no") )
+				insert_via = FALSE;
+			   else
+				printf("insert_via can be 'yes' or 'no'\n");
+			free(yylval.STRPTR);
+		}
+
 
 accesslog	: ACCESSLOG STRING L_EOS {
 			verb_printf("ACCESSLOG:\t<<%s>>\n", yylval.STRPTR);
@@ -194,9 +227,12 @@ nameserver	: NAMESERVER STRING L_EOS {
 		}
 
 connect_from	: CONNECT_FROM STRING L_EOS {
-			verb_printf("CONNECT_FROM:\t<<%s>>\n", yylval.STRPTR);
+			char	*p;
 			strncpy(connect_from, yylval.STRPTR, sizeof(connect_from)-1);
 			free(yylval.STRPTR);
+			p = connect_from;
+			while ( *p ) {*p=tolower(*p);p++;}
+			verb_printf("CONNECT_FROM:\t<<%s>>\n", connect_from);
 		}
 
 stop_cache	: STOP_CACHE STRING L_EOS {
@@ -239,9 +275,30 @@ icons_path	: ICONS_PATH STRING L_EOS {
 			free(yylval.STRPTR);
 		}
 
+always_check_freshness : ALWAYS_CHECK_FRESHNESS_T L_EOS {
+			verb_printf("ALWAYS CHECK FRESHNESS\n");
+			always_check_freshness = TRUE;
+		}
+force_http11	: FORCE_HTTP11_T L_EOS {
+			verb_printf("FORCE_HTTP11\n");
+			force_http11 = TRUE;
+		}
+force_completion : FORCE_COMPLETION_T NUMBER L_EOS {
+			verb_printf("FORCE_COMPLETION: %d%%\n", yylval.INT);
+			force_completion = yylval.INT;
+		}
+last_modified_factor : LAST_MODIFIED_FACTOR_T NUMBER L_EOS {
+			verb_printf("LAST_MODIFIED_FACTOR: %d\n", yylval.INT);
+			last_modified_factor = yylval.INT;
+		}
 expire_value	: EXPIRE_VALUE NUMBER L_EOS {
 			verb_printf("EXPIRE_VALUE:\t<<%d days>>\n", yylval.INT);
 			default_expire_value=yylval.INT * 24 * 3600;
+		}
+
+max_expire_value : MAX_EXPIRE_VALUE_T NUMBER L_EOS {
+			verb_printf("MAX_EXPIRE_VALUE:\t<<%d days>>\n", yylval.INT);
+			max_expire_value=yylval.INT * 24 * 3600;
 		}
 
 ftp_expire_value : FTP_EXPIRE_VALUE_T NUMBER L_EOS {
@@ -552,6 +609,8 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 				ops = next_ops;
 			}
 			new_grp->next = groups;
+			/* create acl/dstdomain cache */
+			new_grp->dstdomain_cache = hash_make(64, STRING_HASH_KEY);
 			groups = new_grp;
 		}
 group_name	: STRING {
@@ -1087,6 +1146,8 @@ domainlist	: domain {
 
 domain		: STRING {
 			struct	domain_list *new;
+			char		    *s, *d;
+
 			new = xmalloc(sizeof(*new), "new acl");
 			if ( !new ) {
 			    verb_printf("malloc failed\n");
@@ -1094,7 +1155,9 @@ domain		: STRING {
 			}
 			new->domain = malloc(strlen(yylval.STRPTR)+1);
 			if ( !new->domain ) yyerror();
-			strcpy(new->domain, yylval.STRPTR);
+			s = yylval.STRPTR;
+			d = new->domain;
+			while( *s ) {*d = tolower(*s);s++;d++;}; *d=0;
 			if ( !strcmp(yylval.STRPTR, "*") )
 				new->length = -1;
 			    else
@@ -1175,12 +1238,12 @@ char			buf[128], *p;
 	    continue;
 	/* ok here is domain */
 	new = malloc(sizeof(*new));
-	bzero(new, sizeof(*new));
 	if ( !new ) {
 	    if ( first ) free_dom_list(first);
 	    fclose(f);
 	    return(NULL);
 	}
+	bzero(new, sizeof(*new));
 	new->domain = malloc(strlen(p)+1);
 	if ( !new->domain ) {
 	    if ( first ) free_dom_list(first);

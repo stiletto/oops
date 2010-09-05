@@ -197,10 +197,8 @@ struct	buff		*body;
 		int rc;
 		rc = attach_data(tptr, tptrend-tptr, body);
 		if ( rc ) goto failed;
-
-		process_output_object(so, obj, rq);
-
 		UNLOCK_ERR_CONFIG ;
+		process_output_object(so, obj, rq);
 		if ( obj ) free_output_obj(obj);
 		SET(*flags, MOD_AFLAG_OUT);
 		return(0);

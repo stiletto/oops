@@ -1,4 +1,4 @@
-VER=1.2c
+VER=1.2d
 
 
 all:

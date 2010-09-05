@@ -229,7 +229,7 @@ struct	icp_lookup	icp_lookup;
 		    return;
 		}
 
-		res = locate_in_mem(&url, 0, NULL);
+		res = locate_in_mem(&url, 0, NULL, NULL);
 		if ( res ) {
 		    my_log("ICP_MEM_HIT\n");
 		    icp_opcode = ICP_OP_HIT;

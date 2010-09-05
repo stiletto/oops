@@ -38,8 +38,6 @@ extern struct	err_module	*err_first;
 #define		REQUEST_EMPTY	0
 #define		REQUEST_READY	1
 
-/*extern	struct	hash_entry	hash_table[HASH_SIZE];*/
-
 void		free_url(struct url *url);
 void		free_request(struct request *rq);
 void		leave_obj(struct mem_obj *);
@@ -49,7 +47,6 @@ int		parse_http_request(char *start, struct request *rq, int so);
 int		check_headers(struct request *rq, char *beg, char *end, int *checked, int so);
 int		parse_url(char*, char*, struct url *, int);
 void		release_obj(struct mem_obj*);
-void		fill_mem_obj(int, struct request *, char* , struct mem_obj*);
 void		send_from_mem(int, struct request *, char* , struct mem_obj*, int);
 void		increment_clients();
 void		decrement_clients();
@@ -169,6 +166,7 @@ re: /* here we go if client want persistent connection */
     headers = (char*)buf + request.headers_off;
     RDLOCK_CONFIG ;
     if ((rc = deny_http_access(so, &request)) ) {
+	UNLOCK_CONFIG ;
 	my_xlog(LOG_HTTP|LOG_FTP, "Access banned\n");
 	switch ( rc ) {
 	case ACCESS_PORT:
@@ -184,14 +182,21 @@ re: /* here we go if client want persistent connection */
 			ERR_ACC_DENIED, &request);
 		break;
 	}
-	UNLOCK_CONFIG ;
+	log_access(0, &request.client_sa,
+            "TCP_DENIED", 555, 0, "GET", &request.url, "-", "-", "-");
 	goto done;
     }
     group = inet_to_group(&request.client_sa.sin_addr);
+    if ( !group ) {
+	UNLOCK_CONFIG ;
+	goto done;
+    }
     if ( group->denytimes && (rc = denytime_check(group->denytimes)) ) {
+	UNLOCK_CONFIG ;
 	say_bad_request(so, "<font color=red>Your access to proxy service denied at this time.\n</font>", "",
 		ERR_ACC_DENIED, &request);
-	UNLOCK_CONFIG ;
+	log_access(0, &request.client_sa,
+            "TCP_DENIED", 555, 0, "GET", &request.url, "-", "-", "DENY_TIME");
 	goto done;
     }
 #ifdef	MODULES
@@ -203,12 +208,14 @@ re: /* here we go if client want persistent connection */
     /* time to visit auth modules */
     mod_flags = 0;
     if ( check_auth(so, &request, group, &mod_flags) == MOD_CODE_ERR) {
+	UNLOCK_CONFIG;
 	if ( !TEST(mod_flags, MOD_AFLAG_OUT) ) {
 	    /* there was no output */
 	    say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
 			ERR_ACC_DENIED, &request);
 	}
-	UNLOCK_CONFIG;
+	log_access(0, &request.client_sa,
+            "TCP_DENIED", 555, 0, "GET", &request.url, "-", "-", "AUTH_MOD");
 	goto done;
     }
 #endif
@@ -267,7 +274,7 @@ re: /* here we go if client want persistent connection */
 	goto done;
     }
     if ( request.flags & RQ_HAS_ONLY_IF_CACHED ) {
-	stored_url = locate_in_mem(&request.url, AND_USE, &new_object);
+	stored_url = locate_in_mem(&request.url, AND_USE, &new_object, &request);
 	if ( !stored_url ) {
 	    send_error(so, 504, "Gateway Timeout. Or not in cache");
 	    goto done;
@@ -278,12 +285,15 @@ re: /* here we go if client want persistent connection */
 	goto done;
     }
 
+    if ( always_check_freshness && (request.proto == PROTO_HTTP) )
+	mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
+
     if ( request.flags & RQ_HAS_NO_CACHE )
 	mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 
     if ( request.flags &
 	(RQ_HAS_MAX_AGE|RQ_HAS_MAX_STALE|RQ_HAS_MIN_FRESH) ) {
-	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT, &new_object);
+	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT, &new_object, &request);
 	if ( !stored_url ) {
 	    my_log("Can't create or find memory object\n");
 	    say_bad_request(so, "Can't create memory object.\n", "No memory?",
@@ -344,7 +354,7 @@ re: /* here we go if client want persistent connection */
 	leave_obj(stored_url);
 	goto done;
     }
-    stored_url = locate_in_mem(&request.url, AND_PUT|AND_USE, &new_object);
+    stored_url = locate_in_mem(&request.url, AND_PUT|AND_USE, &new_object, &request);
     if ( !stored_url ) {
 	my_log("Can't create or find memory object\n");
 	say_bad_request(so, "Can't create memory object.\n", "No memory?",
@@ -366,7 +376,7 @@ read_net:
 	    if ( !strcasecmp(request.url.proto, "ftp") )
 		ftp_fill_mem_obj(so, &request, headers, stored_url);
 	    else if ( !strcasecmp(request.url.proto, "http") )
-		fill_mem_obj(so, &request, headers, stored_url);
+		fill_mem_obj(so, &request, headers, stored_url, 0, 0, NULL);
 	    else {
 		say_bad_request(so, "Unsupported protocol\n", request.url.proto,
 		    ERR_BAD_URL, &request);
@@ -465,11 +475,11 @@ destroy_obj(struct mem_obj *obj)
 }
 
 struct mem_obj*
-locate_in_mem(struct url *url, int flags, int *new_object)
+locate_in_mem(struct url *url, int flags, int *new_object, struct request *rq)
 {
 struct	mem_obj	*obj=NULL;
 u_short 	url_hash = hash(url);
-int		found=0;
+int		found=0, mod_flags = 0;
 
     if ( new_object ) *new_object = FALSE;
     if ( pthread_mutex_lock(&obj_chain) ) {
@@ -488,7 +498,13 @@ int		found=0;
 	         !strcmp(url->path, obj->url.path) &&
 	         !strcasecmp(url->host, obj->url.host) &&
 	         !strcasecmp(url->proto, obj->url.proto) &&
-	         !(obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) ) {
+	         !(obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) 
+#if		    defined(MODULES)
+		    && ( rq && (check_headers_match(obj, rq, &mod_flags) == MOD_CODE_OK) )
+#endif
+	         ) {
+		    int	rc = 0, mod_flags;
+
 		    found=1;
 		    if (  flags & AND_USE ) {
 			if ( pthread_mutex_lock(&obj->lock) ) {
@@ -598,17 +614,34 @@ int		found=0;
 				obj->writers = 0; /* like old object */
 				if ( load_obj_from_disk(obj, disk_ref) ) {
 				    obj->disk_ref = NULL ;
-				    if ( new_object ) *new_object = TRUE;
+				    if ( new_object ) *new_object = TRUE ;
 				    obj->writers = 1; /* like old object */
 				    xfree(disk_ref);
 				    goto nf;
 				}
+				/* ok, obj was loaded */
 				resident_size = calculate_resident_size(obj);
         			obj->resident_size = resident_size;
                 		increase_hash_size(obj->hash_back, obj->resident_size);
 				if ( !strcasecmp(url->proto,"ftp") ) obj->doc_type = FTP_DOC;
 				SET(obj->flags, FLAG_FROM_DISK);
-				CLR(obj->flags, ANSW_NO_CACHE);
+#ifdef	MODULES
+				if ( rq && (check_headers_match(obj, rq, &mod_flags) != MOD_CODE_OK) ) {
+				    /* obj don't match request	*/
+				    struct	mem_obj	*n_obj;
+
+				    if ( new_object ) *new_object = TRUE ;
+				    SET(obj->flags, FLAG_DEAD);
+				    UNLOCK_DB;
+				    UNLOCK_CONFIG ;
+				    leave_obj(obj);
+				    n_obj = locate_in_mem(&rq->url,
+					AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
+				    /* old content will be dead */
+				    return(n_obj);;
+				} else
+				    CLR(obj->flags, ANSW_NO_CACHE);
+#endif
 				pthread_cond_broadcast(&obj->decision_cond);
 			    }
 			} else {
@@ -704,11 +737,11 @@ go:
     }
     /* checked points to last visited \r */
     if ( !request->data && (end - start >= 4) && !strncmp(start, "\r\n\r\n", 4) ) {
-	if ( request->meth != METH_POST ) {
+	if ( !request->content_length ) {
 	    request->state = REQUEST_READY;
 	    return(0);
 	} else
-	if ( (request->meth == METH_POST) && !request->data ) {
+	if ( request->content_length && !request->data ) {
 	    request->leave_to_read = request->content_length;
 	    if ( request->content_length <= 0 ) {
 		request->state = REQUEST_READY;
@@ -723,18 +756,18 @@ go:
 	}
     } else
     if ( !request->data && (end - start >= 2) && !strncmp(start, "\n\n", 2) ) {
-	if ( request->meth != METH_POST ) {
+	if ( !request->content_length ) {
 	    request->state = REQUEST_READY;
 	    return(0);
 	} else
-	if ( (request->meth == METH_POST) && !request->data ) {
+	if ( request->content_length && !request->data ) {
 	    request->leave_to_read = request->content_length;
 	    request->data = alloc_buff(CHUNK_SIZE);
 	    if ( !request->data ) return(-1);
 	    start += 2;
 	}
     }
-    if ( (request->meth == METH_POST) && request->leave_to_read ) {
+    if ( request->content_length && request->leave_to_read ) {
 	if ( request->data && (end-start > 0) ) {
 	    if ( attach_data(start, end-start, request->data ) )
 		return(-1);
@@ -763,7 +796,7 @@ go:
 	}
 	*t = 0;
 	/* check headers of my interest */
-	/*my_log("--->'%s'\n", p);*/
+	my_xlog(LOG_HTTP, "--->'%s'\n", p);
 	if ( !request->data ) /* we don't parse POST data now */
 		add_request_av(p, request);
 	if ( !strncasecmp(p, "Content-length: ", 16) ) {
@@ -790,6 +823,9 @@ go:
 	}
 	if ( !strncasecmp(p, "Authorization: ", 15) ) {
 	    request->flags |= RQ_HAS_AUTHORIZATION;
+	}
+	if ( !strncasecmp(p, "Host: ", 6) ) {
+	    request->flags |= RQ_HAS_HOST;
 	}
 	if ( !strncasecmp(p, "Connection: ", 12) ) {
 	    char *x = p+12;
@@ -844,6 +880,14 @@ int	http_major, http_minor;
     else if ( !strcasecmp(src, "post") ) rq->meth = METH_POST;
     else if ( !strcasecmp(src, "trace") ) rq->meth = METH_TRACE;
     else if ( !strcasecmp(src, "connect") ) rq->meth = METH_CONNECT;
+    else if ( !strcasecmp(src, "PROPFIND") ) rq->meth = METH_PROPFIND;
+    else if ( !strcasecmp(src, "PROPPATCH") ) rq->meth = METH_PROPPATCH;
+    else if ( !strcasecmp(src, "MKCOL") ) rq->meth = METH_MKCOL;
+    else if ( !strcasecmp(src, "DELETE") ) rq->meth = METH_DELETE;
+    else if ( !strcasecmp(src, "COPY") ) rq->meth = METH_COPY;
+    else if ( !strcasecmp(src, "MOVE") ) rq->meth = METH_MOVE;
+    else if ( !strcasecmp(src, "LOCK") ) rq->meth = METH_LOCK;
+    else if ( !strcasecmp(src, "UNLOCK") ) rq->meth = METH_UNLOCK;
     else {
 	my_log("unrecognized method '%s'\n", src);
 	*p = ' ';
@@ -892,7 +936,7 @@ char	*ss, *host=NULL;
     host = xmalloc(strlen(src)+1, "for parse_connect_url");
     if (!host)
 	goto err;
-    memcpy(host, src, strlen(src)+1);
+    memcpy_to_lower(host, src, strlen(src)+1);
     url->host = host;
     url->port = atoi(ss+1);
     goto done;
@@ -964,9 +1008,19 @@ u_short	pval;
 	    sx = strchr(ss, '/');
 	    se = strchr(ss, ':');
 	    goto normal;
+	} else {
+	    /* ss   sa	 se			*/
+	    /* login@host:port/path		*/
+	    holder = *sa;
+	    *sa = 0;
+	    login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+	    strcpy(login, ss);
+	    password = NULL;
+	    *sa = holder;
+	    ss = sa+1;
+	    sx = strchr(ss, '/');
+	    goto normal;
 	}
-	free(proto);
-	return(-1);
     }
 normal:;
     if ( se && (!sx || (sx>se)) ) {
@@ -980,7 +1034,7 @@ normal:;
 	    free(proto);
 	    return(-1);
 	}
-	memcpy(host, ss, h_len); host[h_len] = 0;
+	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
 	se++;
 	for(i=0; (i<10) && *se && isdigit(*se); i++,se++ ) {
 	    number[i]=*se;
@@ -1013,7 +1067,7 @@ normal:;
 	    free(proto);
 	    return(-1);
 	}
-	memcpy(host, ss, h_len); host[h_len] = 0;
+	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
 	if ( !strcasecmp(proto, "http") ) url->port=80;
 	if ( !strcasecmp(proto, "ftp") )  url->port=21;
     }

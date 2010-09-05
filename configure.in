@@ -10,6 +10,7 @@ AC_CHECK_HEADER(pthread.h)
 AC_CHECK_HEADER(crypt.h, HAVE_CRYPT_H="-DHAVE_CRYPT_H", HAVE_CRYPT_H="")
 
 pwd=`pwd`
+LIBDB_NAME=-ldb
 AC_MSG_CHECKING(for libdb.a)
 if test -r "/usr/local/BerkeleyDB/lib/libdb.a"; then
     LIBDB_PATH="/usr/local/BerkeleyDB/lib"
@@ -19,6 +20,9 @@ elif test -r "/usr/local/lib/libdb.a"; then
     LIBDB_PATH="/usr/local/lib"
 elif test -r "/usr/lib/libdb.a"; then
     LIBDB_PATH="/usr/lib"
+elif test -r "/usr/local/lib/libdb2.a"; then
+    LIBDB_PATH="/usr/local/lib"
+    LIBDB_NAME=-ldb2
 else
     echo "You must have bsd DB package installed."
     echo "Check it out at http://www.sleepycat.com"
@@ -28,15 +32,14 @@ AC_MSG_RESULT($LIBDB_PATH)
 
 if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
     CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
-fi
-if test "$LIBDB_PATH" = "$pwd"; then
+elif test "$LIBDB_PATH" = "$pwd"; then
     CFLAGS="$CFLAGS -I$pwd -L$pwd"
-fi
-if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
-    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
-fi
-if test "$LIBDB_PATH" = "/usr/local/lib"; then
-    CFLAGS="$CFLAGS -I/usr/local/include -L/usr/local/lib"
+elif test "$LIBDB_PATH" = "/usr/local/lib"; then
+    if test "$LIBDB_NAME" = "-ldb2"; then
+	CFLAGS="$CFLAGS -I/usr/local/include/db2 -L/usr/local/lib"
+    else
+	CFLAGS="$CFLAGS -I/usr/local/include -L/usr/local/lib"
+    fi
 fi
 
 AC_CHECK_LIB(pthread, pthread_create, pthread_in=pthread,pthread_in=no)
@@ -195,7 +198,7 @@ case "$host_os" in
 irix*)    CFLAGS="-D_SGI_MP_SOURCE";;
 osf*)     CFLAGS="-D_REENTRANT";;
 freebsd*) CFLAGS="$CFLAGS -pthread -D_REENTRANT -DFREEBSD -D_THREAD_SAFE"
-	  LIBS="-lc_r $LEXLIB -ldb -lcrypt $LIBS"
+	  LIBS="-lc_r $LEXLIB $LIBDB_NAME -lcrypt $LIBS"
 	  ;;
 linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
 	  if test "$pthread_in" = "pthreads" ; then
@@ -203,11 +206,11 @@ linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
 		LIBS="-lpthreads $LEXLIB -ldb -lcrypt $LIBS"
 		echo Probably you have MIT-threads. If yes, swich to LinuxThreads.
 	  else
-		LIBS="-lpthread $LEXLIB -ldb -lcrypt $LIBS"
+		LIBS="-lpthread $LEXLIB $LIBDB_NAME -lcrypt $LIBS"
 	  fi
 	  ;;
 solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
-	  LIBS="-lm -ly -ll -ldb $LIBS -lsocket -lnsl"
+	  LIBS="-lm -ly -ll $LIBDB_NAME $LIBS -lsocket -lnsl"
 	  case "$CC" in
 		gcc*)	LIBS="-lthread -lpthread $LIBS"
 			;;
@@ -217,6 +220,13 @@ solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
 	  ;;
 esac
 
+AC_CHECK_FUNC(gethostbyname_r, have_gethostbyname_r=yes,have_gethostbyname_r=no)
+if test "$have_gethostbyname_r" = "yes"; then
+	HAVE_GETHOSTBYNAME_R=1
+else
+	HAVE_GETHOSTBYNAME_R=0
+fi
+
 echo $CC
 echo $CFLAGS
 echo $LIBS
@@ -225,5 +235,6 @@ AC_SUBST(YACCLIB)
 AC_SUBST(STRTOKSRC)
 AC_SUBST(STRTOKOBJ)
 AC_SUBST(SOFLAGS)
+AC_SUBST(HAVE_GETHOSTBYNAME_R)
 
 AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg src/config.h)

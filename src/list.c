@@ -1,3 +1,5 @@
+#define	NDEBUG
+
 /* BeginSourceFile list2.c */
 
 #define	NDEBUG

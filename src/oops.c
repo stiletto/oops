@@ -48,7 +48,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	<db.h>
 
-#include	"config.h"
 #include	"oops.h"
 #include	"version.h"
 
@@ -63,13 +62,14 @@ struct	sockaddr_in	Me;
 int	run_daemon = 0;
 int	pid_d = -1;
 int	check_config_only;
-struct	hash_entry	hash_table[HASH_SIZE];
+struct	obj_hash_entry	hash_table[HASH_SIZE];
 int	skip_check=0, checked=0;
 void	print_networks(struct cidr_net **, int, int), print_acls(), free_acl(struct acls *);
 void	free_dom_list(struct domain_list *);
 void	print_dom_list(struct domain_list *);
 void	free_peers(struct peer *);
 void	free_denytimes(struct denytime *);
+void	free_dstd_ce(void*);
 int	close_listen_so_list(struct listen_so_list *list);
 extern	int	str_to_sa(char*, struct sockaddr *);
 
@@ -291,7 +291,12 @@ run:
     icp_port		= 3130;
     internal_http_port	= 3129;
     ns_configured	= 0;
+    always_check_freshness  = FALSE;
+    last_modified_factor = 10;
+    force_http11	= FALSE;
+    force_completion	= 75;	/* 75% */
     default_expire_interval = DEFAULT_EXPIRE_INTERVAL;
+    max_expire_value 	    = 4*DEFAULT_EXPIRE_INTERVAL;
     ftp_expire_value 	    = FTP_EXPIRE_VALUE;
     default_expire_value    = DEFAULT_EXPIRE_VALUE;
     disk_low_free	= DEFAULT_LOW_FREE;
@@ -300,6 +305,8 @@ run:
     dns_ttl		= DEFAULT_DNS_TTL;
     icp_timeout		= DEFAULT_ICP_TIMEOUT;
     logs_buffered	= FALSE;
+    insert_x_forwarded_for = TRUE;
+    insert_via		= TRUE;
 
     bzero(&dbenv, sizeof(dbenv));
     bzero(&dbinfo,sizeof(dbinfo));
@@ -350,6 +357,7 @@ run:
     if ( readconfig(configfile) ) exit(1);
     if ( check_config_only ) exit(0);
 
+    init_domain_name();
     sort_networks();
     (void)print_networks(sorted_networks_ptr,sorted_networks_cnt, TRUE);
     print_acls();
@@ -421,7 +429,7 @@ run:
 	dbp = NULL;
     }
     prepare_storages();
-    my_log( "oops%sStarted\n", VERSION);
+    my_log( "oops %s Started\n", VERSION);
     version = VERSION;
 #ifdef	DB_VERSION_STRING
     my_log("DB engine by %s\n", DB_VERSION_STRING);
@@ -501,7 +509,8 @@ struct	cidr_net	*nets, *next_net;
 	if ( groups->redir_mods ) free_string_list(groups->redir_mods);
 	free_acl(groups->http);
 	free_acl(groups->icp);
-
+	if ( groups->dstdomain_cache )
+	    hash_destroy(groups->dstdomain_cache, free_dstd_ce);
 	free(groups);
 	groups = next;
     }
@@ -509,6 +518,11 @@ struct	cidr_net	*nets, *next_net;
 	free(sorted_networks_ptr);
 	sorted_networks_ptr = NULL;
     }
+}
+void
+free_dstd_ce(void *a)
+{
+    free(a);
 }
 
 void

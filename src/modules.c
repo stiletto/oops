@@ -36,12 +36,15 @@
 #include "oops.h"
 #include "modules.h"
 
-struct	log_module	*log_first = NULL;
-struct	err_module	*err_first = NULL;
-struct	auth_module	*auth_first = NULL;
-struct	output_module	*output_first = NULL;
-struct	redir_module	*redir_first = NULL;
-struct	listener_module	*listener_first = NULL;
+struct	log_module		*log_first = NULL;
+struct	err_module		*err_first = NULL;
+struct	auth_module		*auth_first = NULL;
+struct	output_module		*output_first = NULL;
+struct	redir_module		*redir_first = NULL;
+struct	listener_module		*listener_first = NULL;
+struct	headers_module		*headers_first = NULL;
+
+struct	output_module		*lang_mod = NULL;
 
 void	insert_module(struct general_module*, struct general_module**);
 
@@ -80,6 +83,12 @@ struct general_module	*res;
 	res = res->next;
     }
     res = (struct general_module*)listener_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return(res);
+	res = res->next;
+    }
+    res = (struct general_module*)headers_first;
     while( res ) {
 	if ( !strcasecmp(res->name, name) )
 	    return(res);
@@ -154,25 +163,52 @@ struct	string_list	*mod_list = group->redir_mods;
 }
 
 int
+check_headers_match(struct mem_obj *obj, struct request *rq, int *flags)
+{
+int			rc = MOD_CODE_OK;
+struct headers_module	*mod = headers_first;
+
+    if ( *flags ) flags = 0;
+    while ( mod && (rc == MOD_CODE_OK) ) {
+	if ( mod->match_headers ) rc = mod->match_headers(obj, rq, flags);
+	mod = (struct headers_module*) mod->general.next;
+    }
+    return(rc);
+}
+
+int
 load_modules()
 {
 void			*modh;
 char			*mod_type, *mod_info, **paths, *module_path;
 glob_t			globbuf;
-int			gc;
+int			gc, rc;
+char			modules_path[MAXPATHLEN+1];
+char			glob_mask[MAXPATHLEN+1];
+struct	stat		statb;
 struct	log_module	*log_module;
 struct	err_module	*err_module;
 struct	auth_module	*auth_module;
 struct	redir_module	*redir_module;
 struct	output_module	*output_module;
 struct	listener_module	*listener_module;
+struct	headers_module	*headers_module;
 
 char			*nptr;
 
+    sprintf(modules_path, "./modules");
+    rc = stat(modules_path, &statb);
+    if ( !rc && TEST(statb.st_mode, S_IFDIR) )
+	goto load_mods;
+    else
+	sprintf(modules_path, "%s/modules", OOPS_HOME);
+load_mods:
+    printf("Loading modules from %s\n", modules_path);
+    sprintf(glob_mask, "%s/*.so", modules_path);
     global_mod_chain = NULL;
     bzero(&globbuf, sizeof(globbuf));
-    if ( glob("./modules/*.so", 0, NULL, &globbuf) ) {
-	printf("can't glob on ./modules\n");
+    if ( glob(glob_mask, 0, NULL, &globbuf) ) {
+	printf("can't glob on %s\n", modules_path);
 	return(1);
     }
     for( gc = globbuf.gl_pathc, paths=globbuf.gl_pathv; gc;gc--,paths++) {
@@ -306,6 +342,8 @@ char			*nptr;
 		    strncpy(MOD_NAME(output_module), nptr, MODNAMELEN-1);
 
 		output_module->output = (mod_load_t*)dlsym(modh, "output");
+		output_module->compare_u_agents = /* for lang only */
+		    (mod_load_t*)dlsym(modh, "compare_u_agents");
 		if ( MOD_LOAD(output_module) )
 			(*MOD_LOAD(output_module))();
 		output_module->general.type = MODULE_OUTPUT;
@@ -338,6 +376,32 @@ char			*nptr;
 		insert_module((struct general_module*)listener_module,
 			      (struct general_module**)&listener_first);
 		break;
+	      case MODULE_HEADERS:
+		printf("(Headers match module)\n");
+		/* allocate module structure */
+		headers_module = (struct headers_module*)xmalloc(sizeof(*headers_module), "");
+		if ( !headers_module ) {
+		    dlclose(modh);
+		}
+		bzero(headers_module, sizeof(*headers_module));
+		MOD_HANDLE(headers_module) = modh;
+		MOD_LOAD(headers_module)   = (mod_load_t*)dlsym(modh, "mod_load");
+		MOD_UNLOAD(headers_module) = (mod_load_t*)dlsym(modh, "mod_unload");
+		MOD_CONFIG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config");
+		MOD_CONFIG_BEG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
+		MOD_CONFIG_END(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		*MOD_NAME(headers_module) = 0;
+		nptr = (char*)dlsym(modh, "module_name");
+		if ( nptr )
+		    strncpy(MOD_NAME(headers_module), nptr, MODNAMELEN-1);
+
+		headers_module->match_headers = (mod_load_t*)dlsym(modh, "match_headers");
+		if ( MOD_LOAD(headers_module) )
+			(*MOD_LOAD(headers_module))();
+		headers_module->general.type = MODULE_HEADERS;
+		insert_module((struct general_module*)headers_module,
+			      (struct general_module**)&headers_first);
+		break;
 	      default:
 		printf(" (Unknown module type. Unload it)\n");
 		dlclose(modh);
@@ -348,6 +412,8 @@ char			*nptr;
     }
 done:
     globfree(&globbuf);
+    /* we will need lang */
+    lang_mod = (struct output_module*)module_by_name("lang");
     return(0);
 }
 
@@ -438,6 +504,15 @@ struct	sockaddr_in	sin_addr;
 	string = p;
     }
     return(nres);
+}
+
+int
+Compare_Agents(char *agent1, char *agent2)
+{
+
+    if ( !lang_mod )
+	return(TRUE);
+    return(lang_mod->compare_u_agents(agent1, agent2));
 }
 
 #endif

@@ -260,3 +260,19 @@ int		 i;
 	buff = buff->next;
     }
 }
+
+int
+compare_u_agents(char *a1, char *a2)
+{
+int	res = TRUE;
+
+    if ( !a1 || !a2 ) return(TRUE);
+    RDLOCK_LANG_CONFIG ;
+    if ( !charsets )
+	goto done;
+    if ( lookup_charset_by_Agent(charsets, a1) != lookup_charset_by_Agent(charsets, a2) )
+	res = FALSE;
+ done:
+    UNLOCK_LANG_CONFIG ;
+    return(res);
+}

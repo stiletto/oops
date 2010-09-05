@@ -59,10 +59,9 @@
 		unlock_obj(o);\
 		}
 
-int		no_direct_connections	= FALSE;
+#define		DONT_CHANGE_HTTPVER	1
 
-int		insert_via = TRUE;
-int		insert_x_forwarded_for = TRUE;
+int		no_direct_connections	= FALSE;
 
 int		writen(int, char*, int);
 int		str_to_sa(char*, struct sockaddr*);
@@ -70,7 +69,6 @@ void		analyze_header(char*, struct server_answ *);
 int		attach_data(char* src, int size, struct buff *buff);
 struct	buff*	alloc_buff(int size);
 int		send_data_from_buff(int, struct buff **, int *, int *);
-int		send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int);
 void		send_data_from_obj(struct request*, int, struct mem_obj *, int);
 void		unlock_obj(struct mem_obj *);
 void		lock_obj(struct mem_obj *);
@@ -82,14 +80,13 @@ void		change_state(struct mem_obj*, int);
 void		change_state_notify(struct mem_obj *obj);
 void		free_chain(struct buff *);
 void		destroy_obj(struct mem_obj *);
+void		process_vary_headers(struct mem_obj*, struct request*);
 int		continue_load(struct request*, int, int, struct mem_obj *);
 int		parent_connect(int, char *, int , struct request *);
 int		peer_connect(int, struct sockaddr_in*, struct request *);
 int		srv_connect(int, struct url *url, struct request*);
-int		fill_server_request(struct request *, struct buff *);
 struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
-char*		build_direct_request(char *meth, struct url *url, char *headers, struct request *rq);
-char*		build_parent_request(char *meth, struct url *url, char *headers, struct request *rq);
+char*		build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags);
 
 pthread_mutex_t	icp_so_lock;
 
@@ -101,16 +98,33 @@ char			*answer = NULL, *p, *origin;
 struct	url		*url = &rq->url;
 char			*meth, *source;
 struct timeval		start_tv, stop_tv;
+struct server_answ	answ_state;
 int			delta_tv;
 int			have_code = 0, sent = 0;
+struct mem_obj		*obj;
+int			header_size;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
     else if ( rq->meth == METH_POST ) meth="POST";
     else if ( rq->meth == METH_TRACE ) meth="TRACE";
     else if ( rq->meth == METH_HEAD ) meth="HEAD";
+    else if ( rq->meth == METH_PROPFIND ) meth="PROPFIND";
+    else if ( rq->meth == METH_PROPPATCH ) meth="PROPPATCH";
+    else if ( rq->meth == METH_DELETE ) meth="DELETE";
+    else if ( rq->meth == METH_MKCOL ) meth="MKCOL";
+    else if ( rq->meth == METH_COPY ) meth="COPY";
+    else if ( rq->meth == METH_MOVE ) meth="MOVE";
+    else if ( rq->meth == METH_LOCK ) meth="LOCK";
+    else if ( rq->meth == METH_UNLOCK ) meth="UNLOCK";
     else
 	return;
+    obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
+    if ( !obj ) {
+	my_log("Can't create new_obj\n");
+	goto done;
+    }
+    bzero(&answ_state, sizeof(answ_state));
     gettimeofday(&start_tv, NULL);
     server_so = parent_port?parent_connect(so, parent_host, parent_port, rq):
 			    srv_connect(so, url, rq);
@@ -124,8 +138,8 @@ int			have_code = 0, sent = 0;
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
 	my_log("fcntl: %s\n", strerror(errno));
 
-    answer = parent_port?build_parent_request(meth, &rq->url, headers, rq):
-		         build_direct_request(meth, &rq->url, headers, rq);
+    answer = parent_port?build_parent_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER):
+		         build_direct_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER);
     if ( !answer )
 	goto done;
 
@@ -138,11 +152,16 @@ int			have_code = 0, sent = 0;
     }
     answer=xmalloc(ANSW_SIZE+1, "send_not_cached");
     if ( !answer ) goto done;
-    if ( rq->meth == METH_POST && rq->data ) {
-	char	*cp = rq->data->data;
-	int	rest= rq->data->used;
+    if ( rq->leave_to_read || rq->data ) {
+	char	*cp = NULL;
+	int	rest= 0;
 	/* send whole content to server				*/
-	
+
+	if ( rq->data ) {
+	    cp  = rq->data->data;
+	    rest= rq->data->used;
+	}
+
 	while ( rest > 0 ) {
 	    int to_send;
 	    to_send = MIN(2048, rest);
@@ -158,13 +177,14 @@ int			have_code = 0, sent = 0;
 	    			  READ_ANSW_TIMEOUT);
 	    if ( r < 0 )
 		goto done;
+
 	    rq->leave_to_read -= r;
 	    r = writet(server_so, answer, r, READ_ANSW_TIMEOUT);
 	    if ( r <= 0 )
 		goto done;
 	}
 #ifdef	LINUX
-	/* at least redhat 6.02 have such feature: close of the
+	/* at least redhat 6.02 have such feature: close() for the
 	   socket with unread data reset connection (send RST flag).
 	   This confuse browsers. So read any pending data (actually
 	   can be only \n or \n\n after request body
@@ -192,6 +212,25 @@ int			have_code = 0, sent = 0;
 		have_code = code;
 	    }
 	}
+	if ( !(answ_state.state & GOT_HDR) ) {
+	    obj->size += r;
+	    if ( !obj->container ) {
+		struct buff *new;
+
+		new = alloc_buff(CHUNK_SIZE);
+		if ( !new ) goto done;
+		obj->container = new;
+	    }
+	    if ( attach_data(answer, r, obj->container) ) {
+		my_log("attach_data\n");
+		goto done;
+	    }
+	    check_server_headers(&answ_state, obj, obj->container);
+	    if ( answ_state.state & GOT_HDR ) {
+		obj->flags|= answ_state.flags;
+		header_size = obj->container->used;
+	    }
+	}
 	to_write = r;
 	p = answer;
 	while( to_write ) {
@@ -207,9 +246,14 @@ int			have_code = 0, sent = 0;
 	    to_write -= r;
 	    p += r;
 	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) update_transfer_rate(rq, r);
+	    if ( TEST(obj->flags,ANSW_KEEP_ALIVE) && header_size && obj->content_length ) {
+		if ( sent >= header_size+obj->content_length )
+		    goto done;
+	    }
 	}
     }
 done:
+    if ( obj ) { obj->flags|=FLAG_DEAD; leave_obj(obj);}
     if ( server_so != -1 ) close(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
@@ -311,16 +355,17 @@ revalidate:
 		DECREMENT_REFS(obj->child_obj);
 	obj->child_obj = NULL;
 	/* now make decision - object is valid or not		*/
-	server_so = parent_port?parent_connect(so, parent_host, parent_port, rq):
-				srv_connect(so, &obj->url, rq);
+	server_so = parent_port?parent_connect_silent(so, parent_host, parent_port, rq):
+				srv_connect_silent(so, &obj->url, rq);
 	if ( server_so == -1 ) {
 	    /* send old content, but mark obj dead		*/
 	    SET(obj->flags, FLAG_DEAD);
 	    SWITCH_TO_READER_ON(obj);
-	    DECR_READERS(obj);
 	    obj->decision_done = TRUE ;
 	    unlock_decision(obj);
 	    pthread_cond_broadcast(&obj->decision_cond);
+	    send_data_from_obj(rq, so, obj, flags);
+	    DECR_READERS(obj);
 	    goto done;
 	}
 	new_obj = check_validity(server_so, rq, meth, obj);
@@ -403,19 +448,17 @@ int 		r, sended, received, state, send_hot_pos, pass=0, sf=0, ssended;
 struct	buff	*send_hot_buff;
 char		*transfer_encoding;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
-int		rest_in_chunk = 0;
+int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
 struct	pollarg	pollarg;
 
-    if (   ((rq->http_major <= 1) && (rq->http_minor < 1)) &&
-	   (obj->headers && !strcmp(obj->headers->attr,"HTTP/1.1")) ) {
+    downgrade_flags = downgrade(rq, obj);
+    my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
 
+    if ( TEST(downgrade_flags, DOWNGRADE_ANSWER) )
 	downgrade_minor = TRUE;
-	transfer_encoding = attr_value(obj->headers, "Transfer-Encoding");
-	if ( transfer_encoding && !strncasecmp("chunked", transfer_encoding, 7)) {
-	    my_xlog(LOG_HTTP, "Turn on Chunked Gateway\n");
-	    convert_from_chunked = TRUE;
-	}
-    }
+    if ( TEST(downgrade_flags, UNCHUNK_ANSWER) )
+	convert_from_chunked = TRUE;
+
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
 	my_log("fcntl: %s\n", strerror(errno));
     sended = 0;
@@ -444,12 +487,15 @@ go_again:
     }
 send_ready:
     if ( !send_hot_buff ) {
-    	struct av	*header = obj->headers;
+    	struct	av	*header = obj->headers;
+	struct	buff	*hdrs_to_send;
 
 	if ( !header ) goto done ;
+	hdrs_to_send = alloc_buff(512);
+	if ( !hdrs_to_send ) goto done;
 	/* first must be "HTTP/1.x 200 ..." */
 	if ( downgrade_minor ) {
-	    send_av_pair(so, "HTTP/1.0", header->val);
+	    attach_av_pair_to_buff("HTTP/1.0", header->val, hdrs_to_send);
 	    header = header->next;
 	}
 	while(header) {
@@ -463,27 +509,35 @@ send_ready:
 	    	   !(convert_from_chunked && is_attr(header, "Transfer-Encoding")) &&
 	    	   !(convert_from_chunked && is_attr(header, "Content-Length")) ){
 
-		send_av_pair(so, header->attr, header->val);
+		if ( !content_length_sent )
+		    content_length_sent = is_attr(header, "Content-Length");
+		attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 	    }
 	    header = header->next;
 	}
 	/* send header from memory */
 	if ( flags & MEM_OBJ_WARNING_110 ) {
 	    my_xlog(LOG_HTTP, "Send Warning: 110 oops Stale document\n");
-	    send_av_pair(so, "Warning:", "110 oops Stale document");
+	    attach_av_pair_to_buff("Warning:", "110 oops Stale document", hdrs_to_send);
 	}
 	if ( flags & MEM_OBJ_WARNING_113 ) {
 	    my_xlog(LOG_HTTP, "Send Warning: 113 oops Heuristic expiration used\n");
-	    send_av_pair(so, "Warning:", "113 oops Heuristic expiration used");
+	    attach_av_pair_to_buff("Warning:", "113 oops Heuristic expiration used", hdrs_to_send);
+	}
+	if ( obj->x_content_length && !content_length_sent ) {
+	    char clbuf[32];
+	    sprintf(clbuf, "%d", obj->x_content_length);
+	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
 	}
 	{
 	    char agebuf[32];
 	    sprintf(agebuf, "%d", (int)current_obj_age(obj));
-	    send_av_pair(so, "Age:", agebuf);
+	    attach_av_pair_to_buff("Age:", agebuf, hdrs_to_send);
 	}
 	/* end of headers */
-	send_av_pair(so,"","");
-
+	attach_av_pair_to_buff("","", hdrs_to_send);
+	writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+	free_container(hdrs_to_send);
 	if ( !obj->container ) goto done;
 	send_hot_pos = 0;
 	send_hot_buff = obj->container->next;
@@ -504,10 +558,12 @@ send_ready:
 	sf |= RQ_HAS_BANDWIDTH;
     if ( convert_from_chunked )
 	sf |= RQ_CONVERT_FROM_CHUNKED;
-    if ((r=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf)) ) {
+    if ((r=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL)) ) {
 	my_xlog(LOG_HTTP, "send_data_from_mem: send error: %s\n", strerror(errno));
 	goto done;
     }
+    if ( rest_in_chunk == -1 )
+	goto done;
     if ( !r && convert_from_chunked && !rest_in_chunk ) {
 	/* we sent nothing... this can be because we convert from chunked
 	 * ans we have only part of chunk size value stored in buff. like this:
@@ -544,7 +600,7 @@ struct	buff		*to_server_request = NULL;
 
     if ( rq->proto == PROTO_FTP ) {
 	/* ftp always must be reloaded */
-	new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL);
+	new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
 	if ( !new_obj ) {
 	    my_log("Can't create new_obj\n");
 	    goto validate_err;
@@ -553,19 +609,26 @@ struct	buff		*to_server_request = NULL;
     }
     /* send If-modified-Since request	*/
     /* prepare faked header		*/
+    if ( obj->times.last_modified ) {
+        if (!mk1123time(obj->times.last_modified, mk1123buff, sizeof(mk1123buff)) ) {
+	    my_log("Can't mk1123time\n");
+	    goto validate_err;
+	}
+    }
+    else /* No Last-Modified */
     if (!mk1123time(obj->times.date, mk1123buff, sizeof(mk1123buff)) ) {
 	my_log("Can't mk1123time\n");
-	return NULL;
+	goto validate_err;
     }
     fake_header = xmalloc(19 + strlen(mk1123buff) + 3, "for fake header");
     if ( !fake_header ) {
 	my_log("Can't create fake header\n");
-	return NULL;
+	goto validate_err;
     }
     sprintf(fake_header, "If-Modified-Since: %s\r\n", mk1123buff);
 
-    answer = parent_port?build_parent_request(meth, &rq->url, fake_header, rq):
-		         build_direct_request(meth, &rq->url, fake_header, rq);
+    answer = parent_port?build_parent_request(meth, &rq->url, fake_header, rq, 0):
+		         build_direct_request(meth, &rq->url, fake_header, rq, 0);
     if ( !answer )
 	goto validate_err;
     to_server_request = alloc_buff(2*CHUNK_SIZE);
@@ -574,26 +637,6 @@ struct	buff		*to_server_request = NULL;
 	goto validate_err;
     }
     r = attach_data(answer, strlen(answer), to_server_request);
-    if ( r )
-	goto validate_err;
-    if ( insert_x_forwarded_for ) {
-	char	*ip_addr = my_inet_ntoa(&rq->client_sa);
-	if ( ip_addr ) {
-	    r = attach_data("X-Forwarded-For: ", strlen("X-Forwarded-For: "),
-			to_server_request);
-	    if ( !r )
-	        r = attach_data(ip_addr, strlen(ip_addr), to_server_request);
-	    if ( !r )
-		r = attach_data("\r\n", 2, to_server_request);
-	    xfree(ip_addr);
-	}
-    }
-    if ( r )
-	goto validate_err;
-    if ( insert_via ) {
-	r = attach_data("Via: Oops 0.0alpha1\r\n",
-	    strlen("Via: Oops 0.0alpha1\r\n"), to_server_request);
-    }
     if ( r || attach_data("\r\n", 2, to_server_request) )
 	goto validate_err;
     r = writet(server_so, to_server_request->data, to_server_request->used,
@@ -602,7 +645,7 @@ struct	buff		*to_server_request = NULL;
     free(fake_header); fake_header = NULL;
     free_container(to_server_request); to_server_request = NULL;
 
-    new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL);
+    new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
     if ( !new_obj ) {
 	my_log("Can't create new_obj\n");
 	goto validate_err;
@@ -684,6 +727,7 @@ struct	buff		*to_server_request = NULL;
 			new_obj->flags |= ANSW_NO_STORE;
 		}
 		if ( new_obj->status_code == STATUS_OK ) {
+		    process_vary_headers(obj, rq);
 		    goto validate_done;
 		}
 		/* else send answer to user */
@@ -712,24 +756,26 @@ validate_done:
 }
 
 void
-fill_mem_obj(int so, struct request *rq, char * headers, struct mem_obj *obj)
+fill_mem_obj(int so, struct request *rq, char * headers, struct mem_obj *obj, int sso, int type, struct sockaddr_in *psa)
 {
 int			server_so = -1, r;
 char			*answer = NULL;
 struct	url		*url = &rq->url;
 char			*meth, *source;
 struct	server_answ	answ_state;
-int			received=0, sended=0, maxfd, resident_size;
+int			received=0, received0 = 0, sended=0, maxfd, resident_size;
 struct	buff		*send_hot_buff=NULL;
 int			send_hot_pos=0;
 fd_set			rset, wset;
 struct	timeval		tv, start_tv, stop_tv;
 int			delta_tv;
-int			have_code = 0, pass = 0;
+int			have_code = 0, pass = 0, rc;
 struct	buff		*to_server_request = NULL;
 char			*content_type, ctbuf[40], origin[MAXHOSTNAMELEN];
 struct	sockaddr_in	peer_sa;
-int			source_type;
+int			source_type, downgrade_flags;
+int			body_size, header_size, sf = 0, rest_in_chunk = 0;
+struct	av		*header = NULL;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -739,8 +785,19 @@ int			source_type;
 	DECR_WRITERS(obj);
 	return;
     }
+    sf |= (rq->flags & RQ_HAS_BANDWIDTH);
     gettimeofday(&start_tv, NULL);
-    if ( !parent_port && peers && (icp_so != -1) && (rq->meth == METH_GET) && !is_local_dom(rq->url.host) ) {
+    if ( sso > 0) {
+	source_type = type;
+	server_so = sso;
+	if ( psa ) peer_sa = *psa;
+	    else
+		   bzero(&peer_sa, sizeof(peer_sa));
+	goto server_connect_done;
+    }
+    if ( !TEST(rq->flags, RQ_NO_ICP) && !parent_port && peers && (icp_so != -1)
+	 && (rq->meth == METH_GET)
+	 && !is_local_dom(rq->url.host) ) {
 	struct icp_queue_elem *new_qe;
 	struct timeval tv = start_tv;
 	bzero((void*)&peer_sa, sizeof(peer_sa));
@@ -802,7 +859,8 @@ int			source_type;
  icp_failed:;
     } /* all icp things */
 
-    source_type = (parent_port && !is_local_dom(rq->url.host))?PEER_PARENT:SOURCE_DIRECT;
+    source_type = (parent_port && !is_local_dom(rq->url.host) && !TEST(rq->flags, RQ_FORCE_DIRECT))?
+	PEER_PARENT:SOURCE_DIRECT;
     server_so = (source_type==PEER_PARENT)?parent_connect(so, parent_host, parent_port, rq):
 			    srv_connect(so, url, rq);
 
@@ -866,8 +924,8 @@ int			source_type;
 	goto error;
     }
 
-    answer = (source_type==SOURCE_DIRECT)?build_direct_request(meth, &rq->url, headers, rq):
-    			 build_parent_request(meth, &rq->url, headers, rq);
+    answer = (source_type==SOURCE_DIRECT)?build_direct_request(meth, &rq->url, NULL, rq, 0):
+    			 build_parent_request(meth, &rq->url, NULL, rq, 0);
 
     if ( !answer ) {
 	change_state(obj, OBJ_READY);
@@ -894,8 +952,11 @@ int			source_type;
 
     obj->request_time = time(NULL);
     answer=xmalloc(ANSW_SIZE+1, "fill_mem_obj2");
-    if ( !answer )
+    if ( !answer ) {
+	obj->flags |= FLAG_DEAD;
+	change_state(obj, OBJ_READY);
 	goto error;
+    }
 
     bzero(&answ_state, sizeof(answ_state));
 
@@ -926,20 +987,21 @@ int			source_type;
 		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(2, r/100);
-/*		r = select(maxfd+1, &rset, NULL, NULL, &tv);*/
 		r = poll_descriptors(1, &pollarg[0],
 			tv.tv_sec*1000+tv.tv_usec/1000);
-		if ( r < 0 ) goto error;
+		if ( r < 0 ) {
+		    obj->flags |= FLAG_DEAD;
+		    change_state(obj, OBJ_READY);
+		    goto error;
+		}
 		if ( r== 0 ) continue;
 		goto read_s;
 	    }
 	ignore_bw_overload:
-	    FD_SET(so, &wset);
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
 	}
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-/*        r = select(maxfd+1, &rset, &wset, NULL, &tv);*/
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
 	    my_log("select: %s\n", strerror(errno));
@@ -953,17 +1015,40 @@ int			source_type;
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
 	}
-	if ( (so != -1) && IS_WRITEABLE(&pollarg[1]) ) {
-	   int	sf, ssended = sended;
-	   r--;
-	   sf = (rq->flags & RQ_HAS_BANDWIDTH);
-	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, sf) )
+	if ( (so != -1) && (IS_WRITEABLE(&pollarg[1])||IS_HUPED(&pollarg[1])) ) {
+	    int	ssended = sended;
+	    r--;
+	    if ( IS_HUPED(&pollarg[1]) ) {
 		so = -1;
-	   if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
+		goto client_so_closed;
+	    }
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj)) )
+		so = -1;
+	    if ( rest_in_chunk == -1 ) { /* was last chunk */
+		obj->state = OBJ_READY;
+		change_state_notify(obj);
+		my_log("was last chunk\n");
+		goto done;
+	    }
+	    if ( !rc && TEST(sf, RQ_CONVERT_FROM_CHUNKED) && !rest_in_chunk )
+		goto read_s;
+
+	    if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
+	    if ((obj->flags & ANSW_KEEP_ALIVE) && obj->content_length) {
+		/* e.g. www.securityfocus.com answer with Connection: Keep-Alive
+		 * even if requested "Close"
+		 */
+		if ( sended-header_size >= obj->content_length) {
+		    obj->state = OBJ_READY;
+		    change_state_notify(obj);
+		    goto done;
+		}
+	    }
 	}
+    client_so_closed:
 	if ( so == -1 ) {
 	    lock_obj(obj);
-	    if ( obj->refs <= 1 ) /* we are only who refers to this obj */ {
+	    if ( (obj->refs <= 1) && !FORCE_COMPLETION(obj) ) /* we are only who refers to this obj */ {
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 	    }
@@ -975,6 +1060,13 @@ int			source_type;
 	}
     read_s:
 	if ( !IS_READABLE(&pollarg[0]) ) {
+	    if ( IS_HUPED(&pollarg[0]) ) {
+		my_log("Connection closed by server\n");
+		obj->state =  OBJ_READY;
+		obj->flags |= FLAG_DEAD;
+		change_state_notify(obj);
+		goto error;
+	    }
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
 		my_log("select bug(?)\n");
@@ -1005,13 +1097,14 @@ int			source_type;
 		    obj->flags |= FLAG_DEAD;
 	    }
 	    change_state(obj, OBJ_READY);
-	    while( (so != -1) && send_hot_buff && (received > sended) ) {
-		int	ssended, sf;
+	    while( (so != -1) && send_hot_buff &&
+	           (received > sended) && (rest_in_chunk != -1)) {
+		int	ssended;
 		struct pollarg pollarg;
+		int	rc;
+
 		if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) )
 		    SLOWDOWN ;
-		FD_ZERO(&wset);
-		FD_SET(so, &wset);
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 		pollarg.fd = so;
 		pollarg.request = FD_POLL_WR;
@@ -1019,8 +1112,7 @@ int			source_type;
 		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
 		ssended = sended;
-		sf = (rq->flags & RQ_HAS_BANDWIDTH);
-		if (send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, sf) )
+		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj)) )
 		    so = -1;
 		if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
 	    }
@@ -1039,7 +1131,7 @@ int			source_type;
 	    obj->container = new;
 	}
 	if ( !(answ_state.state & GOT_HDR) ) {
-	    received+=r;
+	    received += r;
 	    obj->size += r;
 	    if ( attach_data(answer, r, obj->container) ) {
 		my_log("attach_data\n");
@@ -1047,7 +1139,7 @@ int			source_type;
 		change_state(obj, OBJ_READY);
 		goto error;
 	    }
-	    if ( check_server_headers(&answ_state, obj, obj->container) ) {
+	    if ( (obj->state < OBJ_INPROGR) && check_server_headers(&answ_state, obj, obj->container) ) {
 		my_log("check_server_headers\n");
 		/*
 		    If we can't parse server header - let client do it.
@@ -1062,12 +1154,14 @@ int			source_type;
 		continue;
 	    }
 	    if ( answ_state.state & GOT_HDR ) {
+		struct	buff	*hdrs_to_send;
+
 		send_hot_buff = obj->container;
 		send_hot_pos  = 0;
 		sended = 0;
 		obj->flags|= answ_state.flags;
 		obj->times = answ_state.times;
-		if ( !obj->times.date ) obj->times.date = time(NULL);
+		if ( !obj->times.date ) obj->times.date = global_sec_timer;
 		if ( answ_state.flags & ANSW_HAS_EXPIRES ) {
 		    if ( obj->times.expires < obj->times.date ) {
 			obj->flags |= ANSW_NO_STORE;
@@ -1078,29 +1172,96 @@ int			source_type;
 			obj->flags |= FLAG_DEAD;
 		if (!(obj->flags & ANSW_NO_STORE) )
 			obj->flags &= ~ANSW_NO_CACHE;
-		change_state(obj, OBJ_INPROGR);
-		if ( TEST(obj->flags, ANSW_SHORT_CONTAINER) ) {
-		    struct buff *last_buff;
-		    while ( send_hot_buff ) {
-			last_buff = send_hot_buff;
-			if ( !send_hot_buff->data ) goto error;
-			if ( writet(so, send_hot_buff->data, send_hot_buff->used, READ_ANSW_TIMEOUT) < 0)
-			    goto error;
-			sended += send_hot_buff->used;
-			send_hot_buff->used = 0;
-			send_hot_buff = send_hot_buff->next;
+
+		if ( obj->headers && rq->av_pairs ) {
+		    /* save Vary: headers */
+		    char	*p, *t, *tok_ptr, *value;
+		    char	*vary = attr_value(obj->headers, "Vary:" ), *temp_vary;
+
+		    if ( vary && (temp_vary = strdup(vary)) ) {
+			my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+			/* 1. skip spaces */
+			p = temp_vary;
+			while ( *p && isspace(*p) ) p++;
+			t = p;
+			/* split on ',' */
+			while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) ) {
+			    int	a_len;
+			    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
+
+			    t = NULL;
+			    my_xlog(LOG_HTTP, "Chk hdr: %s\n", p);
+			    value = attr_value(rq->av_pairs, p);
+			    if ( value ) {
+				/* format and attach */
+				a_len = sizeof(pref)+strlen(p)+1;
+				if ( a_len <= sizeof(a_buf) ) {
+				    fav = a_buf;
+				} else {
+				    fav = xmalloc(a_len, "");
+				}
+				if ( fav ) {
+				    sprintf(fav, "%s%s:", pref, p);
+				    insert_header(fav, value, obj);
+				    if ( fav != a_buf ) xfree(fav);
+				    received = obj->size;
+				} /* if fav */
+			    } /* value */
+			} /* while tokens */
+			if (temp_vary)free(temp_vary);
+			my_xlog(LOG_HTTP, "Vary=%s\n", vary);
 		    }
-		    send_hot_buff = last_buff;
-		} /* we flushed all what we read */
+		}
+		change_state(obj, OBJ_INPROGR);
+
+		header_size = obj->container->used;
+		if ( obj->container->next )
+			body_size = obj->container->next->used;
+		    else
+			body_size = 0;
+		downgrade_flags = downgrade(rq, obj);
+		my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
+		hdrs_to_send = alloc_buff(512); /* most headers fit this (?) */
+		if ( !hdrs_to_send ) goto error;
+		header = obj->headers;
+		if ( !header ) goto error ;
+		/* first must be "HTTP/1.x 200 ..." */
+		if ( TEST(downgrade_flags, DOWNGRADE_ANSWER) ) {
+		    attach_av_pair_to_buff("HTTP/1.0", header->val, hdrs_to_send);
+		    header = header->next;
+		}
+		while(header) {
+	    	/*my_log("Sending ready header '%s'->'%s'\n", header->attr, header->val);*/
+	    	if ( 
+			/* we must not send Tr.-Enc. and Cont.-Len. if we convert
+			 * from chunked							*/
+
+			   !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding")) &&
+			   !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) ){
+			attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
+		    }
+		    header = header->next;
+		}
+		attach_av_pair_to_buff("", "", hdrs_to_send);
+		writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+		free_container(hdrs_to_send);
+		sended = obj->container->used;
+		send_hot_buff = obj->container;
+		send_hot_pos  = obj->container->used;
+
+		if ( TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
+		    sf |= RQ_CONVERT_FROM_CHUNKED;
+		}
 	    }
 	} else {
+	    body_size += r;
 	    if ( TEST(obj->flags, ANSW_SHORT_CONTAINER) ) {
 		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
 		    SLOWDOWN ;
 		if ( writet(so, answer, r, READ_ANSW_TIMEOUT) < 0 )
 		    goto error;
-		    received += r;
-		    sended   += r;
+		received += r;
+		sended   += r;
 		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH))
 			update_transfer_rate(rq, r);
 		goto rcv_d;
@@ -1151,10 +1312,15 @@ error:
     DECR_WRITERS(obj);
     return;
 done:
-    obj->response_time = time(NULL);
+
+    obj->response_time = global_sec_timer;
     resident_size = calculate_resident_size(obj);
+    obj->x_content_length = obj->x_content_length_sum;
     my_xlog(LOG_HTTP, "loaded successfully: received: %d\n", received);
 
+    if ( !obj->content_length && !content_chunked(obj) )
+	/* we don't know size */
+    obj->flags |= FLAG_DEAD;
     /* if object too large remove it right now */
     if ( resident_size > maxresident ) {
 	my_xlog(LOG_HTTP, "Obj is too large - remove it\n");
@@ -1196,17 +1362,48 @@ done:
 int
 continue_load(struct request *rq, int so, int server_so, struct mem_obj *obj)
 {
-int			received=0, sended=0, maxfd, pass=0, ssended, sf=0;
+int			received=0, received0 = 0, sended=0, maxfd, pass=0, ssended, sf=0;
 struct	buff		*send_hot_buff;
 int			send_hot_pos;
 fd_set			rset, wset;
 struct	timeval		tv;
-int			r;
+int			r, rest_in_chunk = 0, downgrade_flags = 0;
 char			*answer=NULL;
+struct	av		*header;
 
-    received = obj->size;
+    received = received0 = obj->size;
     send_hot_buff = obj->container;
     send_hot_pos = 0;
+
+    downgrade_flags = downgrade(rq, obj);
+    my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
+    header = obj->headers;
+    if ( !header ) goto error ;
+    if ( TEST(downgrade_flags, DOWNGRADE_ANSWER) ) {
+	send_av_pair(so, "HTTP/1.0", header->val);
+	header = header->next;
+    }
+    while(header) {
+	if ( 
+	    /* we must not send Tr.-Enc. and Cont.-Len. if we convert
+	     * from chunked							*/
+
+		!(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding")) &&
+		!(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) ){
+
+	    send_av_pair(so, header->attr, header->val);
+	}
+	header = header->next;
+    }
+    send_av_pair(so, "", "");
+    sended = obj->container->used;
+    send_hot_buff = obj->container;
+    send_hot_pos  = obj->container->used;
+
+    if ( TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
+	sf |= RQ_CONVERT_FROM_CHUNKED;
+    }
+    if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) sf |= RQ_HAS_BANDWIDTH;
     if ( !(obj->flags & ANSW_NO_STORE) )
 	obj->flags &= ~ANSW_NO_CACHE;
     answer = xmalloc(ANSW_SIZE+1, "continue_load1");
@@ -1221,8 +1418,6 @@ char			*answer=NULL;
     while(1) {
 	struct	pollarg pollarg[2];
 
-	FD_ZERO(&rset); FD_ZERO(&wset);
-	FD_SET(server_so, &rset);
 	pollarg[0].fd = server_so; pollarg[0].request = FD_POLL_RD;
 	pollarg[1].fd = 0; pollarg[1].request = 0;
 	if ( server_so > so ) maxfd = server_so;
@@ -1239,19 +1434,20 @@ char			*answer=NULL;
 		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(2, r/100);
-/*		r = select(maxfd+1, &rset, NULL, NULL, &tv);*/
 		r = poll_descriptors(1, &pollarg[0], tv.tv_sec*1000+tv.tv_usec/1000);
-		if ( r < 0 ) goto error;
+		if ( r < 0 ) {
+		    obj->flags |= FLAG_DEAD;
+		    change_state(obj, OBJ_READY);
+		    goto error;
+		}
 		if ( r== 0 ) continue;
 		goto read_s;
 	    }
 	ignore_bw_overload:
-	    FD_SET(so, &wset);
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
 	}
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-/*        r = select(maxfd+1, &rset, &wset, NULL, &tv);*/
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
 	    my_log("select: %s\n", strerror(errno));
@@ -1265,15 +1461,26 @@ char			*answer=NULL;
 	    change_state(obj, OBJ_READY);
 	    goto error;
 	}
-	if ( (so != -1) && IS_WRITEABLE(&pollarg[1]) ) {
+	if ( (so != -1) && (IS_WRITEABLE(&pollarg[1])||IS_HUPED(&pollarg[1])) ) {
 	   r--;
-	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0) ) {
+	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj) ) {
 		so = -1;
+	   }
+	   if ( rest_in_chunk == -1 ) {
+		my_log("We sent last chunk, rec-sent=%d\n", received-sended);
+		change_state(obj, OBJ_READY);
+		goto done;
+	   }
+	   if ( TEST(obj->flags, ANSW_KEEP_ALIVE) && obj->content_length) {
+		if ( sended >= obj->container->used + obj->content_length ) {
+		    change_state(obj, OBJ_READY);
+		    goto done;
+		}
 	   }
 	}
 	if ( so == -1 ) {
 	    lock_obj(obj);
-	    if ( obj->refs <= 1 ) /* we are only who refers to this obj */ {
+	    if ( (obj->refs <= 1) && !FORCE_COMPLETION(obj) ) /* we are only who refers to this obj */ {
 		my_log("we alone: %d\n", obj->refs);
 		obj->state = OBJ_READY;
 		obj->flags |= FLAG_DEAD;
@@ -1317,21 +1524,18 @@ char			*answer=NULL;
 	    }
 	    change_state(obj, OBJ_READY);
 	    while( (so != -1) && (received > sended) ) {
-		struct pollarg pollarg;
+		struct pollarg  pollarg;
+		int		rc;
 
 		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
 		    SLOWDOWN ;
-		FD_ZERO(&wset);
-		FD_SET(so, &wset);
 		pollarg.fd = so;
 		pollarg.request = FD_POLL_WR;
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-/*        	r = select(so+1, NULL, &wset, NULL, &tv);*/
 		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
 		ssended = sended;
-		if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) sf = RQ_HAS_BANDWIDTH;
-		if (send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, sf) )
+		if ( (rc=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj)) )
 		    so = -1;
 		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, sended-ssended);
 	    }
@@ -1343,13 +1547,15 @@ char			*answer=NULL;
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
-	   }
+	}
 	received += r;
 	obj->size += r;
+	obj->state = OBJ_INPROGR;
 	change_state_notify(obj);
     }
 done:
     obj->resident_size = calculate_resident_size(obj);
+    obj->x_content_length = obj->x_content_length_sum;
 	/*received + sizeof(*obj)+(obj->container?obj->container->used:0);*/
     increase_hash_size(obj->hash_back, obj->resident_size);
 error:
@@ -1387,7 +1593,6 @@ do_it:
 
     pollarg.fd = so;
     pollarg.request = FD_POLL_WR;
-/*    r = select(so+1, NULL, &wset, NULL, &tv);*/
     r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 )
 	return(r);
@@ -1400,7 +1605,7 @@ do_it:
 }
 
 int
-send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags)
+send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj)
 {
 int		r, to_send, cz_here, faked_sent, chunk_size;
 struct	buff	*b = *hot;
@@ -1408,7 +1613,7 @@ char		*cb, *ce, *cd;
 char		ch_sz[16];	/* buffer to collect chunk size	*/
 
     if ( !*hot )
-	return(0);
+	return(-1);
     if ( TEST(flags, RQ_CONVERT_FROM_CHUNKED) && !rest_in_chunk ) {
 	my_log("Check yourself: sending chunked in send_data_from_buff\n");
 	return(-1);
@@ -1426,7 +1631,7 @@ do_it:
 	goto do_it;
     }
     if ( to_send < 0 ) {
-	my_log("What the fuck? to_send = %d\n", to_send);
+	my_log("What the fuck1? to_send = %d\n", to_send);
 	return(-1);
     }
     /** send no more than 512 bytes at once if we control bandwith
@@ -1446,6 +1651,8 @@ do_it:
     if ( r < 0 )
 	return(r);
     *pos += r; *sended += r;
+    if ( r < to_send ) /* it can't accept more data now */
+	return(0);
     goto do_it;
 
 send_chunked:
@@ -1453,45 +1660,78 @@ send_chunked:
 do_it_chunked:
     if ( !*rest_in_chunk ) {
 	/* we stay on a new chunk,extract current chunk size */
-	cz_here = FALSE;
-	cd = ch_sz;
-	*cd = 0;
 	cb = b->data + *pos;
 	ce = b->data + b->used;
     find_chunk_size_again:
+	cz_here = FALSE;
+	cd = ch_sz;
+	*cd = 0;
+	while ( ( cb < ce ) && isspace(*cb) ) {
+	    cb++;
+	    (*sended)++;
+	    (*pos)++;
+	}
+	if ( ce == cb ) {
+	    if ( b->next ) {
+		b = b->next;
+		*hot = b;
+		*pos = 0;
+		*sended += faked_sent;
+		goto send_chunked;
+	    } else {
+		return(0);
+	    }
+	}
+    number2:
 	while( cb < ce ) {
-	    if ( cd - ch_sz >= sizeof(ch_sz) ) {
-		/* ch_sz must not be overflowed */
-		return(-1);
-	    }
-	    if ( strstr(ch_sz, "\r\n") ) {
-		/* the end of chunk size */
-		cz_here = TRUE;
-		break;
-	    }
 	    *cd++ = *cb++;
 	    *cd=0;
 	    faked_sent++;
+	    if ( cd - ch_sz >= sizeof(ch_sz) ) {
+		return(-1);
+	    }
+	    if ( strstr(ch_sz, "\r\n") ) {
+		cz_here=TRUE;
+		break;
+	    }
+	}
+	if ( (ce == cb) && !cz_here ) {
+	    if ( b->next ) {
+		b = b->next;
+		*pos = 0;
+		cb = b->data + *pos;
+		ce = b->data + b->used;
+		goto number2;
+	    } else {
+		return(0);
+	    }
 	}
 	if ( cz_here ) {
-	    my_xlog(LOG_HTTP, "Got chunk size: %s\n", ch_sz);
+	    /*my_xlog(LOG_HTTP, "Got chunk size: %s\n", ch_sz);*/
 	    *hot = b;
 	    *pos = cb - b->data;
 	    *sended += faked_sent;
 	    cd = ch_sz;
 	    r = sscanf(ch_sz, "%x", &chunk_size);
-	    if ( r != 1)
+	    if ( r != 1) {
+		my_log("no cs in %s\n", ch_sz);
 		return(-1);
+	    }
 	    if ( !chunk_size ) {
 		/* it is last */
-		*rest_in_chunk = 0;
+		*rest_in_chunk = -1;
 		return(0);
 	    }
+	    /*my_xlog(LOG_HTTP, "Got chunk size: %d\n", chunk_size);*/
 	    *rest_in_chunk = chunk_size;
-	    return(0);
+	    if ( obj ) {
+		obj->x_content_length_sum += chunk_size;
+	    }
+	    goto do_it_chunked;
 	} else {
-	    if ( !b->next )
+	    if ( !b->next ) {
 		return(0);
+	    }
 	    b = b->next;
 	    cb = b->data;
 	    ce = b->data + b->used;
@@ -1506,46 +1746,30 @@ do_it_chunked:
 	    *hot = b->next;
 	    b = b->next;
 	    *pos = 0;
-	    goto do_it_chunked;
+	    goto send_chunked;
  	}
    	if ( to_send < 0 ) {
-	    my_log("What the fuck? to_send = %d\n", to_send);
+	    my_log("What the fuck2? to_send = %d\n", to_send);
 	    return(-1);
 	}
 	if ( TEST(flags, RQ_HAS_BANDWIDTH) ) to_send = MIN(to_send, 512);
 	   else				     to_send = MIN(to_send, 2048);
 	r = write(so, b->data+*pos, to_send);
-	if ((r < 0) && (errno == EWOULDBLOCK) ) return(0);
-	if ( TEST(flags, RQ_HAS_BANDWIDTH) && (r>0) ) {
-	    *pos += r; *sended += r; *rest_in_chunk -= r;
+	if ((r < 0) && (errno == EWOULDBLOCK) ) {
 	    return(0);
 	}
-	if ( r < 0 )
+	if ( r < 0 ) {
 	    return(r);
-        *pos += r; *sended += r; *rest_in_chunk -= r;
-	if ( !*rest_in_chunk ) {
-	    /* we stay on the end of chunk */
-	    /* skip CRLF, which can be in  */
-	    /* this or in next buff	   */
-	    if ( *pos+2 <= b->used ) {
-		/* it is in this buff	*/
-		*pos+=2;
-		faked_sent+=2;
-	    } else {
-		/* This can happens in only  case: CR|LF */
-		if ( !b->next ) /* this is fatal... */
-		    return(0);
-		faked_sent+=2;
-		*pos = *pos+2-b->used;
-		b = b->next;
-		if ( *pos > b->used ) {
-		    /* this is fatal */
-		    return (-1);
-		}
-		goto do_it_chunked;
-	    }
 	}
-	goto do_it_chunked;
+	*pos += r; *sended += r; *rest_in_chunk -= r;
+	if ( TEST(flags, RQ_HAS_BANDWIDTH) && *rest_in_chunk )
+	    /* we will return (to recalculate traffic load) only when we
+	       have something to send
+	    */
+	    return(0);
+	if ( r < to_send ) /* it can't accept more data now */
+	    return(0);
+	goto send_chunked;
     }
 }
 
@@ -1764,6 +1988,30 @@ struct	sockaddr_in 	server_sa;
 }
 
 int
+srv_connect_silent(int client_so, struct url *url, struct request *rq)
+{
+int 			server_so = -1, r;
+struct	sockaddr_in 	server_sa;
+
+    server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if ( server_so == -1 ) {
+	return(-1);
+    }
+    bind_server_so(server_so);
+    if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
+	close(server_so);
+	return(-1);
+    }
+    server_sa.sin_port = htons(url->port);
+    r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
+    if ( r == -1 ) {
+	close(server_so);
+	return(-1);
+    }
+    return(server_so);
+}
+
+int
 parent_connect(int client_so, char *parent_host, int parent_port, struct request *rq)
 {
 int 			server_so = -1, r;
@@ -1801,6 +2049,41 @@ struct	sockaddr_in	dst_sa;
     }
     return(server_so);
 }
+int
+parent_connect_silent(int client_so, char *parent_host, int parent_port, struct request *rq)
+{
+int 			server_so = -1, r;
+struct	sockaddr_in 	server_sa;
+struct	sockaddr_in	dst_sa;
+
+    if ( !TEST(rq->flags, RQ_GO_DIRECT) ) {
+        bzero(&dst_sa, sizeof(dst_sa));
+	if ( local_networks_sorted && local_networks_sorted_counter ) {
+	    if (str_to_sa(rq->url.host, (struct sockaddr*)&dst_sa) )
+		bzero(&dst_sa, sizeof(dst_sa));
+	}
+	if ( is_local_dom(rq->url.host) || is_local_net(&dst_sa) ) {
+	    SET(rq->flags, RQ_GO_DIRECT);
+	    return( srv_connect(client_so, &rq->url, rq) );
+	}
+    } else  /* RQ_GO_DIRECT is already ON */
+	    return( srv_connect(client_so, &rq->url, rq) );
+    if ( str_to_sa(parent_host, (struct sockaddr*)&server_sa) ) {
+	return(-1);
+    }
+    server_sa.sin_port = htons(parent_port);
+    server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if ( server_so == -1 ) {
+	return(-1);
+    }
+    bind_server_so(server_so);
+    r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
+    if ( r == -1 ) {
+	close(server_so);
+	return(-1);
+    }
+    return(server_so);
+}
 
 int
 peer_connect(int client_so, struct sockaddr_in *peer_sa, struct request *rq)
@@ -1823,71 +2106,70 @@ int 			server_so = -1, r;
     return(server_so);
 }
 
-
-int
-fill_server_request(struct request *rq, struct buff * to_server_request)
-{
-struct	av	*av;
-int		r;
-
-    av = rq->av_pairs;
-    r = 0;
-    while( av && !r ) {
-	r = attach_data(av->attr, strlen(av->attr), to_server_request);
-	if ( !r )
-	    r = attach_data(" ", 1, to_server_request);
-	if ( !r )
-	    r = attach_data(av->val, strlen(av->val), to_server_request);
-	if ( !r )
-	    r = attach_data("\r\n", 2, to_server_request);
-	av = av->next;
-    }
-
-    if ( !r && insert_x_forwarded_for ) {
-	char	*ip_addr = my_inet_ntoa(&rq->client_sa);
-	if ( ip_addr ) {
-	    r = attach_data("X-Forwarded-For: ", strlen("X-Forwarded-For: "),
-			to_server_request);
-	    if ( !r )
-	        r = attach_data(ip_addr, strlen(ip_addr), to_server_request);
-	    if ( !r )
-		r = attach_data("\r\n", 2, to_server_request);
-	    xfree(ip_addr);
-	}
-    }
-    if ( !r && insert_via )
-	r = attach_data("Via: Oops 0.0alpha1\r\n",
-	    strlen("Via: Oops 0.0alpha1\r\n"), to_server_request);
-
-    if ( !r )
-	r = attach_data("\r\n", 2, to_server_request);
-    return(r);
-}
-
 char*
-build_direct_request(char *meth, struct url *url, char *headers, struct request *rq)
+build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags)
 {
 int	rlen, authorization_done = FALSE;
-char	*answer = NULL, *fav=NULL;
+char	*answer = NULL, *fav=NULL, *httpv, *host=NULL;
 struct	buff 	*tmpbuff;
 struct	av	*av;
+int	via_inserted = FALSE;
+
+    if ( !TEST(flags, DONT_CHANGE_HTTPVER) && force_http11) {
+	httpv = "HTTP/1.1";
+	if ( !TEST(rq->flags, RQ_HAS_HOST) ) host = rq->url.host;
+    } else
+	httpv = url->httpv;
 
     tmpbuff = alloc_buff(CHUNK_SIZE);
     if ( !tmpbuff ) return(NULL);
     rlen = strlen(meth) + 1/*sp*/ + strlen(url->path) + 1/*sp*/ +
-           strlen(url->httpv) + 2/* \r\n */;
+           strlen(httpv) + 2/* \r\n */;
     answer = xmalloc(ROUND(rlen+1,CHUNK_SIZE), "send_not_cached"); /* here answer is actually *request* buffer */
     if ( !answer )
 	goto fail;
-    sprintf(answer, "%s %s %s\r\n", meth, url->path, url->httpv);
+    sprintf(answer, "%s %s %s\r\n", meth, url->path, httpv);
     if ( attach_data(answer, strlen(answer), tmpbuff) )
 	goto fail;
+    if ( headers ) { /* attach what was requested */
+	if ( attach_data(headers, strlen(headers), tmpbuff) )
+	    goto fail;
+    }
+    if ( host && (fav=format_av_pair("Host:", host)) ) {
+	if ( attach_data(fav, strlen(fav), tmpbuff) )
+	    goto fail;
+	free(fav);fav = NULL;
+    }
     av = rq->av_pairs;
     while ( av ) {
 	if ( is_attr(av, "Proxy-Connection:") )
 	    goto do_not_insert;
 	if ( is_attr(av, "Connection:") )
 	    goto do_not_insert;
+	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
+	    /* attach my Via: */
+	    if ( (fav = format_av_pair(av->attr, av->val)) ) {
+		char	*buf;
+		buf = strchr(fav, '\r');
+		if ( buf ) *buf = 0;
+		if ( !buf ) {
+		    buf = strchr(fav, '\n');
+		    if ( buf ) *buf = 0;
+		}
+		/* ", host_name:port (oops ver)" */
+		buf = malloc(strlen(fav)+2+strlen(host_name)+7+10+strlen(version)+2+1);
+		if ( !buf ) goto fail;
+		sprintf(buf,"%s, %s:%d (Oops %s)\r\n", fav, host_name, http_port, version);
+		if ( attach_data(buf, strlen(buf), tmpbuff) ) {
+		    free(buf);
+		    goto fail;
+		}
+		via_inserted = TRUE;
+		free(buf);
+		free(fav); fav = NULL;
+	    }
+	    goto do_not_insert;
+	}
 	if ( (fav=format_av_pair(av->attr, av->val)) ) {
 	    if ( is_attr(av, "Authorization:") ) {
 		/* we prefer "in-header"-supplied Authorization: */
@@ -1924,9 +2206,31 @@ struct	av	*av;
 	    goto fail;
 	free(fav);fav = NULL;
     }
-    if ( insert_via && (fav = format_av_pair("Via:","Oops 0.1")) ) {
-	if ( attach_data(fav, strlen(fav), tmpbuff) )
+    if ( insert_x_forwarded_for ) {
+	char	*ip_addr = my_inet_ntoa(&rq->client_sa);
+	int	r;
+
+	if ( ip_addr ) {
+	    r = attach_data("X-Forwarded-For: ", sizeof("X-Forwarded-For: ")-1,
+			tmpbuff);
+	    if ( !r )
+	        r = attach_data(ip_addr, strlen(ip_addr), tmpbuff);
+	    if ( !r )
+		r = attach_data("\r\n", 2, tmpbuff);
+	    xfree(ip_addr);
+	}
+    }
+    if ( insert_via && !via_inserted ) {
+	char *buf;
+
+	buf = malloc(4+1+strlen(host_name)+7+10+strlen(version)+2+1);
+	if ( !buf ) goto fail;
+	sprintf(buf,"Via: %s:%d (Oops %s)\r\n", host_name, http_port, version);
+	if ( attach_data(buf, strlen(buf), tmpbuff) ) {
+	    free(buf);
 	    goto fail;
+	}
+	free(buf);
 	free(fav);fav = NULL;
     }
     /* CRLF  */
@@ -1947,16 +2251,23 @@ fail:
 }
 
 char*
-build_parent_request(char *meth, struct url *url, char *headers, struct request *rq)
+build_parent_request(char *meth, struct url *url, char *headers, struct request *rq, int flags)
 {
-int	rlen;
-char	*answer, *fav=NULL;
+int	rlen, via_inserted = FALSE;
+char	*answer, *httpv, *fav=NULL, *host=NULL;
 struct	buff 	*tmpbuff;
 struct	av	*av;
 
     if ( TEST(rq->flags, RQ_GO_DIRECT) ) {
-	return(build_direct_request(meth, url, headers, rq));
+	return(build_direct_request(meth, url, headers, rq, flags));
     }
+
+    if ( !TEST(flags, DONT_CHANGE_HTTPVER) && force_http11) {
+	httpv = "HTTP/1.1";
+	if ( !TEST(rq->flags, RQ_HAS_HOST) ) host = rq->url.host;
+    } else
+	httpv = url->httpv;
+
     tmpbuff = alloc_buff(CHUNK_SIZE);
     if ( !tmpbuff ) return(NULL);
     /* GET proto://host/path HTTP/1.x */
@@ -1967,7 +2278,7 @@ struct	av	*av;
 	strlen(url->host) + 
 	10 + /* port */
 	strlen(url->path) + 1/*sp*/ +
-	strlen(url->httpv) + 2/* \r\n */;
+	strlen(httpv) + 2/* \r\n */;
 
     answer = xmalloc(ROUND(rlen+1, CHUNK_SIZE), "send_not_cached"); /* here answer is actually *request* buffer */
     if ( !answer )
@@ -1975,19 +2286,52 @@ struct	av	*av;
 
     if ( !strcasecmp(url->proto, "http" ) ) {
 	sprintf(answer, "%s %s://%s:%d%s %s\r\n", meth, url->proto, url->host,
-    	    url->port, url->path, url->httpv);
+    	    url->port, url->path, httpv);
     } else {
 	sprintf(answer, "%s %s://%s%s %s\r\n", meth, url->proto, url->host,
-    	    url->path, url->httpv);
+    	    url->path, httpv);
     }
     if ( attach_data(answer, strlen(answer), tmpbuff) )
 	goto fail;
+    if ( headers ) { /* attach what was requested */
+	if ( attach_data(headers, strlen(headers), tmpbuff) )
+	    goto fail;
+    }
+    if ( host && (fav=format_av_pair("Host:", host)) ) {
+	if ( attach_data(fav, strlen(fav), tmpbuff) )
+	    goto fail;
+	free(fav);fav = NULL;
+    }
     av = rq->av_pairs;
     while ( av ) {
 	if ( is_attr(av, "Connection:") )
 	    goto do_not_insert;
 	if ( is_attr(av, "Proxy-Connection:") )
 	    goto do_not_insert;
+	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
+	    /* attach my Via: */
+	    if ( (fav = format_av_pair(av->attr, av->val)) ) {
+		char	*buf;
+		buf = strchr(fav, '\r');
+		if ( buf ) *buf = 0;
+		if ( !buf ) {
+		    buf = strchr(fav, '\n');
+		    if ( buf ) *buf = 0;
+		}
+		/* ", host_name:port (oops ver)" */
+		buf = malloc(strlen(fav)+2+strlen(host_name)+7+10+strlen(version)+2+1);
+		if ( !buf ) goto fail;
+		sprintf(buf,"%s, %s:%d (Oops %s)\r\n", fav, host_name, http_port, version);
+		if ( attach_data(buf, strlen(buf), tmpbuff) ) {
+		    free(buf);
+		    goto fail;
+		}
+		via_inserted = TRUE;
+		free(buf);
+		free(fav); fav = NULL;
+	    }
+	    goto do_not_insert;
+	}
 	if ( (fav=format_av_pair(av->attr, av->val)) ) {
 	    if ( attach_data(fav, strlen(fav), tmpbuff) )
 		goto fail;
@@ -2001,9 +2345,17 @@ struct	av	*av;
 	    goto fail;
 	free(fav);fav = NULL;
     }
-    if ( insert_via && (fav = format_av_pair("Via:","Oops 0.1")) ) {
-	if ( attach_data(fav, strlen(fav), tmpbuff) )
+    if ( insert_via && !via_inserted ) {
+	char *buf;
+
+	buf = malloc(4+1+strlen(host_name)+7+10+strlen(version)+2+1);
+	if ( !buf ) goto fail;
+	sprintf(buf,"Via: %s:%d (Oops %s)\r\n", host_name, http_port, version);
+	if ( attach_data(buf, strlen(buf), tmpbuff) ) {
+	    free(buf);
 	    goto fail;
+	}
+	free(buf);
 	free(fav);fav = NULL;
     }
     /* CRLF  */
@@ -2023,3 +2375,78 @@ fail:
     return NULL;
 }
 
+int
+content_chunked(struct mem_obj *obj)
+{
+char	*transfer_encoding = NULL;
+
+    if ( obj->headers )
+	transfer_encoding = attr_value(obj->headers, "Transfer-Encoding");
+    if ( transfer_encoding && !strncasecmp("chunked", transfer_encoding, 7)) {
+	    return(TRUE);
+    }
+    return(FALSE);
+}
+
+int
+downgrade(struct request *rq, struct mem_obj *obj)
+{
+int	res = 0;
+char	*transfer_encoding = NULL;
+
+    if ( (rq->http_major  < obj->httpv_major) ||
+	 (rq->http_minor  < obj->httpv_minor) ) {
+
+	res |= DOWNGRADE_ANSWER;
+	if ( obj->headers )
+	    transfer_encoding = attr_value(obj->headers, "Transfer-Encoding");
+	if ( transfer_encoding && !strncasecmp("chunked", transfer_encoding, 7)) {
+	    my_xlog(LOG_HTTP, "Turn on Chunked Gateway\n");
+	    res |= UNCHUNK_ANSWER;
+	}
+    }
+    return(res);
+}
+void
+process_vary_headers(struct mem_obj *obj, struct request *rq)
+{
+    if ( !rq || !obj ) return;
+    if ( obj->headers && rq->av_pairs ) {
+	/* save Vary: headers */
+	char	*p, *t, *tok_ptr, *value;
+	char	*vary = attr_value(obj->headers, "Vary:" ), *temp_vary;
+
+	if ( vary && (temp_vary = strdup(vary)) ) {
+	    my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+	    /* 1. skip spaces */
+	    p = temp_vary;
+	    while ( *p && isspace(*p) ) p++;
+		t = p;
+		/* split on ',' */
+		while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) ) {
+		    int	a_len;
+		    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
+
+		    t = NULL;
+		    my_xlog(LOG_HTTP, "Chk hdr: %s\n", p);
+		    value = attr_value(rq->av_pairs, p);
+		    if ( value ) {
+			/* format and attach */
+			a_len = sizeof(pref)+strlen(p)+1;
+			if ( a_len <= sizeof(a_buf) ) {
+			    fav = a_buf;
+			} else {
+			    fav = xmalloc(a_len, "");
+			}
+			if ( fav ) {
+			    sprintf(fav, "%s%s:", pref, p);
+			    insert_header(fav, value, obj);
+			    if ( fav != a_buf ) xfree(fav);
+			} /* if fav */
+		    } /* value */
+		} /* while tokens */
+	    if (temp_vary)free(temp_vary);
+	    my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+	 }
+    }
+}
