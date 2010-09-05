@@ -413,6 +413,8 @@ named_acl_type_by_name(char *type)
 	return(ACL_TIME);
     if ( !strcasecmp(type, "content_type") )
 	return(ACL_CONTENT_TYPE);
+    if ( !strcasecmp(type, "username") )
+	return(ACL_USERNAME);
     return((char)-1);
 }
 void
@@ -455,6 +457,12 @@ case ACL_SRC_IP:
 	if ( acl_ip_data->sorted ) free(acl_ip_data->sorted);
 	}
 	break;
+case ACL_USERNAME:
+        if ( acl->data ) {
+            free_string_list((struct string_list*)acl->data);
+            acl->data = NULL;
+        }
+        break;
 case ACL_TIME:
 	if ( acl->data ) {
 	    free_denytimes(acl->data);
@@ -475,10 +483,12 @@ default:
 int
 parse_named_acl_data(named_acl_t *acl, char *data)
 {
-int	regflags = 0;
-char	*p, *t, *tokptr;
-struct	range *ports, *range;
-int	must_free_data = FALSE;
+int	                regflags = 0;
+char	                *p, *t, *tokptr;
+struct	range           *ports, *range;
+struct  string_list     *logins;
+int	                must_free_data = FALSE;
+char	                *nl;
 
     if ( !acl || !data )
 	return(-1);
@@ -527,6 +537,7 @@ case ACL_DSTDOMREGEX:
 case ACL_URLREGEX:
 case ACL_PATHREGEX:
 	regflags|= REG_EXTENDED|REG_NOSUB;
+	if ( nl = strchr(data, '\n') ) *nl = 0;
 	/* data must be regex	*/
 	{
 	    struct	urlregex_acl_data	*urd;
@@ -563,6 +574,7 @@ case ACL_TIME:
 	struct denytime	dt, *result;
 	int		start_m, end_m;
 
+	if ( nl = strchr(data, '\n') ) *nl = 0;
 	verb_printf("acl->data: `%s'\n", data);
 	bzero(&dt, sizeof(dt));
 	/* split on '\t '					*/
@@ -655,12 +667,32 @@ case ACL_PORT:
 	acl->data = ports;
 	if ( must_free_data ) free(data);
 	return(0);
+case ACL_USERNAME:
+	verb_printf("acl->data: `%s'\n", data);
+	/* split on ',' */
+	p = data;
+	logins = calloc(1, sizeof(*logins));
+	if ( !logins ) {
+	    if ( must_free_data ) free(data);
+	    return(0);
+	}
+	while( (t = (char*)strtok_r(p, ", \n", &tokptr)) ) {
+
+	    p = NULL;
+	    /*printf("Token: %s\n", t);*/
+            add_to_string_list(&logins, t);
+	}
+	acl->data = logins;
+	if ( must_free_data ) free(data);
+	return(0);
 case ACL_METHOD:
+	if ( nl = strchr(data, '\n') ) *nl = 0;
 	printf("acl->data: `%s'\n", data);
 	if ( data ) acl->data = strdup(data);
 	if ( must_free_data ) free(data);
 	return(0);
 case ACL_CONTENT_TYPE:
+	if ( nl = strchr(data, '\n') ) *nl = 0;
 	printf("acl->data: `%s'\n", data);
 	if ( data ) {
 	    acl_ct_data_t *ctd = malloc(sizeof(*ctd));
@@ -673,6 +705,7 @@ case ACL_CONTENT_TYPE:
 	}
 	return(0);
 case ACL_USERCHARSET:
+	if ( nl = strchr(data, '\n') ) *nl = 0;
 	/* string with charset name			*/
 	{
 	    u_charset_t	*ucsd;
@@ -949,6 +982,20 @@ case ACL_PORT:
 	}
 	break;
 
+case ACL_USERNAME:
+        if ( !acl->data ) return(FALSE);
+        {
+            struct string_list *logins;
+            char               *user = rq->proxy_user;
+
+            if ( !user ) return(FALSE);
+            logins = (struct string_list*)acl->data;
+            while ( logins != NULL ) {
+                if ( !strcmp(user, logins->string) ) return(TRUE);
+                logins = logins->next;
+            }
+            return(FALSE);
+        }
 case ACL_TIME:
 	if ( acl->data && denytime_check((struct denytime*)acl->data) )
 		return(TRUE);

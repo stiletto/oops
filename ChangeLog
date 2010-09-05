@@ -1,3 +1,8 @@
+version 1.5.6
+	29.12.00 - username acl
+	28.12.00 - \n removed ftom some acl's when read from file
+		   local_networls was not handled properly if ICP is used
+		   no log messages 'icp so = -1' if icp_port  0
 version 1.5.4
 	18.12.00 - more sprintf/strncpy fixes
 		   memory leaks in accel.c, bug in custom_log.c

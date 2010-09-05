@@ -242,7 +242,8 @@ wait_clients:
 	pollarg[1].fd = icp_so;
 	pollarg[1].request = FD_POLL_RD;
     } else
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): icp so = %d\n", icp_so);
+	if (icp_port != 0)
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): icp so = %d\n", icp_so);
     if ( listen_so_list ) {
 	struct	listen_so_list	*list = listen_so_list;
 	int			k=2;

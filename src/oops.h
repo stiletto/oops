@@ -744,6 +744,7 @@ struct	acl_ip_data {
 #define	ACL_SRCDOMREGEX		12
 #define	ACL_TIME		13
 #define	ACL_CONTENT_TYPE	14
+#define	ACL_USERNAME	        15
 
 
 struct	acl {

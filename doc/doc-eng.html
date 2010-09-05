@@ -367,3 +367,29 @@
 	disk structures. This option is required for using slices under
 	Solaris/sparc or AIX. Under these sytems, the first sector of the slice
 	keeps the volume label which must be preserved.
+</ul>
+
+	<li><b>module redir</b><br>
+	This section describes how to rewrite or send a new direction of an URL.
+	E.g. if you want to filter out the banners, or just want to redirect the
+	client to another site this is what you need.
+
+	The parameters:
+
+	<ul>
+	<li>file &lt;filename&gt;<br>
+	The file that contains the redirection rules (see example redir_rules).
+	<li>template &lt;filename&gt;<br>
+	This file will be shown to the user if the redir_rules file doesn't
+	contain the second column so there is no rule to redirect.
+	<li>myport [{hostname|ip_addr}:]port<br>
+	If your OOPS runs on several ports and you want to filter on some specific,
+	the myport argument is useful. If you use OOPS in transparent proxy
+	mode do not use this option.
+	<li>mode &lt;rewrite|bounce&gt;<br>
+	In the newer verions of OOPS can be 'rewrite' or 'bounce', where
+	'rewrite' completely rewrites the URL so it goes directly from the
+	cache server without sending the code 302 (Location: xxx.yyy.zzz).
+	The "internal" documents (see the redir_rules example file) like the
+	nospam1x1 are always sent from the cache.
+</ul>

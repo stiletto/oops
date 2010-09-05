@@ -493,7 +493,7 @@ revalidate:
 
 	if ( !TEST(rq->flags, RQ_NO_ICP) && !parent_port && peers && (icp_so != -1)
 	 && (rq->meth == METH_GET)
-	 && !is_local_dom(rq->url.host) ) {
+	 && !destination_is_local(rq->url.host) ) {
 	    struct icp_queue_elem *new_qe;
 	    struct timeval tv = start_tv;
 	    bzero((void*)&peer_sa, sizeof(peer_sa));
@@ -2774,6 +2774,23 @@ obj_freshness_lifetime(struct mem_obj *obj)
     if ( obj->flags & ANSW_HAS_EXPIRES ) return(MAX(0,obj->times.expires -
 						obj->times.date));
     return(-24*3600);
+}
+
+int
+destination_is_local(char* host)
+{
+struct	sockaddr_in	dst_sa;
+
+    if ( !host ) return(FALSE);
+    if ( is_local_dom(host) )
+	    return( TRUE );
+    if ( local_networks_sorted && local_networks_sorted_counter ) {
+	bzero(&dst_sa, sizeof(dst_sa));
+	if ( str_to_sa(host, (struct sockaddr*)&dst_sa) )
+	    return(FALSE);
+	return( is_local_net(&dst_sa) );
+    }
+    return(FALSE);
 }
 
 int

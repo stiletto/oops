@@ -1,4 +1,4 @@
-VER=1.5.5
+VER=1.5.6
 
 all:
 	cd src; $(MAKE)

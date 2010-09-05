@@ -18,8 +18,9 @@ compile oops with --with-regexp=pcre to speed it up.
 The latest release of PCRE is always available from
 ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/pcre-xxx.tar.gz
 
-WARNING: If you upgrade from version prior to 1.5.0 to any later - reformat
-your storages... Forrmat of data on disk changed.
+WARNING!!!!: If you upgrade from version prior to 1.5.0 to any later -
+reformat your storages and remove database files. Format of data on disk
+changed.
 
 Known problems:
 

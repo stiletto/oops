@@ -284,6 +284,7 @@ au_f:   send_auth_req(so, rq);
 	return(MOD_CODE_ERR);
     }
 au_ok:
+    SET(*flags, MOD_AFLAG_CKACC);
     UNLOCK_PWF_CONFIG ;
     return(MOD_CODE_OK);
 }

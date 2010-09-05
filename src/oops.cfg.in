@@ -193,6 +193,7 @@ insert_via		yes
 #acl	BADNETWORKS	src_ip		192.168.10/24
 #acl	WORKTIME	time		Mon,Tue:Fri 0900:1800
 #acl	HTMLS		content_type	text/html
+#acl	USERS		username	joe
 acl	ADMINS		src_ip		127.0.0.1
 acl	PURGE		method		PURGE
 

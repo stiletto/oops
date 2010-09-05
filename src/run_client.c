@@ -236,6 +236,9 @@ ck_group:
 	    goto done;
 	}
 	auth_mods_visited = TRUE;
+	if ( TEST(mod_flags, MOD_AFLAG_CKACC) )
+	    goto ck_group;	/* we must get group again, as it my-be 
+				   changed because of redir		*/
     }
 
     if ( acl_deny && (check_acl_access(acl_deny, &request) == TRUE) ) {
