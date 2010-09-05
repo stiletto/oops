@@ -1,3 +1,63 @@
+version.1.4
+	24.04.00 - some daemon() related stuff fixed(ik)
+	18.04.00 - OPTIONS method added. (ik)
+		   FreeBSD 4.0 fix for signals(siginterrupt). (ik)
+        12.04.00 - The `size auto' parameter is now working on raw devices in
+	           BSDI, FreeBSD and Linux. (ai)
+        11.04.00 - Initial BSDI support. (ai)
+		 - patch for custom_log.c (buffering from dp@zeneon.net)
+	10.04.00 - Port to Digital Unix completed
+		   (by Andrei S. Koval <koval@main.vsu.ru>)
+                 - Implemented the db_cache_mem configuration parameter. (ai)
+	09.04.00 - start_red, refuse_at, maxreqrate - attack defence(ik)
+		   fix for high %CPU(ik)
+	         - Added the separate control for the buffered/unbuffered
+	           option of the log files. The support for the logs_buffered
+		   parameter was removed. (ai)
+		 - Added more controls for the logs level (see oops comand
+		   line options). (ai)
+	07.04.00 - extract everything in version-dependent directory
+	06.04.00 - Port to AIX (using IBM C for AIX 3.6.5, 4.4) completed. (ai)
+	03.04.00 - Fixed(?) bug in ftp (headers at the very beginnings of
+		   downloaded files).
+		   Via: analysis for loop detection.
+		   Code and headers cleanup (thanks to Andy Igoshin)
+	30.03.00 - if MIN or MAX in refresh_pattern is negative, document will
+		   not be cached at all. (1.3.10)
+	24.03.00 - support for rx regex library
+		   lot of mistypes and errors in comments and docs
+		   (green@ccssu.ccssu.crimea.ua)
+	23.03.00 - Initial AIX support (ai@vsu.ru)
+		 - some emprovements for modules/custom_log.c
+		   (dp@zenon.net, green@ccssu.ccssu.crimea.ua)
+version 1.3.6
+	20.03.00 - map/r in accel.c
+	17.03.00 - ip_lookup in accel.c
+		 - increase FD_SETSIZE for FreeBSD
+	16.03.00 - CPU% in oopsctl stat,
+		   acl_bind - bind to different ip for different
+		   requests
+	14.03.00 - added option 'proxy_requests' for accel.c -
+		   close proxy using accel regardless any other
+		   acl's.
+	10.03.00 - acl time, networks_acl can include any acl's
+
+version 1.3.3
+	06.03.00
+		ftp: use oops@host_name if host_name is not empty
+		accel.c - defaults for dead_timeout changed from 600 to 30 sec
+	02.03.00
+		ftp_put. More ftp bugs fixed and ftp performance
+		emproved.
+	22.02.00
+		memory bug in ftp_utils.c
+	20.02.00
+		fixed bug in accel.c (copy uninitialized data:
+					core dumps, mem leak)
+	18.02.00
+		module custom_log.
+	16.02.00
+		ssl.c - fixed bug (ISHUPED[0]) which lead to high %CPU
 Version 1.3
 	09.02.00
 		fixed more bugs: high %CPU, core dumps during reconfigure

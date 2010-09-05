@@ -22,6 +22,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -47,8 +48,8 @@ static	int		template_size;
 static	time_t		template_mtime;
 static	time_t		template_check_time;
 static	rwl_t		err_config_lock;
-static	void		check_template_age();
-static	void		reload_template();
+static	void		check_template_age(void);
+static	void		reload_template(void);
 
 #define	WRLOCK_ERR_CONFIG	rwl_wrlock(&err_config_lock)
 #define	RDLOCK_ERR_CONFIG	rwl_rdlock(&err_config_lock)
@@ -113,6 +114,7 @@ mod_config_beg()
     template_mtime = 0;
     template_check_time = 0;
     UNLOCK_ERR_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -121,13 +123,14 @@ mod_config_end()
 
     WRLOCK_ERR_CONFIG ;
     if ( !strcasecmp(err_lang, "ru") ) {
-	printf("Setting Language to 'ru'\n");
+	printf("Setting Language to `ru'\n");
 	curr_lang = LANG_RU;
     }
     if ( err_template[0] ) {
 	reload_template();
     }
     UNLOCK_ERR_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -137,18 +140,17 @@ char	*p = config;
 
     WRLOCK_ERR_CONFIG ;
 
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
     if ( !strncasecmp(p, "lang", 4) ) {
 	p += 4;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(err_lang, p, sizeof(err_lang) -1 );
     } else
     if ( !strncasecmp(p, "template", 8) ) {
 	p += 8;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(err_template, p, sizeof(err_template) -1 );
     }
-done:
     UNLOCK_ERR_CONFIG ;
     return(MOD_CODE_OK);
 }
@@ -280,16 +282,16 @@ struct	buff		*body;
     }
     SET(*flags, MOD_AFLAG_OUT);
     if ( obj ) free_output_obj(obj);
-    return;
+    return(MOD_CODE_OK);
 
   failed:
     UNLOCK_ERR_CONFIG ;
     if ( obj ) free_output_obj(obj);
-    return;
+    return(MOD_CODE_OK);
 }
 
 void
-check_template_age()
+check_template_age(void)
 {
     if ( global_sec_timer - template_check_time < 5 )
 	return;
@@ -299,7 +301,7 @@ check_template_age()
 }
 
 void
-reload_template()
+reload_template(void)
 {
 struct stat sb;
 int	rc, size;
@@ -312,7 +314,7 @@ char	*in_mem;
 	    return;
 	if ( !err_template[0] )
 	    return;
-	my_log("Loading template from '%s'\n", err_template);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "reload_template(): Loading template from `%s'.\n", err_template);
 
 	size   = sb.st_size;
 	if ( template ) xfree(template);
@@ -329,12 +331,12 @@ char	*in_mem;
 		    template_check_time = global_sec_timer;
 		    template[size]	= 0; /* so we can use str... functions */
 		} else {
-		    printf("Read failed: %s\n", strerror(errno));
+		    printf("reload_template(): Read failed: %s\n", strerror(errno));
 		    xfree(in_mem);
 		}
 		close(fd);
 	    } /* fd != -1 */ else {
-		printf("Open(%s) failed: %s\n", err_template,strerror(errno));
+		printf("reload_template(): Open(%s) failed: %s\n", err_template,strerror(errno));
 		xfree(in_mem);
 	    }
 	} /* if in_mem */

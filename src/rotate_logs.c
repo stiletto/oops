@@ -42,12 +42,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	"oops.h"
 
-FILE	*logf, *accesslogf;
-
 void	rotate_file(char * name, FILE **f, int num);
 
 void
-rotate_log_file()
+rotate_log_file(void)
 {
 struct	stat	stat;
 int		r;
@@ -56,16 +54,16 @@ int		r;
     r = fstat(fileno(logf), &stat);
     if ( !S_ISREG(stat.st_mode) )
 	return;
-    my_log("Rotate File %s\n", logfile);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_log_file(): Rotate File %s\n", logfile);
     rwl_wrlock(&log_lock);
     rotate_file(logfile,&logf,log_num);
-    if ( logf && !logs_buffered )
+    if ( logf && !logfile_buffered )
 	    setbuf(logf, NULL);
     rwl_unlock(&log_lock);
 }
 
 void
-rotate_accesslog_file()
+rotate_accesslog_file(void)
 {
 struct	stat	stat;
 int		r;
@@ -74,10 +72,10 @@ int		r;
     r = fstat(fileno(accesslogf), &stat);
     if ( !S_ISREG(stat.st_mode) )
 	return;
-    my_log("Rotate File %s\n", accesslog);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_accesslog_file(): Rotate File %s\n", accesslog);
     pthread_mutex_lock(&accesslog_lock);
     rotate_file(accesslog,&accesslogf,accesslog_num);
-    if ( accesslogf && !logs_buffered )
+    if ( accesslogf && !accesslog_buffered )
 	setbuf(accesslogf, NULL);
     pthread_mutex_unlock(&accesslog_lock);
 }
@@ -88,26 +86,32 @@ rotate_logs(void *arg)
 struct stat	statb;
 int		r;
 
-    my_log("Log rotator started\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): Log rotator started.\n");
     while( 1 ) {
 	RDLOCK_CONFIG ;
 	if ( logf && log_num ) {
 	    r = fstat(fileno(logf), &statb) ;
-	    my_log("r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
-	    	r, statb.st_mode, log_size, ftell(logf));
 	    if ( !r && (statb.st_mode & S_IFREG) && log_size && (ftell(logf) > log_size) ) {
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+	    		r, statb.st_mode, log_size, ftell(logf));
 		rotate_log_file();
-	    } else
-		my_log("No need to rotate %s\n", logfile);
+	    } else {
+		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+	    		r, statb.st_mode, log_size, ftell(logf));
+		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): No need to rotate %s\n", logfile);
+	    }
 	}
 	if ( accesslogf && accesslog_num ) {
 	    r = fstat(fileno(accesslogf), &statb) ;
-	    my_log("r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
-	    	r, statb.st_mode, accesslog_size, ftell(accesslogf));
 	    if ( !r && (statb.st_mode & S_IFREG) && accesslog_size && (ftell(accesslogf) > accesslog_size) ) {
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+	    		r, statb.st_mode, accesslog_size, ftell(accesslogf));
 		rotate_accesslog_file();
-	    } else
-		my_log("No need to rotate %s\n", accesslog);
+	    } else {
+		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+	    		r, statb.st_mode, accesslog_size, ftell(accesslogf));
+		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): No need to rotate %s\n", accesslog);
+	    }
 	}
 	UNLOCK_CONFIG ;
 	my_sleep(30);

@@ -1,4 +1,4 @@
-char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.5 1997/09/08 21:09:34 ACJC Exp $";
+char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.3 2000/04/22 11:53:09 ai Exp $";
 #ifdef REGEX
 
 #define REGEX_MALLOC
@@ -27,6 +27,10 @@ char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.5 1997/09/08 21:09:34 ACJC Exp $";
 /* AIX requires this to be the first thing in the file. */
 #if defined (_AIX) && !defined (REGEX_MALLOC)
   #pragma alloca
+#endif
+
+#if	defined(SOLARIS)
+void	abort(void);
 #endif
 
 #define _GNU_SOURCE
@@ -72,9 +76,10 @@ char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.5 1997/09/08 21:09:34 ACJC Exp $";
 #include <strings.h>
 #endif
 
-#ifdef STDC_HEADERS
+#if defined(STDC_HEADERS) || defined(_AIX)
 #include <stdlib.h>
 #else
+char *free ();
 char *malloc ();
 char *realloc ();
 #endif
@@ -100,7 +105,7 @@ extern char *re_syntax_table;
 static char re_syntax_table[CHAR_SET_SIZE];
 
 static void
-init_syntax_once ()
+init_syntax_once (void)
 {
    register int c;
    static int done = 0;
@@ -846,13 +851,6 @@ static const char *re_error_msg[] =
     "Unmatched ) or \\)",			/* REG_ERPAREN */
   };
 
-/* Subroutine declarations and macros for regex_compile.  */
-
-static void store_op1 (), store_op2 ();
-static void insert_op1 (), insert_op2 ();
-static boolean at_begline_loc_p (), at_endline_loc_p ();
-static boolean group_in_compile_stack ();
-static reg_errcode_t compile_range ();
 
 /* Fetch the next character in the uncompiled pattern---translating it 
    if necessary.  Also cast from a signed character in the constant
@@ -982,7 +980,6 @@ static reg_errcode_t compile_range ();
    ignore the excess.  */
 typedef unsigned regnum_t;
 
-
 /* Macros for the compile stack.  */
 
 /* Since offsets can go either forwards or backwards, this type needs to
@@ -998,13 +995,30 @@ typedef struct
   regnum_t regnum;
 } compile_stack_elt_t;
 
-
 typedef struct
 {
   compile_stack_elt_t *stack;
   unsigned size;
   unsigned avail;			/* Offset of next open position.  */
 } compile_stack_type;
+
+
+/* Subroutine declarations and macros for regex_compile.  */
+
+static void store_op1 (re_opcode_t op, unsigned char *loc, int arg);
+static void store_op2 (re_opcode_t op, unsigned char *loc, int arg1, int arg2);
+static void insert_op1 (re_opcode_t op, unsigned char *loc, int arg,
+			unsigned char *end);
+static void insert_op2 (re_opcode_t op, unsigned char *loc, int arg1, int arg2,
+			unsigned char *end);
+static boolean at_begline_loc_p(const char *pattern, const char *p,
+				reg_syntax_t syntax);
+static boolean at_endline_loc_p (const char *p, const char *pend, int syntax);
+static boolean group_in_compile_stack (compile_stack_type compile_stack,
+					regnum_t regnum);
+static reg_errcode_t compile_range (const char **p_ptr, const char *pend,
+				    char *translate, reg_syntax_t syntax, 
+				    unsigned char *b);
 
 
 #define INIT_COMPILE_STACK_SIZE 32
@@ -1066,6 +1080,9 @@ typedef struct
    
    The `fastmap' and `newline_anchor' fields are neither
    examined nor set.  */
+
+static reg_errcode_t regex_compile (const char *pattern, int size,
+		    reg_syntax_t syntax, struct re_pattern_buffer *bufp);
 
 static reg_errcode_t
 regex_compile (pattern, size, syntax, bufp)
@@ -1633,10 +1650,12 @@ regex_compile (pattern, size, syntax, bufp)
               if (syntax & RE_NO_BK_PARENS) goto normal_backslash;
 
               if (COMPILE_STACK_EMPTY)
-                if (syntax & RE_UNMATCHED_RIGHT_PAREN_ORD)
-                  goto normal_backslash;
-                else
-                  return REG_ERPAREN;
+		{
+		    if (syntax & RE_UNMATCHED_RIGHT_PAREN_ORD)
+			goto normal_backslash;
+		    else
+			return REG_ERPAREN;
+		}
 
             handle_close:
               if (fixup_alt_jump)
@@ -1653,10 +1672,12 @@ regex_compile (pattern, size, syntax, bufp)
 
               /* See similar code for backslashed left paren above.  */
               if (COMPILE_STACK_EMPTY)
-                if (syntax & RE_UNMATCHED_RIGHT_PAREN_ORD)
-                  goto normal_char;
-                else
-                  return REG_ERPAREN;
+		{
+		    if (syntax & RE_UNMATCHED_RIGHT_PAREN_ORD)
+			goto normal_char;
+		    else
+			return REG_ERPAREN;
+		}
 
               /* Since we just checked for an empty stack above, this
                  ``can't happen''.  */
@@ -3000,11 +3021,6 @@ re_search_2 (bufp, string1, size1, string2, size2, startpos, range, regs, stop)
 
 /* Declarations and macros for re_match_2.  */
 
-static int bcmp_translate ();
-static boolean alt_match_null_string_p (),
-               common_op_match_null_string_p (),
-               group_match_null_string_p ();
-
 /* Structure for per-register (a.k.a. per-group) information.
    This must not be longer than one word, because we push this value
    onto the failure stack.  Other register information, such as the
@@ -3030,6 +3046,16 @@ typedef union
     unsigned ever_matched_something : 1;
   } bits;
 } register_info_type;
+
+static int bcmp_translate(unsigned char *s1, unsigned char *s2, 
+			  register int len, char *translate);
+static boolean alt_match_null_string_p(unsigned char *p, unsigned char *end,
+				       register_info_type *reg_info);
+static boolean common_op_match_null_string_p(unsigned char **p, unsigned char *end,
+					     register_info_type *reg_info);
+static boolean group_match_null_string_p(unsigned char **p, unsigned char *end,
+					 register_info_type *reg_info);
+
 
 #define REG_MATCH_NULL_STRING_P(R)  ((R).bits.match_null_string_p)
 #define IS_ACTIVE(R)  ((R).bits.is_active)
@@ -3841,7 +3867,7 @@ re_match_2 (bufp, string1, size1, string2, size2, pos, regs, stop)
 		/* Compare that many; failure if mismatch, else move
                    past them.  */
 		if (translate 
-                    ? bcmp_translate (d, d2, mcnt, translate) 
+                    ? bcmp_translate ((unsigned char*)d, (unsigned char*)d2, mcnt, translate) 
                     : bcmp (d, d2, mcnt))
 		  goto fail;
 		d += mcnt, d2 += mcnt;

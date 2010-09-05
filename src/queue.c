@@ -6,6 +6,8 @@
 #include <pthread.h>
 #include "dataq.h"
 #include <assert.h>
+
+#if	!defined(NDEBUG)
 static int
 dataq_check(dataq_t *ptr)								/* call while holding lock! */
 {
@@ -13,6 +15,8 @@ dataq_check(dataq_t *ptr)								/* call while holding lock! */
 	assert(ptr->num_waiters == ll_check(&ptr->waiters));
 	return (1);
 }
+#endif
+
 int
 dataq_init(dataq_t *ptr)
 {

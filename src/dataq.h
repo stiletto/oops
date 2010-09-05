@@ -19,8 +19,9 @@ typedef struct dataq {
 	llh_t data;
 	llh_t waiters;
 } dataq_t;
-int dataq_init(dataq_t *ptr);
-int dataq_enqueue(dataq_t *dataq, void *in);
-int dataq_dequeue(dataq_t *dataq, void **outptr);
-int dataq_destroy(dataq_t *dataq);
+extern int dataq_init(dataq_t *ptr);
+extern int dataq_enqueue(dataq_t *dataq, void *in);
+extern int dataq_dequeue(dataq_t *dataq, void **outptr);
+extern int dataq_destroy(dataq_t *dataq);
+extern int dataq_dequeue_special(dataq_t *dataq, void **outptr);
 /* EndSourceFile */

@@ -1,7 +1,7 @@
 %token	LOGFILE ACCESSLOG STATISTICS PIDFILE NAMESERVER HTTP_PORT ICP_PORT
 %token	ICONS_HOST ICONS_PORT ICONS_PATH EXPIRE_VALUE FTP_EXPIRE_VALUE_T EXPIRE_INTERVAL
 %token	STOP_CACHE MAXRESIDENT CONNECT_FROM
-%token	MEM_MAX LO_MARK HI_MARK DISK_LOW_FREE_T DISK_HI_FREE_T
+%token	MEM_MAX LO_MARK HI_MARK DB_CACHE_MEM DISK_LOW_FREE_T DISK_HI_FREE_T
 %token	PARENT_T PEER_T SIBLING_T LOCAL_DOMAIN_T LOCAL_NETWORKS_T
 %token	GROUP NETWORK NETWORKS HTTP ICP
 %token	NUMBER NUMBER_K NUMBER_M STRING
@@ -9,12 +9,14 @@
 %token	DSTDOMAIN
 %token	STORAGE SIZE PATH DBNAME DBHOME
 %token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T DENYTIME_T
-%token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T INCLUDE_T
+%token	L_EOS ICP_TIMEOUT MODULE INCLUDE_T
 %token	ALWAYS_CHECK_FRESHNESS_T FORCE_HTTP11_T FORCE_COMPLETION_T
 %token	LAST_MODIFIED_FACTOR_T MAX_EXPIRE_VALUE_T
 %token	INSERT_X_FORWARDED_FOR_T INSERT_VIA_T ACL_T REFRESH_PATTERN_T
 %token	ACL_ALLOW_T ACL_DENY_T SRCDOMAINS_T BIND_T STOP_CACHE_ACL_T
 %token	NETWORKS_ACL_T STORAGE_OFFSET_T AUTO_T USERID_T CHROOT_T
+%token	BIND_ACL_T MAXREQRATE_T BLACKLIST_T START_RED_T REFUSE_AT_T
+%token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name day
@@ -50,8 +52,10 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
+#include    <arpa/inet.h>
 
 #include	<pthread.h>
 
@@ -62,10 +66,12 @@
 #include	"modules.h"
 #endif
 
+extern	FILE	*yyin;
+
 int	atline;
 int	parser_errors;
 
-static	char	*storage_path = NULL, *storage_db = NULL;
+static	char	*storage_path = NULL;
 static	off_t	storage_size = 0;
 static	off_t	storage_offset = 0;
 static	int	ns_curr;
@@ -73,8 +79,6 @@ static	int	ns_curr;
 static	struct	peer_c	*peerc_ptr = NULL;
 static	struct	range	badports[MAXBADPORTS];
 static	struct	range	*badp_p = NULL;
-FILE	*yyin;
-
 struct	peer_c {
 	char	type;
 	struct	acls	*acls;
@@ -110,7 +114,6 @@ statements	: statement
 
 statement	: logfile
 		| accesslog
-		| logs_buffered
 		| statistics
 		| pidfile
 		| nameserver
@@ -140,6 +143,7 @@ statement	: logfile
 		| mem_max
 		| lo_mark
 		| hi_mark
+		| db_cache_mem
 		| group
 		| peer
 		| storage
@@ -155,15 +159,39 @@ statement	: logfile
 		| stop_cache_acl
 		| userid
 		| chroot
+		| bind_acl
+		| blacklist
+		| start_red
+		| refuse_at
+		| dont_cache_without_last_modified
 		| error L_EOS {
 			yyerrok;
 		  }
 		| L_EOS
 
-logfile		: LOGFILE STRING L_EOS {
-			verb_printf("LOGFILE:\t<<%s>>\n", yylval.STRPTR);
-			strncpy(logfile, yylval.STRPTR, sizeof(logfile)-1);
-			free(yylval.STRPTR);
+logfile		: LOGFILE string L_EOS {
+			verb_printf("LOGFILE:\t<<%s>>\n", $2);
+			strncpy(logfile, $2, sizeof(logfile)-1);
+			free($2);
+			logfile_buffered = FALSE;
+			printf("Making logfile %s unbuffered.\n", logfile);
+		}
+		| LOGFILE string string L_EOS {
+			verb_printf("LOGFILE:\t<<%s>>\n", $2);
+			strncpy(logfile, $2, sizeof(logfile)-1);
+			free($2);
+			if ( !strcasecmp($3, "buffered") ) {
+			    logfile_buffered = TRUE;
+			    printf("Making logfile %s buffered.\n", logfile);
+			} else if ( !strcasecmp($3, "unbuffered") ) {
+			    logfile_buffered = FALSE;
+			    printf("Making logfile %s unbuffered.\n", logfile);
+			} else {
+			    printf("Last parameter of logfile statement can be `buffered' or `unbuffered': %s\n", $3);
+			    logfile_buffered = FALSE;
+			    printf("Making logfile %s unbuffered.\n", logfile);
+			}
+			free($3);
 		}
 		| LOGFILE string '{' num num '}' L_EOS {
 			verb_printf("LOGFILE:\t<<%s>> num: %d, size: %d\n",
@@ -172,6 +200,28 @@ logfile		: LOGFILE STRING L_EOS {
 			log_num = $4;
 			log_size = $5;
 			free($2);
+			logfile_buffered = FALSE;
+			printf("Making logfile %s unbuffered.\n", logfile);
+		}
+		| LOGFILE string '{' num num '}' string L_EOS {
+			verb_printf("LOGFILE:\t<<%s>> num: %d, size: %d\n",
+			$2, $4, $5);
+			strncpy(logfile, $2, sizeof(logfile)-1);
+			log_num = $4;
+			log_size = $5;
+			free($2);
+			if ( !strcasecmp($7, "buffered") ) {
+			    logfile_buffered = TRUE;
+			    printf("Making logfile %s buffered.\n", logfile);
+			} else if ( !strcasecmp($7, "unbuffered") ) {
+			    logfile_buffered = FALSE;
+			    printf("Making logfile %s unbuffered.\n", logfile);
+			} else {
+			    printf("Last parameter of logfile statement can be `buffered' or `unbuffered': %s\n", $7);
+			    logfile_buffered = FALSE;
+			    printf("Making logfile %s unbuffered.\n", logfile);
+			}
+			free($7);
 		}
 
 userid		: USERID_T string L_EOS {
@@ -180,6 +230,21 @@ userid		: USERID_T string L_EOS {
 
 chroot		: CHROOT_T string L_EOS {
 			oops_chroot = $2;
+		}
+
+blacklist	: BLACKLIST_T num L_EOS {
+			blacklist_len = $2;
+		}
+
+refuse_at	: REFUSE_AT_T num L_EOS {
+			refuse_at = $2;
+		}
+start_red	: START_RED_T num L_EOS {
+			start_red = $2;
+		}
+
+dont_cache_without_last_modified : DONT_CACHE_WITHOUT_LAST_MODIFIED_T L_EOS {
+			dont_cache_without_last_modified = TRUE;
 		}
 
 insert_x_forwarded_for : INSERT_X_FORWARDED_FOR_T string L_EOS {
@@ -204,12 +269,31 @@ insert_via	: INSERT_VIA_T string L_EOS {
 			free(yylval.STRPTR);
 		}
 
-
-accesslog	: ACCESSLOG STRING L_EOS {
-			verb_printf("ACCESSLOG:\t<<%s>>\n", yylval.STRPTR);
-			strncpy(accesslog, yylval.STRPTR, sizeof(accesslog)-1);
+accesslog	: ACCESSLOG string L_EOS {
+			verb_printf("ACCESSLOG:\t<<%s>>\n", $2);
+			strncpy(accesslog, $2, sizeof(accesslog)-1);
 			accesslog_num = accesslog_size = 0;
-			free(yylval.STRPTR);
+			free($2);
+			accesslog_buffered = FALSE;
+			printf("Making accesslog %s unbuffered.\n", accesslog);
+		}
+		| ACCESSLOG string string L_EOS {
+			verb_printf("ACCESSLOG:\t<<%s>>\n",
+			$2);
+			strncpy(accesslog, $2, sizeof(accesslog)-1);
+			free($2);
+			if ( !strcasecmp($3, "buffered") ) {
+			    accesslog_buffered = TRUE;
+			    printf("Making accesslog %s buffered.\n", accesslog);
+			} else if ( !strcasecmp($3, "unbuffered") ) {
+			    accesslog_buffered = FALSE;
+			    printf("Making accesslog %s unbuffered.\n", accesslog);
+			} else {
+			    printf("Last parameter of accesslog statement can be `buffered' or `unbuffered': %s\n", $3);
+			    accesslog_buffered = FALSE;
+			    printf("Making accesslog %s unbuffered.\n", accesslog);
+			}
+			free($3);
 		}
 		| ACCESSLOG string '{' num num '}' L_EOS {
 			verb_printf("ACCESSLOG:\t<<%s>> num: %d, size: %d\n",
@@ -218,13 +302,29 @@ accesslog	: ACCESSLOG STRING L_EOS {
 			accesslog_num = $4;
 			accesslog_size = $5;
 			free($2);
+			accesslog_buffered = FALSE;
+			printf("Making accesslog %s unbuffered.\n", accesslog);
 		}
-
-logs_buffered	: LOGS_BUFFERED_T L_EOS {
-			verb_printf("Making logs buffered\n");
-			logs_buffered = TRUE;
+		| ACCESSLOG string '{' num num '}' string L_EOS {
+			verb_printf("ACCESSLOG:\t<<%s>> num: %d, size: %d\n",
+			$2, $4, $5);
+			strncpy(accesslog, $2, sizeof(accesslog)-1);
+			accesslog_num = $4;
+			accesslog_size = $5;
+			free($2);
+			if ( !strcasecmp($7, "buffered") ) {
+			    accesslog_buffered = TRUE;
+			    printf("Making accesslog %s buffered.\n", accesslog);
+			} else if ( !strcasecmp($7, "unbuffered") ) {
+			    accesslog_buffered = FALSE;
+			    printf("Making accesslog %s unbuffered.\n", accesslog);
+			} else {
+			    printf("Last parameter of accesslog statement can be `buffered' or `unbuffered': %s\n", $7);
+			    accesslog_buffered = FALSE;
+			    printf("Making accesslog %s unbuffered.\n", accesslog);
+			}
+			free($7);
 		}
-
 
 refresh_pattern	: REFRESH_PATTERN_T string num string num L_EOS {
 			char	*buf;
@@ -239,6 +339,11 @@ refresh_pattern	: REFRESH_PATTERN_T string num string num L_EOS {
 			free($2);
 			free($4);
 		}
+bind_acl	: BIND_ACL_T STRING L_EOS {
+			parse_bind_acl(yylval.STRPTR);
+			free(yylval.STRPTR);
+		}
+
 acl_allow	: ACL_ALLOW_T STRING L_EOS {
 			parse_acl_access(&acl_allow, yylval.STRPTR);
 			free(yylval.STRPTR);
@@ -250,6 +355,64 @@ acl_deny	: ACL_DENY_T  STRING L_EOS {
 stop_cache_acl	: STOP_CACHE_ACL_T  STRING L_EOS {
 			parse_acl_access(&stop_cache_acl, yylval.STRPTR);
 			free(yylval.STRPTR);
+		}
+day		: string {
+		    $$ = $1;
+		}
+dayset		: day {
+		    char day = daybit($1);
+		    if ( day < 0 ) {
+			fprintf(stderr, "%s - unrecognized day\n", $1);
+			yyerror();
+		    }
+		    free($1);
+		    $$ = day;
+		}
+		| day ',' dayset {
+		    char day = daybit($1);
+		    if ( day < 0 ) {
+			fprintf(stderr, "%s - unrecognized day\n", $1);
+			yyerror();
+		    }
+		    free($1);
+		    $$ = day | $3 ;
+		}
+		| day ':' day {
+		    unsigned char d1, d2, i, res = 0;
+		    d1 = daybit($1);
+		    d2 = daybit($3);
+		    if ( TEST(d1, 0x80) || TEST(d2, 0x80) ) {
+			fprintf(stderr, "%s or %s - unrecognized day\n", $1,$3);
+			yyerror();
+		    }
+		    if ( d1 > d2 ) {
+			fprintf(stderr, "Days can't be in reverse order\n");
+			yyerror();
+		    }
+		    i = d1;
+		    while(i<=d2) {
+			res |= i;
+			i <<= 1;
+		    }
+		    free($1); free($3);
+		    $$ = res;
+		}
+		| day ':' day ',' dayset {
+		    unsigned char d1, d2, i, res;
+		    d1 = daybit($1);
+		    d2 = daybit($3);
+		    res= $5;
+		    if ( d1 > d2 ) {
+			fprintf(stderr, "Days can't be in reverse order\n");
+			yyerror();
+		    }
+		    i = d1;
+		    while(i<=d2) {
+			res |= i;
+			i <<= 1;
+		    }
+		    free($1); free($3);
+		    $$ = res;
 		}
 acl		: ACL_T	STRING L_EOS {
 			char		  *token, *p, *tptr;
@@ -270,9 +433,9 @@ acl		: ACL_T	STRING L_EOS {
 			while( 1 ) {
 			    char	op;
 			    token = p+1;
-			    while ( *token && isspace(*token) ) token++;
+			    while ( *token && IS_SPACE(*token) ) token++;
 			    if ( !*token ) break;
-			    p = token; while ( *p && !isspace(*p) ) p++;
+			    p = token; while ( *p && !IS_SPACE(*p) ) p++;
 			    op = *p;
 			    *p = 0;
 			    if ( !n ) {
@@ -299,7 +462,7 @@ acl		: ACL_T	STRING L_EOS {
 			if ( !data ) goto error;
 			res = parse_named_acl_data(new_acl, data);
 			if ( res ) {
-			    printf("Unparsable acl data '%s'\n", data);
+			    printf("Unparsable acl data `%s'.\n", data);
 			    goto error;
 			}
 			insert_named_acl_in_list(new_acl);
@@ -327,7 +490,7 @@ nameserver	: NAMESERVER STRING L_EOS {
 			if ( ns_curr < MAXNS ) {
 			    bzero(&ns_sa[ns_curr], sizeof(ns_sa[ns_curr]));
 			    ns_sa[ns_curr].sin_family = AF_INET;
-#if	!defined(SOLARIS) && !defined(LINUX)
+#if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF)
 			    ns_sa[ns_curr].sin_len = sizeof(ns_sa[ns_curr]);
 #endif
 			    ns_sa[ns_curr].sin_addr.s_addr = inet_addr(yylval.STRPTR);
@@ -506,6 +669,12 @@ hi_mark		: HI_MARK num L_EOS {
 			hi_mark_val = $2 ;
 		}
 
+db_cache_mem	: DB_CACHE_MEM num L_EOS {
+			verb_printf("DB_CACHE_MEM:\t<<%d>>\n", $2);
+			if ( $2 > 4194304 )
+			    db_cache_mem_val = $2 ;
+		}
+
 num		: NUMBER { $$ = yylval.INT;}
 
 offset		: NUMBER { $$ = yylval.OFFSET;}
@@ -513,14 +682,14 @@ offset		: NUMBER { $$ = yylval.OFFSET;}
 string		: STRING { $$ = yylval.STRPTR; }
 
 module		: MODULE module_name '{' mod_ops '}' L_EOS {
-			struct string_list	*list = $4, *next;
+			struct string_list	*list = $4;
 #ifdef	MODULES
 			struct general_module	*mod = module_by_name($2);
 			if ( mod ) {
 			    verb_printf("Config %s\n", $2);
 			    if ( mod->config_beg ) (*mod->config_beg)();
 			    while( list ) {
-				verb_printf("send '%s' to %s\n", list->string, $2);
+				verb_printf("send `%s' to `%s'.\n", list->string, $2);
 				if (mod->config) (*mod->config)(list->string);
 				list = list->next;
 			    }
@@ -556,13 +725,13 @@ mod_ops		: mod_op {
 		}
 
 mod_op		: string {
-			struct string_list *new = xmalloc(sizeof(*new), "mod_ops");
+			struct string_list *new = xmalloc(sizeof(*new), "parser: mod_ops");
 			char		   *new_str;
 			if ( !new ) {
 				yyerror();
 			}
 			bzero(new, sizeof(*new));
-			new_str = xmalloc(strlen($1)+1,"mod_op");
+			new_str = xmalloc(strlen($1)+1,"parser: mod_op");
 			if ( !new_str ) {
 				yyerror();
 			}
@@ -584,7 +753,7 @@ storage		: STORAGE '{' st_ops '}' L_EOS {
 #else
 		    verb_printf("Storage: %s (size %d bytes)\n", storage_path, storage_size);
 #endif
-		    new = xmalloc(sizeof(*new), "new storage");
+		    new = xmalloc(sizeof(*new), "parser: new storage");
 		    if ( !new ) {
 			yyerror();
 		    }
@@ -688,14 +857,14 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 			struct	group_ops_struct *ops, *next_ops;
 			struct	group	*new_grp;
 
-			new_grp = xmalloc(sizeof(*new_grp),"new group");
+			new_grp = xmalloc(sizeof(*new_grp),"parser: new group");
 			if ( !new_grp ) {
 				yyerror();
 			}
 			bzero(new_grp, sizeof(*new_grp));
 			pthread_mutex_init(&new_grp->group_mutex, NULL);
 			new_grp->name = $2;
-			verb_printf("Group '%s'\n", $2);
+			verb_printf("Group `%s'.\n", $2);
 			ops = $4;
 			while ( ops ) {
 				next_ops = ops->next;
@@ -720,6 +889,9 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 					break;
 				case OP_MISS:
 					new_grp->miss_deny = (int)ops->val;
+					break;
+				case OP_MAXREQRATE:
+					new_grp->maxreqrate = (int)ops->val;
 					break;
 				case OP_AUTH_MODS:
 					if ( ops->val ) {
@@ -781,7 +953,7 @@ group_ops	: group_op { $$ = $1;}
 
 group_op	: NETWORKS network_list ';' {
 			struct	group_ops_struct	*new;
-			new = xmalloc(sizeof(*new), "new group_op");
+			new = xmalloc(sizeof(*new), "parser: new group_op");
 			if ( !new ) yyerror();
 			new->op  = OP_NETWORKS;
 			new->val = $2;
@@ -792,7 +964,7 @@ group_op	: NETWORKS network_list ';' {
 		}
 		| SRCDOMAINS_T domainlist ';' {
 			struct	group_ops_struct	*new;
-			new = xmalloc(sizeof(*new), "new group_op");
+			new = xmalloc(sizeof(*new), "parser: new group_op");
 			if ( !new ) yyerror();
 			new->op  = OP_SRCDOMAINS;
 			new->val = $2;
@@ -801,10 +973,19 @@ group_op	: NETWORKS network_list ';' {
 		}
 		| NETWORKS_ACL_T string_list ';' {
 			struct	group_ops_struct	*new;
-			new = xmalloc(sizeof(*new), "new group_op");
+			new = xmalloc(sizeof(*new), "parser: new group_op");
 			if ( !new ) yyerror();
 			new->op  = OP_NETWORKS_ACL;
 			new->val = $2;
+			new->next= NULL;
+			$$ = new;
+		}
+		| MAXREQRATE_T num ';' {
+			struct	group_ops_struct	*new;
+			new = xmalloc(sizeof(*new), "parser: new group_op");
+			if ( !new ) yyerror();
+			new->op  = OP_MAXREQRATE;
+			new->val = (void*)$2;
 			new->next= NULL;
 			$$ = new;
 		}
@@ -817,71 +998,13 @@ group_op	: NETWORKS network_list ';' {
 		| auth_mods	{ $$ = $1; }
 		| redir_mods	{ $$ = $1; }
 
-day		: string {
-		    $$ = $1;
-		}
-dayset		: day {
-		    char day = daybit($1);
-		    if ( day < 0 ) {
-			fprintf(stderr, "%s - unrecognized day\n", $1);
-			yyerror();
-		    }
-		    free($1);
-		    $$ = day;
-		}
-		| day ',' dayset {
-		    char day = daybit($1);
-		    if ( day < 0 ) {
-			fprintf(stderr, "%s - unrecognized day\n", $1);
-			yyerror();
-		    }
-		    free($1);
-		    $$ = day | $3 ;
-		}
-		| day ':' day {
-		    unsigned char d1, d2, i, res = 0;
-		    d1 = daybit($1);
-		    d2 = daybit($3);
-		    if ( TEST(d1, 0x80) || TEST(d2, 0x80) ) {
-			fprintf(stderr, "%s or %s - unrecognized day\n", $1,$3);
-			yyerror();
-		    }
-		    if ( d1 > d2 ) {
-			fprintf(stderr, "Days can't be in reverse order\n");
-			yyerror();
-		    }
-		    i = d1;
-		    while(i<=d2) {
-			res |= i;
-			i <<= 1;
-		    }
-		    free($1); free($3);
-		    $$ = res;
-		}
-		| day ':' day ',' dayset {
-		    unsigned char d1, d2, i, res;
-		    d1 = daybit($1);
-		    d2 = daybit($3);
-		    res= $5;
-		    if ( d1 > d2 ) {
-			fprintf(stderr, "Days can't be in reverse order\n");
-			yyerror();
-		    }
-		    i = d1;
-		    while(i<=d2) {
-			res |= i;
-			i <<= 1;
-		    }
-		    free($1); free($3);
-		    $$ = res;
-		}
 denytime	: DENYTIME_T dayset num ':' num {
 		    struct	group_ops_struct	*new_op;
 		    struct	denytime		*denytime;
 		    int		start_m, end_m;
 			verb_printf("Denytime 0x%0X %d %d\n", $2, $3, $5);
-			new_op = xmalloc(sizeof(*new_op), "");
-			denytime = xmalloc(sizeof(*denytime), "");
+			new_op = xmalloc(sizeof(*new_op), "parser: denytime 1");
+			denytime = xmalloc(sizeof(*denytime), "parser: denytime 2");
 			if ( !new_op || !denytime ) {
 				yyerror();
 				$$ = NULL;
@@ -901,7 +1024,7 @@ denytime	: DENYTIME_T dayset num ':' num {
 miss		: MISS_T DENY ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "");
+			new_op = xmalloc(sizeof(*new_op), "parser: miss 1");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
@@ -916,7 +1039,7 @@ miss		: MISS_T DENY ';' {
 		| MISS_T ALLOW ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "");
+			new_op = xmalloc(sizeof(*new_op), "parser: miss 2");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
@@ -932,7 +1055,7 @@ miss		: MISS_T DENY ';' {
 auth_mods	: AUTH_MODS_T string_list ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "");
+			new_op = xmalloc(sizeof(*new_op), "parser: auth_mods");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
@@ -947,7 +1070,7 @@ auth_mods	: AUTH_MODS_T string_list ';' {
 redir_mods	: REDIR_MODS_T string_list ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "");
+			new_op = xmalloc(sizeof(*new_op), "parser: redir_mods");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
@@ -962,7 +1085,7 @@ redir_mods	: REDIR_MODS_T string_list ';' {
 bandwidth	: BANDWIDTH_T num ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new bandwidth");
+			new_op = xmalloc(sizeof(*new_op), "parser: bandwidth");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
@@ -1001,13 +1124,13 @@ ranges		: range {}
 badports	: BADPORTS_T ranges ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new badports");
+			new_op = xmalloc(sizeof(*new_op), "parser: badports 1");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
 			    struct range *val;
-			    val = xmalloc(sizeof(*val)*MAXBADPORTS, "badports");
+			    val = xmalloc(sizeof(*val)*MAXBADPORTS, "parser: badports 2");
 			    badp_p = NULL;
 			    if ( !val ) {
 				yyerror();
@@ -1027,12 +1150,12 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			struct	acls			*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new http");
+			new_op = xmalloc(sizeof(*new_op), "parser: icp");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: icp new_acl 1");
 				if ( !new_acls ) {
 					verb_printf("No mem at http acl\n");
 					yyerror();
@@ -1052,12 +1175,12 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			struct	acls			*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new gr op1");
+			new_op = xmalloc(sizeof(*new_op), "parser: icp new gr op1");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: icp new_acl 2");
 				if ( !new_acls ) {
 					verb_printf("No mem at http acl\n");
 					yyerror();
@@ -1077,12 +1200,12 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			struct	acls		*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new gr op2");
+			new_op = xmalloc(sizeof(*new_op), "parser: icp new gr op2");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new acl2");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: icp new acl 3");
 				if ( !new_acls ) {
 					verb_printf("No mem at icp acl\n");
 					yyerror();
@@ -1102,12 +1225,12 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			struct	acls		*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new gr op2");
+			new_op = xmalloc(sizeof(*new_op), "parser: icp new gr op2");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new acl");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: icp new acl 4");
 				if ( !new_acls ) {
 					verb_printf("No mem at icp acl\n");
 					yyerror();
@@ -1128,12 +1251,12 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			struct	acls			*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new http");
+			new_op = xmalloc(sizeof(*new_op), "parser: new http");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: http new_acl 1");
 				if ( !new_acls ) {
 					verb_printf("No mem at http acl\n");
 					yyerror();
@@ -1153,12 +1276,12 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			struct	acls			*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new gr op1");
+			new_op = xmalloc(sizeof(*new_op), "parser: http new gr op1");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: http new_acl 2");
 				if ( !new_acls ) {
 					verb_printf("No mem at http acl\n");
 					yyerror();
@@ -1178,12 +1301,12 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			struct	acls		*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new gr op2");
+			new_op = xmalloc(sizeof(*new_op), "parser: http new gr op2");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new acl2");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: http new acl 3");
 				if ( !new_acls ) {
 					verb_printf("No mem at http acl\n");
 					yyerror();
@@ -1203,12 +1326,12 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			struct	acls		*new_acls;
 			struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "new gr op2");
+			new_op = xmalloc(sizeof(*new_op), "parser: http new gr op2");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
 			} else {
-				new_acls = xmalloc(sizeof(*new_acls), "new acl");
+				new_acls = xmalloc(sizeof(*new_acls), "parser: http new acl 4");
 				if ( !new_acls ) {
 					verb_printf("No mem at http acl\n");
 					yyerror();
@@ -1228,7 +1351,7 @@ deny_acls	: deny_acl 			{ $$ = $1; }
 		| deny_acl deny_acls 		{ $2->next = $1 ; $$ = $2; }
 
 deny_acl	: DENY DSTDOMAIN INCLUDE_T string ';' { 
-			struct acl *new = xmalloc(sizeof(*new), "new acl");
+			struct acl *new = xmalloc(sizeof(*new), "parser: deny_acl new acl 1");
 			if ( !new ) {
 				verb_printf("No mem for acl\n");
 				yyerror();
@@ -1242,7 +1365,7 @@ deny_acl	: DENY DSTDOMAIN INCLUDE_T string ';' {
 		}
 
 deny_acl	: DENY DSTDOMAIN domainlist ';' { 
-			struct acl *new = xmalloc(sizeof(*new), "new acl");
+			struct acl *new = xmalloc(sizeof(*new), "parser: deny_acl new acl 2");
 			if ( !new ) {
 				verb_printf("No mem for acl\n");
 				yyerror();
@@ -1259,7 +1382,7 @@ allow_acls	: allow_acl 			{ $$ = $1; }
 		| allow_acl allow_acls 		{ $1->next = $2 ; $$ = $1; }
 
 allow_acl	: ALLOW  DSTDOMAIN INCLUDE_T string ';' { 
-			struct acl *new = xmalloc(sizeof(*new), "new acl");
+			struct acl *new = xmalloc(sizeof(*new), "parser: allow_acl new acl 1");
 			verb_printf("Include from file %s\n",$4);
 			if ( !new ) {
 				verb_printf("No mem for acl\n");
@@ -1274,7 +1397,7 @@ allow_acl	: ALLOW  DSTDOMAIN INCLUDE_T string ';' {
 		}
 
 allow_acl	: ALLOW  DSTDOMAIN domainlist ';' { 
-			struct acl *new = xmalloc(sizeof(*new), "new acl");
+			struct acl *new = xmalloc(sizeof(*new), "parser: allow_acl new acl 2");
 			if ( !new ) {
 				verb_printf("No mem for acl\n");
 				yyerror();
@@ -1299,7 +1422,7 @@ string_list	: string_list_e { $$ = $1; }
 		}
 string_list_e	: string {
 		struct string_list	*new;
-			new = xmalloc(sizeof(*new),"");
+			new = xmalloc(sizeof(*new),"parser: string_list_e");
 			if ( !new ) yyerror();
 			new->string = malloc(strlen($1)+1);
 			if ( !new->string ) yyerror();
@@ -1327,7 +1450,7 @@ domain		: STRING {
 			struct	domain_list *new;
 			char		    *s, *d;
 
-			new = xmalloc(sizeof(*new), "new acl");
+			new = xmalloc(sizeof(*new), "parser: domain new acl 1");
 			if ( !new ) {
 			    verb_printf("malloc failed\n");
 			    yyerror();
@@ -1369,7 +1492,7 @@ network		: NETWORK {
 				net |= (atol(dot) << i);
 				i -= 8;
 			}
-			new =  xmalloc(sizeof(struct cidr_net), "new acl");
+			new =  xmalloc(sizeof(struct cidr_net), "parser: network new acl 1");
 			new->network = net;
 			new->masklen = masklen;
 			new->next = NULL;
@@ -1410,7 +1533,7 @@ char			buf[128], *p;
 	if ( ( p = memchr(buf, '\n', sizeof(buf)) ) ) *p = 0;
 	/* skip leading spaces */
 	p = buf;
-	while ( *p && isspace(*p) ) p++;
+	while ( *p && IS_SPACE(*p) ) p++;
 	if ( !*p ) /* empty line */
 	    continue;
 	if ( *p == '#' ) /* comment */

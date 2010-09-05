@@ -1,4 +1,4 @@
-VER=1.3
+VER=1.4
 
 
 all:
@@ -10,13 +10,16 @@ clean:
 
 distclean:
 	rm -f config.cache config.status config.log *~;
-	cd src; rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln version.h config.h oops core
+	cd src; rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln version.h config.h oops.cfg oops core
 	cd src/modules; rm -f Makefile *o oopsctl *~ *.ln
 
 tar:
-	rm -f oops-${VER}.tar.gz /tmp/oops.tar.gz; \
-	cd .. ;tar cvf - oops | gzip > /tmp/oops.tar.gz; \
-	mv /tmp/oops.tar.gz oops/oops-${VER}.tar.gz
+	$(MAKE) distclean
+	rm -Rf ../oops-${VER}.tar.gz /tmp/oops-${VER};
+	mkdir /tmp/oops-${VER};
+	gtar c --exclude=CVS . | (cd /tmp/oops-${VER}; gtar x);
+	( cd /tmp; tar cf - oops-${VER} )| gzip -9 > ../oops-${VER}.tar.gz
+	rm -Rf /tmp/oops-${VER}
 
 install:
 	cd src; $(MAKE) install

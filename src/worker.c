@@ -36,7 +36,7 @@ int		so;
 void*		(*processor)(void*);
 
     arg = arg;
-    printf("New worker started\n");
+    printf("worker(): New worker started\n");
 
     while(1) {
 	dataq_dequeue_special(&wq, (void**)&work);

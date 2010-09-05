@@ -21,6 +21,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 

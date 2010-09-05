@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# oops-conf
+#
+# This file shows some examples of calling configure
+# script for various compilers/OS.
+#
+
+case $1 in
+
+acc)
+    # AIX cc (3.6.5, 4.4)
+    CC="cc_r -O3 -qstrict -qmaxmem=65535"
+    CPPFLAGS="-I/usr/include -I/usr/local/include"
+    CFLAGS="-I/usr/include -I/usr/local/include"
+    LDFLAGS="-L/usr/local/lib"
+    ;;
+
+scc)
+    # Solaris cc (Workshop 5.0)
+    CC="cc -fast -xtarget=generic -xO3 -Qn"
+    CPPFLAGS="-I/usr/include -I/usr/local/include"
+    CFLAGS="-I/usr/include -I/usr/local/include"
+    LDFLAGS="-L/usr/local/lib"
+    ;;
+
+gcc)
+    # gcc (2.8.1, 2.95.2)
+    CC=gcc
+    CFLAGS="-O2 -Wall"
+    ;;
+
+*)
+    echo "Usage: oops-conf [option]"
+    echo "       option:"
+    echo "          acc   - IBM C for AIX 3.6.5, 4.4"
+    echo "          scc   - SUN Workshop 5.0"
+    echo "          gcc   - GNU C"
+    exit 0
+    ;;
+
+esac
+
+
+CC="$CC" \
+CPPFLAGS="$CPPFLAGS" \
+CFLAGS="$CFLAGS" \
+LDFLAGS="$LDFLAGS" \
+./configure \
+    --prefix=/opt/local \
+    --enable-large-files

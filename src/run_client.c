@@ -36,6 +36,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        <sys/stat.h>
 #include        <sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #if	defined(SOLARIS) || defined(LINUX)
 #include	<netinet/tcp.h>
@@ -67,8 +68,8 @@ int		check_headers(struct request *rq, char *beg, char *end, int *checked, int s
 int		parse_url(char*, char*, struct url *, int);
 void		release_obj(struct mem_obj*);
 void		send_from_mem(int, struct request *, char* , struct mem_obj*, int);
-void		increment_clients();
-void		decrement_clients();
+void		increment_clients(void);
+void		decrement_clients(void);
 void		make_purge(int, struct request *);
 int		parse_connect_url(char* src, char *httpv, struct url *url, int so);
 
@@ -88,8 +89,14 @@ time_t			started;
 struct	mem_obj		*stored_url;
 size_t			current_size;
 int			status, checked_len=0, mod_flags;
-int			mem_send_flags = 0, clsalen = sizeof(request.client_sa);
+int			mem_send_flags = 0;
+#if			!defined(_AIX)
+int			clsalen = sizeof(request.client_sa);
 int			mysalen = sizeof(request.my_sa);
+#else
+size_t			clsalen = sizeof(request.client_sa);
+size_t			mysalen = sizeof(request.my_sa);
+#endif
 struct	group		*group;
 int			miss_denied = TRUE;
 int			so, new_object, redir_mods_visited, auth_mods_visited;
@@ -108,7 +115,7 @@ struct	work		*work;
    increment_clients();
    set_socket_options(so);
 
-re: /* here we go if client want persistent connection */
+   /* here we go if client want persistent connection */
    bzero(&request, sizeof(request));
    request.accepted_so = accepted_so;
    getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen);
@@ -116,62 +123,38 @@ re: /* here we go if client want persistent connection */
    request.request_time = started = time(NULL);
    redir_mods_visited = FALSE;
    auth_mods_visited  = FALSE;
-   RDLOCK_CONFIG ;
-   group = rq_to_group(&request);
-
-   if ( group ) {
-	pthread_mutex_lock(&group->group_mutex);
-	group->cs0.requests++;
-	pthread_mutex_unlock(&group->group_mutex);
-
-	miss_denied = group->miss_deny;
-   }
-   if ( group && group->bandwidth )
-	request.flags |= RQ_HAS_BANDWIDTH;
-   UNLOCK_CONFIG;
-
-   buf = xmalloc(CHUNK_SIZE, "run_client: for client request");
+   buf = xmalloc(CHUNK_SIZE, "run_client(): for client request");
    if ( !buf ) {
-	my_log("No mem for header!\n");
+	my_xlog(LOG_SEVERE, "run_client(): No mem for header!\n");
 	goto done;
    }
    current_size = CHUNK_SIZE;
    cp = buf; ip = buf;
-#if	defined(DEMO)
-   if ( served > 5112 ) {
-	decrement_clients();
-	xfree(buf);
-	close(so);
-	return;
-   } else {
-	served++;
-   }
-#endif
 
    while(1) {
 	got = readt(so, (char*)cp, current_size-(cp-ip), 100);
 	if ( got == 0 ) {
-	    my_xlog(LOG_FTP|LOG_HTTP, "Client closed connection\n");
+	    my_xlog(LOG_FTP|LOG_HTTP|LOG_DBG, "run_client(): Client closed connection.\n");
 	    goto done;
 	}
 	if ( got == -2 ) {
-	    my_xlog(LOG_HTTP|LOG_FTP, "Read client input timeout\n");
+	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "Read client input timeout\n");
 	    if ( time(NULL) - started > READ_REQ_TIMEOUT ) {
-		my_xlog(LOG_HTTP|LOG_FTP, "Client send too slow\n");
+		my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Client send too slow.\n");
 		goto done;
 	    }
 	    continue;
 	}
 	if ( got <  0 ) {
-	    my_xlog(LOG_HTTP|LOG_FTP, "Failed to read from client\n");
+	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Failed to read from client.\n");
 	    goto done;
 	}
 	cp+=got;
 	if ( cp - ip >= current_size ) {
-	    char *nb = xmalloc(current_size+CHUNK_SIZE, "run_client: new block");
+	    char *nb = xmalloc(current_size+CHUNK_SIZE, "run_client(): new block");
 	    /* resize buf */
 	    if ( !nb ) {
-		my_log("No mem to read request\n");
+		my_xlog(LOG_SEVERE, "run_client(): No mem to read request.\n");
 		goto done;
 	    }	    
 	    memcpy(nb, buf, current_size);
@@ -184,7 +167,7 @@ re: /* here we go if client want persistent connection */
 	    *cp=0;
 	status = check_headers(&request, (char*)ip, (char*)cp, &checked_len, so);
 	if ( status ) {
-	    my_xlog(LOG_HTTP|LOG_FTP, "Failed to check headers\n");
+	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Failed to check headers.\n");
 	    say_bad_request(so, "Bad request format.\n", "",
 		    ERR_BAD_URL, &request);
 	    goto done;
@@ -193,15 +176,23 @@ re: /* here we go if client want persistent connection */
 	    break;
     }
     if ( request.headers_off <= 0 ) {
-	my_log("Something wrong with headers_off: %d\n", request.headers_off);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run_client(): Something wrong with headers_off: %d\n", request.headers_off);
 	goto done;
     }
     headers = (char*)buf + request.headers_off;
     RDLOCK_CONFIG ;
-ck_acc:
-    if ((rc = deny_http_access(so, &request)) ) {
+ck_group:
+    group = rq_to_group(&request);
+    if ( ! group ) {
+	UNLOCK_CONFIG;
+	say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
+	    ERR_ACC_DENIED, &request);
+	goto done;
+    }
+    miss_denied = group->miss_deny;
+    if ((rc = deny_http_access(so, &request, group)) ) {
 	UNLOCK_CONFIG ;
-	my_xlog(LOG_HTTP|LOG_FTP, "Access banned\n");
+	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Access banned.\n");
 	switch ( rc ) {
 	case ACCESS_PORT:
 		say_bad_request(so, "<font color=red>Access denied for requestsd port.\n</font>", "",
@@ -220,11 +211,11 @@ ck_acc:
 			ERR_ACC_DENIED, &request);
 		break;
 	}
-	log_access(0, &request.client_sa,
-            "TCP_DENIED", 555, 0, "GET", &request.url, "-", "-", "-");
+	IF_STRDUP(request.tag, "TCP_DENIED");
+	request.code = 555;
+	log_access(0, &request, NULL);
 	goto done;
     }
-    group = rq_to_group(&request);
     if ( !group ) {
 	UNLOCK_CONFIG ;
 	goto done;
@@ -233,8 +224,10 @@ ck_acc:
 	UNLOCK_CONFIG ;
 	say_bad_request(so, "<font color=red>Your access to proxy service denied at this time.\n</font>", "",
 		ERR_ACC_DENIED, &request);
-	log_access(0, &request.client_sa,
-            "TCP_DENIED", 555, 0, "GET", &request.url, "-", "-", "DENY_TIME");
+	IF_STRDUP(request.tag,"TCP_DENIED");
+	IF_STRDUP(request.source, "DENY_TIME");
+	request.code = 555;
+	log_access(0, &request, NULL);
 	goto done;
     }
 #ifdef	MODULES
@@ -251,7 +244,8 @@ ck_acc:
 	}
 	redir_mods_visited = TRUE;
 	if ( TEST(mod_flags, MOD_AFLAG_CKACC) )
-	    goto ck_acc;
+	    goto ck_group;	/* we must get group again, as it my-be 
+				   changed because of redir		*/
     }
     if ( !auth_mods_visited ) {
 	/* time to visit auth modules */
@@ -263,8 +257,10 @@ ck_acc:
 		say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
 			ERR_ACC_DENIED, &request);
 	    }
-	    log_access(0, &request.client_sa,
-		"TCP_DENIED", 555, 0, "GET", &request.url, "-", "-", "AUTH_MOD");
+	    IF_STRDUP(request.tag, "TCP_DENIED");
+	    IF_STRDUP(request.source, "AUTH_MOD");
+	    request.code = 555;
+	    log_access(0, &request, NULL);
 	    goto done;
 	}
 	auth_mods_visited = TRUE;
@@ -281,6 +277,18 @@ ck_acc:
 	   && global_refresh_pattern )		/* and we have global refr_patt	*/
 
 	set_refresh_pattern(&request, global_refresh_pattern);
+
+    if ( group && group->bandwidth )
+	request.flags |= RQ_HAS_BANDWIDTH;
+    pthread_mutex_lock(&group->group_mutex);
+    group->cs0.requests++;
+    pthread_mutex_unlock(&group->group_mutex);
+    if ( group->maxreqrate && (group->cs0.requests > group->maxreqrate) ) {
+	/* request rate limit reached, drop connection 	*/
+	/* this is crude and must be used as last resort	*/
+	UNLOCK_CONFIG ;
+	goto done;
+    }
 
     UNLOCK_CONFIG ;
 
@@ -364,7 +372,7 @@ ck_acc:
 	(RQ_HAS_MAX_AGE|RQ_HAS_MAX_STALE|RQ_HAS_MIN_FRESH) ) {
 	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT, &new_object, &request);
 	if ( !stored_url ) {
-	    my_log("Can't create or find memory object\n");
+	    my_xlog(LOG_SEVERE, "run_client(): Can't create or find memory object.\n");
 	    say_bad_request(so, "Can't create memory object.\n", "No memory?",
 	    	ERR_INTERNAL, &request);
 	    goto done;
@@ -395,7 +403,7 @@ ck_acc:
 	    } else
 		freshness_lifetime = freshness_val;
 	    if ( freshness_lifetime < request.max_stale ) {
-		my_log("Must revalidate: freshness_lifetime=%d, request.max_stale: %d\n",
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run_client(): Must revalidate: freshness_lifetime = %d, request.max_stale: %d\n",
 				freshness_lifetime, request.max_stale);
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	    } else {
@@ -425,7 +433,7 @@ ck_acc:
     }
     stored_url = locate_in_mem(&request.url, AND_PUT|AND_USE, &new_object, &request);
     if ( !stored_url ) {
-	my_log("Can't create or find memory object\n");
+	my_xlog(LOG_SEVERE, "run_client(): Can't create or find memory object.\n");
 	say_bad_request(so, "Can't create memory object.\n", "No memory?",
 		ERR_INTERNAL, &request);
 	goto done;
@@ -433,10 +441,8 @@ ck_acc:
 
     if ( new_object ) {
 read_net:
-	my_xlog(LOG_HTTP|LOG_FTP, "read <%s><%s><%d><%s> from Net\n", request.url.proto,
-					     request.url.host,
-					     request.url.port,
-					     request.url.path);
+	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): read <%s><%s><%d><%s> from the net.\n",
+		request.url.proto, request.url.host, request.url.port, request.url.path);
 	if ( miss_denied ) {
 	    say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
 		ERR_ACC_DENIED, &request);
@@ -466,14 +472,13 @@ read_net:
 	     if (stored_url->times.expires < global_sec_timer)
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	}
-	my_xlog(LOG_HTTP|LOG_FTP, "read <%s:%s:%s> from mem\n", request.url.proto,
-					     request.url.host,
-					     request.url.path);
+	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): read <%s:%s:%s> from mem.\n",
+		request.url.proto, request.url.host, request.url.path);
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
 	close(so); so = -1;
         leave_obj(stored_url);
     }
-persistent:
+/*persistent:*/
 
 done:
     if (buf)  free(buf);
@@ -495,7 +500,7 @@ create_temp_obj()
 {
 struct mem_obj	*obj = NULL;
 
-    obj = xmalloc(sizeof(*obj), "create_obj");
+    obj = xmalloc(sizeof(*obj), "create_temp_obj(): 1");
     if ( !obj )
 	return(NULL);
     bzero(obj, sizeof(*obj));
@@ -532,6 +537,8 @@ unlink_obj(struct mem_obj *obj)
     if ( oldest_obj == obj ) {
 	oldest_obj = obj->younger;
     }
+    decrease_hash_size(obj->hash_back, obj->resident_size);
+    obj->hash_back = NULL;
     obj->prev = obj->next = obj->older = obj->younger = NULL;
 }
 
@@ -573,12 +580,12 @@ int		found=0, mod_flags = 0;
 
     if ( new_object ) *new_object = FALSE;
     if ( pthread_mutex_lock(&obj_chain) ) {
-	fprintf(stderr, "Failed mutex lock\n");
+	fprintf(stderr, "locate_in_mem(): Failed mutex lock.\n");
 	return(NULL);
     }
     /* lock hash entry */
     if ( pthread_mutex_lock(&hash_table[url_hash].lock) ) {
-	fprintf(stderr, "Failed mutex lock\n");
+	fprintf(stderr, "locate_in_mem(): Failed mutex lock\n");
 	pthread_mutex_unlock(&obj_chain);
 	return(NULL);
     }
@@ -588,12 +595,12 @@ int		found=0, mod_flags = 0;
 	         !strcmp(url->path, obj->url.path) &&
 	         !strcasecmp(url->host, obj->url.host) &&
 	         !strcasecmp(url->proto, obj->url.proto) &&
-	         !(obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) 
+	         !(obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) &&
+		 (!TEST(flags, READY_ONLY) || (obj->state==OBJ_READY) )
 #if		    defined(MODULES)
 		    && ( rq && (check_headers_match(obj, rq, &mod_flags) == MOD_CODE_OK) )
 #endif
 	         ) {
-		    int	rc = 0, mod_flags;
 
 		    found=1;
 		    if (  flags & AND_USE ) {
@@ -605,6 +612,9 @@ int		found=0, mod_flags = 0;
 			obj->refs++;
 			pthread_mutex_unlock(&obj->lock);
 		    }
+		    obj->last_access = global_sec_timer;
+		    obj->accessed += 1;
+		    obj->rate = obj_rate(obj);
 		    pthread_mutex_unlock(&hash_table[url_hash].lock);
 		    pthread_mutex_unlock(&obj_chain);
 		    return(obj);
@@ -613,19 +623,23 @@ int		found=0, mod_flags = 0;
 	}
 	if ( !found && ( flags & AND_PUT ) ) {
 		/* need to insert */
-		obj=xmalloc(sizeof(struct mem_obj), "for object");
+		obj=xmalloc(sizeof(struct mem_obj), "locate_in_mem(): for object");
 		if ( obj ) {
 		    memset(obj, 0, sizeof(struct mem_obj));
+		    obj->created = global_sec_timer;
+		    obj->last_access = global_sec_timer;
+		    obj->accessed = 1;
+		    obj->rate = 0;
 		    /* copy url */
 		    obj->url.port = url->port;
-		    obj->url.proto = xmalloc(strlen(url->proto)+1, "for obj->url.proto");
+		    obj->url.proto = xmalloc(strlen(url->proto)+1, "locate_in_mem(): for obj->url.proto");
 		    if ( obj->url.proto ) {
 			strcpy(obj->url.proto, url->proto);
 		    } else {
 			free(obj); obj = NULL;
 			goto done;
 		    }
-		    obj->url.host = xmalloc(strlen(url->host)+1, "for obj->url.host");
+		    obj->url.host = xmalloc(strlen(url->host)+1, "locate_in_mem(): for obj->url.host");
 		    if ( obj->url.host ) {
 			strcpy(obj->url.host, url->host);
 		    } else {
@@ -633,7 +647,7 @@ int		found=0, mod_flags = 0;
 			free(obj); obj = NULL;
 			goto done;
 		    }
-		    obj->url.path = xmalloc(strlen(url->path)+1, "for obj->url.path");
+		    obj->url.path = xmalloc(strlen(url->path)+1, "locate_in_mem(): for obj->url.path");
 		    if ( obj->url.path ) {
 			strcpy(obj->url.path, url->path);
 		    } else {
@@ -642,7 +656,7 @@ int		found=0, mod_flags = 0;
 			free(obj); obj = NULL;
 			goto done;
 		    }
-		    obj->url.httpv = xmalloc(strlen(url->httpv)+1, "locate_in_mem4");
+		    obj->url.httpv = xmalloc(strlen(url->httpv)+1, "locate_in_mem(): locate_in_mem4");
 		    if ( obj->url.httpv ) {
 			strcpy(obj->url.httpv, url->httpv);
 		    } else {
@@ -695,7 +709,7 @@ int		found=0, mod_flags = 0;
 			    /* it is on disk */
 			    storage = locate_storage_by_id(disk_ref->id);
 			    if ( storage && (storage->flags&ST_READY) ) {
-				my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR, "Found on disk: %s\n", storage->path);
+				my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR|LOG_DBG, "locate_in_mem(): Found on disk: %s\n", storage->path);
 				/* order important. flags must be changed
 				   when all done
 				*/
@@ -728,14 +742,14 @@ int		found=0, mod_flags = 0;
 				    n_obj = locate_in_mem(&rq->url,
 					AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
 				    /* old content will be dead */
-				    return(n_obj);;
+				    return(n_obj);
 				} else
 				    CLR(obj->flags, ANSW_NO_CACHE);
 #endif
 				pthread_cond_broadcast(&obj->decision_cond);
 			    }
 			} else {
-			    my_xlog(LOG_HTTP|LOG_FTP, "Not found\n");
+			    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "locate_in_mem(): Not found.\n");
 			}
 		nf:	UNLOCK_DB;
 			UNLOCK_CONFIG;
@@ -757,23 +771,23 @@ struct	av	*new=NULL, *next;
 char		*attr=avtext, *sp=avtext, *val,holder;
 char		*new_attr=NULL, *new_val=NULL;
 
-    while( *sp && !isspace(*sp) && (*sp != ':') ) sp++;
+    while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
     if ( !*sp ) {
-	my_log("Invalid request string: %s\n", avtext);
+	my_xlog(LOG_SEVERE, "add_request_av(): Invalid request string: %s\n", avtext);
 	return(-1);
     }
     if ( *sp ==':' ) sp++;
     holder = *sp;
     *sp = 0;
-    new = xmalloc(sizeof(*new), "for av pair");
+    new = xmalloc(sizeof(*new), "add_request_av(): for av pair");
     if ( !new ) goto failed;
-    new_attr=xmalloc( strlen(attr)+1, "for new_attr" );
+    new_attr=xmalloc( strlen(attr)+1, "add_request_av(): for new_attr" );
     if ( !new_attr ) goto failed;
     strcpy(new_attr, attr);
     *sp = holder;
-    val = sp; while( *val && isspace(*val) ) val++;
+    val = sp; while( *val && IS_SPACE(*val) ) val++;
     if ( !*val ) goto failed;
-    new_val = xmalloc( strlen(val) + 1, "for val");
+    new_val = xmalloc( strlen(val) + 1, "add_request_av(): for val");
     if ( !new_val ) goto failed;
     strcpy(new_val, val);
     new->attr = new_attr;
@@ -843,7 +857,7 @@ go:
 	    }
 	    request->data = alloc_buff(CHUNK_SIZE);
 	    if ( !request->data ) {
-		my_log("req_data\n");
+		my_xlog(LOG_DBG|LOG_INFORM, "check_headers(): req_data.\n");
 	    	return(-1);
 	    }
 	    start += 4;
@@ -890,21 +904,21 @@ go:
 	}
 	*t = 0;
 	/* check headers of my interest */
-	my_xlog(LOG_HTTP, "--->'%s'\n", p);
+	my_xlog(LOG_HTTP|LOG_DBG, "check_headers(): ---> `%s'\n", p);
 	if ( !request->data ) /* we don't parse POST data now */
 		add_request_av(p, request);
 	if ( !strncasecmp(p, "Content-length: ", 16) ) {
 	    char	*x;
 	    /* length */
 	    x=p + 16; /* strlen("content-length: ") */
-	    while( *x && isspace(*x) ) x++;
+	    while( *x && IS_SPACE(*x) ) x++;
 	    request->content_length = atoi(x);
 	    request->flags |= RQ_HAS_CONTENT_LEN;
 	}
 	if ( !strncasecmp(p, "If-Modified-Since: ", 19) ) {
 	    char	*x;
 	    x=p + 19; /* strlen("content-length: ") */
-	    while( *x && isspace(*x) ) x++;
+	    while( *x && IS_SPACE(*x) ) x++;
 	    bzero(&request->if_modified_since, sizeof(request->if_modified_since));
 	    if (!http_date(x, &request->if_modified_since))
 	    	request->flags |= RQ_HAS_IF_MOD_SINCE;
@@ -912,7 +926,7 @@ go:
 	if ( !strncasecmp(p, "Pragma: ", 8) ) {
 	    char	*x;
 	    x=p + 8; /* strlen("pragma: ") */
-	    while( *x && isspace(*x) ) x++;
+	    while( *x && IS_SPACE(*x) ) x++;
 	    if ( strstr(x, "no-cache") ) request->flags |= RQ_HAS_NO_CACHE;
 	}
 	if ( !strncasecmp(p, "Authorization: ", 15) ) {
@@ -924,7 +938,7 @@ go:
 	if ( !strncasecmp(p, "Connection: ", 12) ) {
 	    char *x = p+12;
 
-	    while( *x && isspace(*x) ) x++;
+	    while( *x && IS_SPACE(*x) ) x++;
 	    if ( !strncasecmp(x, "close", 5) )
 		request->flags |= RQ_HAS_CLOSE_CONNECTION;
 	}
@@ -932,7 +946,7 @@ go:
 	    char	*x;
 
 	    x=p + 15; /* strlen("Cache-Control: ") */
-	    while( *x && isspace(*x) ) x++;
+	    while( *x && IS_SPACE(*x) ) x++;
 	    if      ( !strncasecmp(x, "no-store", 8) )
 			request->flags |= RQ_HAS_NO_STORE;
 	    else if ( !strncasecmp(x, "no-cache", 8) )
@@ -983,8 +997,9 @@ int	http_major, http_minor;
     else if ( !strcasecmp(src, "LOCK") ) rq->meth = METH_LOCK;
     else if ( !strcasecmp(src, "UNLOCK") ) rq->meth = METH_UNLOCK;
     else if ( !strcasecmp(src, "PURGE") ) rq->meth = METH_PURGE;
+    else if ( !strcasecmp(src, "OPTIONS") ) rq->meth = METH_OPTIONS;
     else {
-	my_log("unrecognized method '%s'\n", src);
+	my_xlog(LOG_SEVERE, "parse_http_request(): Unrecognized method `%s'.\n", src);
 	*p = ' ';
 	return(-1);
     }
@@ -1017,6 +1032,7 @@ int	http_major, http_minor;
 	return(-1);
     return(0);
 }
+
 int
 parse_connect_url(char* src, char *httpv, struct url *url, int so)
 {
@@ -1029,7 +1045,7 @@ char	*ss, *host=NULL;
 	return(-1);
     }
     *ss = 0;
-    host = xmalloc(strlen(src)+1, "for parse_connect_url");
+    host = xmalloc(strlen(src)+1, "parse_connect_url():");
     if (!host)
 	goto err;
     memcpy_to_lower(host, src, strlen(src)+1);
@@ -1044,6 +1060,7 @@ done:
     *ss = ':';
     return(0);
 }
+
 int
 parse_url(char *src, char *httpv, struct url *url, int so)
 {
@@ -1071,7 +1088,7 @@ u_short	pval;
 	return(-1);
     }
     p_len = ss - src;
-    proto = xmalloc(p_len+1, "parse_url, proto");
+    proto = xmalloc(p_len+1, "parse_url(): proto");
     if ( !proto )
 	return(-1);
     memcpy(proto, src, p_len); proto[p_len] = 0;
@@ -1089,18 +1106,18 @@ u_short	pval;
 	if ( se < sa ) {
 	    if ( se ) {
 		*se = 0;
-		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "parse_url(): login");
 		strcpy(login, ss);
 		*se = ':';
 		holder = *(sa);
 		*(sa) = 0;
-		password = xmalloc(ROUND(strlen(se+1)+1, CHUNK_SIZE), "password");
+		password = xmalloc(ROUND(strlen(se+1)+1, CHUNK_SIZE), "parse_url(): password");
 		strcpy(password, se+1);
 	    	*(sa) = holder;
 	    } else {
 		holder = *sa;
 		*sa = 0;
-		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "parse_url(): login2");
 		strcpy(login, ss);
 	        password = NULL;
 		*sa = holder;
@@ -1114,7 +1131,7 @@ u_short	pval;
 	    /* login@host:port/path		*/
 	    holder = *sa;
 	    *sa = 0;
-	    login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+	    login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "parse_url(): login3");
 	    strcpy(login, ss);
 	    password = NULL;
 	    *sa = holder;
@@ -1128,7 +1145,7 @@ normal:;
 	/* port is here */
 	he = se;
 	h_len = se-ss;
-	host = xmalloc(h_len+1, "parse_url, host");
+	host = xmalloc(h_len+1, "parse_url(): host");
 	if ( !host ) {
 	    if ( login ) free(login);
 	    if ( password ) free(password);
@@ -1137,7 +1154,7 @@ normal:;
 	}
 	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
 	se++;
-	for(i=0; (i<10) && *se && isdigit(*se); i++,se++ ) {
+	for(i=0; (i<10) && *se && IS_DIGIT(*se); i++,se++ ) {
 	    number[i]=*se;
 	}
 	number[i] = 0;
@@ -1161,9 +1178,9 @@ normal:;
 	if ( !se )
 	    se = src+strlen(src);
 	h_len = se-ss;
-	host = xmalloc(h_len+1, "parse_url, host");
+	host = xmalloc(h_len+1, "parse_url(): host2");
 	if ( !host ) {
-	    if ( login ) free(login);
+	    if ( login )    free(login);
 	    if ( password ) free(password);
 	    free(proto);
 	    return(-1);
@@ -1177,30 +1194,30 @@ only_path:
 	ss = se;
 	for(i=0;*se++;i++);
 	if ( i ) {
-	    path = xmalloc(i+1, "parse_url4");
-	    if ( !path ){
-		if ( login ) free(login);
+	    path = xmalloc(i+1, "parse_url(): 4");
+	    if ( !path ) {
+		if ( login )    free(login);
 		if ( password ) free(password);
-		if (host) free(host);
-		if (proto)free(proto);
+		if ( host )     free(host);
+		if ( proto )    free(proto);
 		return(-1);
 	    }
 	    memcpy(path, ss, i);
 	    path[i] = 0;
 	}
     } else {
-	path=xmalloc(2, "parse_url5");
-	if ( !path ){
-	    if ( login ) free(login);
+	path=xmalloc(2, "parse_url(): 5");
+	if ( !path ) {
+	    if ( login )    free(login);
 	    if ( password ) free(password);
-	    if (host) free(host);
-	    if (proto)free(proto);
+	    if ( host )     free(host);
+	    if ( proto )    free(proto);
 	    return(-1);
 	}
-	path[0] = '/';path[1] = 0;
+	path[0] = '/'; path[1] = 0;
     }
     if ( httpv ) {
-	httpver = xmalloc(strlen(httpv) + 1, "parse_url, httpver");
+	httpver = xmalloc(strlen(httpv) + 1, "parse_url(): httpver");
 	if ( !httpver ) {
 	    if ( login ) free(login);
 	    if ( password ) free(password);
@@ -1248,7 +1265,7 @@ u_short	pval;
 	goto only_host_here;
     }
     p_len = ss - src;
-    proto = xmalloc(p_len+1, "parse_url, proto");
+    proto = xmalloc(p_len+1, "parse_raw_url(): proto");
     if ( !proto )
 	return(-1);
     memcpy(proto, src, p_len); proto[p_len] = 0;
@@ -1267,18 +1284,18 @@ only_host_here:
 	if ( se < sa ) {
 	    if ( se ) {
 		*se = 0;
-		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "parse_raw_url(): login");
 		strcpy(login, ss);
 		*se = ':';
 		holder = *(sa);
 		*(sa) = 0;
-		password = xmalloc(ROUND(strlen(se+1)+1, CHUNK_SIZE), "password");
+		password = xmalloc(ROUND(strlen(se+1)+1, CHUNK_SIZE), "parse_raw_url(): password");
 		strcpy(password, se+1);
 	    	*(sa) = holder;
 	    } else {
 		holder = *sa;
 		*sa = 0;
-		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+		login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "parse_raw_url(): login2");
 		strcpy(login, ss);
 	        password = NULL;
 		*sa = holder;
@@ -1292,7 +1309,7 @@ only_host_here:
 	    /* login@host:port/path		*/
 	    holder = *sa;
 	    *sa = 0;
-	    login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "login");
+	    login = xmalloc(ROUND(strlen(ss)+1, CHUNK_SIZE), "parse_raw_url(): login3");
 	    strcpy(login, ss);
 	    password = NULL;
 	    *sa = holder;
@@ -1306,23 +1323,23 @@ normal:;
 	/* port is here */
 	he = se;
 	h_len = se-ss;
-	host = xmalloc(h_len+1, "parse_url, host");
+	host = xmalloc(h_len+1, "parse_raw_url(): host");
 	if ( !host ) {
-	    if ( login ) free(login);
+	    if ( login )    free(login);
 	    if ( password ) free(password);
 	    free(proto);
 	    return(-1);
 	}
 	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
 	se++;
-	for(i=0; (i<10) && *se && isdigit(*se); i++,se++ ) {
+	for(i=0; (i<10) && *se && IS_DIGIT(*se); i++,se++ ) {
 	    number[i]=*se;
 	}
 	number[i] = 0;
 	if ( (pval=atoi(number)) )
 		url->port = pval;
 	    else {
-		if ( login ) free(login);
+		if ( login )    free(login);
 		if ( password ) free(password);
 		free(proto);
 		free(host);
@@ -1334,7 +1351,7 @@ normal:;
 	if ( !se )
 	    se = src+strlen(src);
 	h_len = se-ss;
-	host = xmalloc(h_len+1, "parse_url, host");
+	host = xmalloc(h_len+1, "parse_raw_url(): host2");
 	if ( !host ) {
 	    if ( login ) free(login);
 	    if ( password ) free(password);
@@ -1350,27 +1367,27 @@ only_path:
 	ss = se;
 	for(i=0;*se++;i++);
 	if ( i ) {
-	    path = xmalloc(i+1, "parse_url4");
-	    if ( !path ){
-		if ( login ) free(login);
+	    path = xmalloc(i+1, "parse_raw_url(): 4");
+	    if ( !path ) {
+		if ( login )    free(login);
 		if ( password ) free(password);
-		if (host) free(host);
-		if (proto)free(proto);
+		if ( host )     free(host);
+		if ( proto )    free(proto);
 		return(-1);
 	    }
 	    memcpy(path, ss, i);
 	    path[i] = 0;
 	}
     } else {
-	path=xmalloc(2, "parse_url5");
+	path = xmalloc(2, "parse_raw_url(): 5");
 	if ( !path ){
-	    if ( login ) free(login);
+	    if ( login )    free(login);
 	    if ( password ) free(password);
-	    if (host) free(host);
-	    if (proto)free(proto);
+	    if ( host )     free(host);
+	    if ( proto )    free(proto);
 	    return(-1);
 	}
-	path[0] = '/';path[1] = 0;
+	path[0] = '/'; path[1] = 0;
     }
     url->host  = host;
     url->proto = proto;
@@ -1411,10 +1428,11 @@ release_obj(struct mem_obj *obj)
 	obj->refs--;
     pthread_mutex_unlock(&obj->lock);
     if ( obj->refs < 0 ) {
-    	my_log("obj->refs <0 = %d\n", obj->refs);
+    	my_xlog(LOG_DBG|LOG_INFORM, "release_obj(): obj->refs < 0 = %d\n", obj->refs);
 	exit(0);
     }
 }
+
 void
 leave_obj(struct mem_obj *obj)
 {
@@ -1430,11 +1448,11 @@ char			*url_str = NULL;
 struct	url		*url;
 
     if ( pthread_mutex_lock(&obj_chain) ) {
-	fprintf(stderr, "Failed mutex lock in leave\n");
+	fprintf(stderr, "leave_obj(): Failed mutex lock in leave.\n");
  	return;
     }
     if ( pthread_mutex_lock(&hash_table[url_hash].lock) ) {
-	fprintf(stderr, "Failed mutex lock in leave\n");
+	fprintf(stderr, "leave_obj(): Failed mutex lock in leave.\n");
 	pthread_mutex_unlock(&obj_chain);
 	return;
     }
@@ -1442,12 +1460,12 @@ struct	url		*url;
     if ( (obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) && !obj->refs ) {
 	child = obj->child_obj;
 	if ( obj->flags & FLAG_FROM_DISK ) {
-	    my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR, "Must be erased from storage\n");
+	    my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR|LOG_DBG, "leave_obj(): Must be erased from storage.\n");
 	    must_be_erased = TRUE;
 	    url = &obj->url;
 	    urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
 	    urll+= 3 + 1; /* :// + \0 */
-	    url_str = xmalloc(urll, "url_str");
+	    url_str = xmalloc(urll, "leave_obj(): url_str");
 	    if ( obj->doc_type == HTTP_DOC )
 		sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
 	      else
@@ -1471,8 +1489,6 @@ struct	url		*url;
     }
 }
 
-
-
 void
 free_request( struct request *rq)
 {
@@ -1487,13 +1503,19 @@ struct	av	*av, *next;
 	xfree(av);
 	av = next;
     }
-    if ( rq->method ) free(rq->method);
+    if ( rq->method ) free( rq->method );
     if ( rq->original_host ) free(rq->original_host);
     if ( rq->data ) free_container(rq->data);
     if ( rq->redir_mods ) leave_l_string_list(rq->redir_mods);
     if ( rq->cs_to_server_table ) leave_l_string_list(rq->cs_to_server_table);
     if ( rq->cs_to_client_table ) leave_l_string_list(rq->cs_to_client_table);
     if ( rq->matched_acl ) free(rq->matched_acl);
+    IF_FREE(rq->source);
+    IF_FREE(rq->tag);
+    IF_FREE(rq->c_type);
+    IF_FREE(rq->hierarchy);
+    IF_FREE(rq->proxy_user);
+    IF_FREE(rq->original_path);
 }
 
 void
@@ -1545,6 +1567,7 @@ int			modflags = 0;
 	if ( trailer) writet(so, trailer, strlen(trailer), READ_ANSW_TIMEOUT);
     }
 }
+
 int
 in_stop_cache(struct request *rq)
 {
@@ -1563,31 +1586,33 @@ struct	string_list	*l = stop_cache;
 }
 
 void
-increment_clients()
+increment_clients(void)
 {
     if ( !pthread_mutex_lock(&clients_lock) ) {
 	clients_number++;
 	pthread_mutex_unlock(&clients_lock);
     } else {
-	my_log("Can't lock clients_lock in increment.\n");
+	my_xlog(LOG_SEVERE, "increment_clients(): Can't lock clients_lock in increment.\n");
     }
     LOCK_STATISTICS(oops_stat);
 	oops_stat.clients++;
     UNLOCK_STATISTICS(oops_stat);
 }
+
 void
-decrement_clients()
+decrement_clients(void)
 {
     if ( !pthread_mutex_lock(&clients_lock) ) {
 	clients_number--;
 	pthread_mutex_unlock(&clients_lock);
     } else {
-	my_log("Can't lock clients_lock in decrement\n");
+	my_xlog(LOG_SEVERE, "decrement_clients(): Can't lock clients_lock in decrement.\n");
     }
     LOCK_STATISTICS(oops_stat);
 	oops_stat.clients--;
     UNLOCK_STATISTICS(oops_stat);
 }
+
 int
 set_socket_options(int so)
 {
@@ -1605,7 +1630,7 @@ make_purge(int so, struct request *rq)
 {
 struct	mem_obj		*obj;
 struct	output_object	*output;
-char			*res, *result;
+char			*res, *result="<body>Unknown status</body>";
 char			*succ = "200 Purged Successfully";
 char			*fail = "404 Not Found";
 int			newobj;
@@ -1615,20 +1640,23 @@ int			newobj;
     obj = locate_in_mem(&rq->url, AND_USE|AND_PUT, &newobj, rq);
     if ( obj ) {
 	if ( !newobj ) {
-	    my_xlog(LOG_HTTP, "PURGE: Document destroyed\n");
+	    my_xlog(LOG_HTTP|LOG_DBG, "make_purge(): Document destroyed.\n");
 	    res = succ;
 	    result = "<body>Successfully removed</body>\n";
+	    IF_STRDUP(rq->tag, "TCP_HIT");
 	} else {
-	    my_xlog(LOG_HTTP, "PURGE: Document not found\n");
+	    my_xlog(LOG_HTTP|LOG_DBG, "make_purge(): Document not found.\n");
 	    res = fail;
 	    result = "<body>Document not found\n</body>";
+	    IF_STRDUP(rq->tag, "TCP_MISS");
 	}
 	SET(obj->flags, FLAG_DEAD);
 	leave_obj(obj);
     } else {
 	/* not found */
 	res = fail;
-	my_xlog(LOG_HTTP, "PURGE: Document not found\n");
+	my_xlog(LOG_HTTP|LOG_DBG, "make_purge(): Document not found.\n");
+	IF_STRDUP(rq->tag, "TCP_MISS");
     }
     output = malloc(sizeof(*output));
     if ( output ) {
@@ -1645,4 +1673,11 @@ int			newobj;
 	process_output_object(so, output, rq);
 	free_output_obj(output);
     }
+    log_access(0, rq, NULL);
+}
+
+int
+obj_rate(struct mem_obj *obj)
+{
+    return(0);
 }

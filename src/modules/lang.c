@@ -22,6 +22,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -37,7 +38,6 @@ char	module_name[] = "lang" ;
 char	module_info[] = "National languages handling module" ;
 
 static	rwl_t		lang_config_lock;
-static	int		writet_cs(int, char *, int, struct charset*, int);
 static	char		default_charset[64];
 
 static	void		recode_buff(struct buff*, struct charset*);
@@ -76,6 +76,7 @@ mod_config_beg()
     }
     default_charset[0] = 0;
     UNLOCK_LANG_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -95,6 +96,7 @@ charset_t	*cs;
 	}
     }
     UNLOCK_LANG_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -103,13 +105,13 @@ mod_config(char *config)
 char	*p = config;
 
     WRLOCK_LANG_CONFIG ;
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
     if ( !strncasecmp(p, "CharsetAgent", 12) ) {
 	char		*ptr, *agent, *t;
 	struct	charset	*cs = NULL;
 
 	p+=12; t = p;
-	while( agent = (char*)strtok_r(t, " ", &ptr) ) {
+	while( (agent = (char*)strtok_r(t, " ", &ptr)) ) {
 	    t = NULL;
 	    if ( !cs && !(cs = lookup_charset_by_name(charsets, agent))) {
 		cs = add_new_charset(&charsets, agent);
@@ -132,7 +134,7 @@ char	*p = config;
     } else
     if ( !strncasecmp(p, "default_charset", 15) ) {
 	p += 15;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(default_charset, p, sizeof(default_charset)-1);
     } else
     if ( !strncasecmp(p, "CharsetRecodeTable", 18) ) {
@@ -140,7 +142,7 @@ char	*p = config;
 	struct charset	*cs;
 	FILE		*Tf;
 
-	if ( sscanf(p+18, " %80s %128s", &charset, &path) == 2 ) {
+	if ( sscanf(p+18, " %80s %128s", (char*)&charset, (char*)&path) == 2 ) {
 	    verb_printf("<<recodetable for %s: %s>>\n", charset, path);
 	    if ( !(cs=lookup_charset_by_name(charsets, charset)) ) {
 		cs = add_new_charset(&charsets, charset);
@@ -179,27 +181,6 @@ done:
     return(MOD_CODE_OK);
 }
 
-int
-writet_cs(int so, char *buf, int size, struct charset *cs, int tmo)
-{
-unsigned char	*tmpb, *s, *d;
-int		i;
-
-    if ( !cs || !cs->Table ) return(writet(so, buf, size, tmo));
-    tmpb = malloc(size);
-    if ( !tmpb ) return(writet(so, buf, size, tmo));
-    /* recode */
-    for(s=(unsigned char*)buf,d=(unsigned char*)tmpb,i=0;i<size;i++,s++,d++) {
-	if ( *s>=128 ) {
-	    *d=cs->Table[*s-128];
-	} else {
-	    *d=*s;
-	}
-    }
-    writet(so, (char*)tmpb, size, tmo);
-    xfree(tmpb);
-}
-
 /* change content of object, actually not send it */
 int
 output(int so, struct output_object *obj, struct request *rq, int *flags)
@@ -217,13 +198,13 @@ struct	av	*ct_av = NULL;
     if ( !content_type )
 	return(MOD_CODE_OK);
     p = content_type;
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
     if ( strncasecmp(p, "text/html", 9) && strncasecmp(p, "text/plain", 10) )
 	return(MOD_CODE_OK);
     /* parse parameters and return if charset is already here */
     while ( (p=strchr(p, ';')) ) {
 	p++;
-	while( *p && isspace(*p) ) p++;
+	while( *p && IS_SPACE(*p) ) p++;
 	if ( !strncasecmp(p, "charset=", 8) )
 		return(MOD_CODE_OK);
     }

@@ -36,6 +36,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        <sys/stat.h>
 #include        <sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include        <netinet/in.h>
 
@@ -102,14 +103,20 @@ void		process_vary_headers(struct mem_obj*, struct request*);
 void		pump_data(struct mem_obj*, struct request *, int, int);
 int		continue_load(struct request*, int, int, struct mem_obj *);
 int		parent_connect(int, char *, int , struct request *);
+int		parent_connect_silent(int, char *, int, struct request *);
 int		peer_connect(int, struct sockaddr_in*, struct request *);
 int		srv_connect(int, struct url *url, struct request*);
+int		srv_connect_silent(int, struct url *url, struct request*);
 struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
 char*		build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags);
 void		check_new_object_expiration(struct request*, struct mem_obj*);
 char*		check_rewrite_charset(char *, struct request *, struct av *, int*);
 pthread_mutex_t	icp_so_lock;
 int		can_recode_rq_content(struct request*);
+int		is_oops_internal_header(struct av *);
+int		downgrade(struct request *, struct mem_obj *);
+int		content_chunked(struct mem_obj *);
+int		loop_detected(char*);
 
 void
 send_not_cached(int so, struct request *rq, char *headers)
@@ -123,7 +130,7 @@ struct server_answ	answ_state;
 int			delta_tv;
 int			have_code = 0, sent = 0;
 struct mem_obj		*obj;
-int			header_size;
+int			header_size = 0;
 int			recode_request = FALSE, recode_answer = FALSE;
 char			*table = NULL;
 
@@ -132,6 +139,7 @@ char			*table = NULL;
     else if ( rq->meth == METH_POST ) meth="POST";
     else if ( rq->meth == METH_TRACE ) meth="TRACE";
     else if ( rq->meth == METH_HEAD ) meth="HEAD";
+    else if ( rq->meth == METH_OPTIONS ) meth="OPTIONS";
     else if ( rq->meth == METH_PROPFIND ) meth="PROPFIND";
     else if ( rq->meth == METH_PROPPATCH ) meth="PROPPATCH";
     else if ( rq->meth == METH_DELETE ) meth="DELETE";
@@ -144,7 +152,7 @@ char			*table = NULL;
 	return;
     obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
     if ( !obj ) {
-	my_log("Can't create new_obj\n");
+	my_xlog(LOG_SEVERE, "send_not_cached(): Can't create new_obj.\n");
 	goto done;
     }
     bzero(&answ_state, sizeof(answ_state));
@@ -157,9 +165,9 @@ char			*table = NULL;
 
     set_socket_options(server_so);
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl: %s\n", strerror(errno));
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl: %s\n", strerror(errno));
 
     answer = parent_port?build_parent_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER):
 		         build_direct_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER);
@@ -183,7 +191,7 @@ char			*table = NULL;
 	say_bad_request(so, "Can't send", strerror(errno), ERR_TRANSFER, rq);
 	goto done;
     }
-    answer=xmalloc(ANSW_SIZE+1, "send_not_cached");
+    answer = xmalloc(ANSW_SIZE+1, "send_not_cached(): 1");
     if ( !answer ) goto done;
     if ( rq->leave_to_read || rq->data ) {
 	char	*cp = NULL;
@@ -264,7 +272,7 @@ char			*table = NULL;
 		obj->container = new;
 	    }
 	    if ( attach_data(answer, r, obj->container) ) {
-		my_log("attach_data\n");
+		my_xlog(LOG_DBG|LOG_INFORM, "send_not_cached(): attach_data().\n");
 		goto done;
 	    }
 	    check_server_headers(&answ_state, obj, obj->container, rq);
@@ -279,7 +287,7 @@ char			*table = NULL;
 		hdrs_to_send = alloc_buff(512);
 		if ( !hdrs_to_send ) goto done;
 		while(header) {
-	    	/*my_log("Sending ready header '%s'->'%s'\n", header->attr, header->val);*/
+	    	my_xlog(LOG_DBG, "send_not_cached(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
 		    if ( !is_oops_internal_header(header) ) {
 
 			if ( rq->src_charset[0] && rq->cs_to_client_table
@@ -288,7 +296,7 @@ char			*table = NULL;
 				&& is_attr(header, "Content-Type") && header->val ) {
 			    char *s = NULL, *d = NULL, ct_buf[64];
 
-			    /* we change charset only in 'text/*' */
+			    /* we change charset only in 'text / *' */
 			    if ( strlen(header->val) >= sizeof(ct_buf) ) {
 				s = strdup(header->val);
 			    } else {
@@ -297,7 +305,7 @@ char			*table = NULL;
 			    }
 			    if ( s
 			    	&& (d = check_rewrite_charset(s, rq, header, &recode_answer)) ) {
-				my_log("rewriten header='%s'\n", d);
+				my_xlog(LOG_DBG, "send_not_cached(): Rewriten header=`%s'.\n", d);
 				attach_data(d, strlen(d), hdrs_to_send);
 				attach_data("\r\n", 2, hdrs_to_send);
 				free(d);
@@ -369,7 +377,6 @@ char			*table = NULL;
 	    goto done;
     }
 done:
-    if ( obj ) { obj->flags|=FLAG_DEAD; leave_obj(obj);}
     if ( server_so != -1 ) close(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
@@ -379,10 +386,15 @@ done:
     source = parent_port?(TEST(rq->flags, RQ_GO_DIRECT)?"DIRECT":"PARENT"):"DIRECT";
     if ( parent_port ) origin = parent_host;
 	else	       origin = url->host;
-    log_access(delta_tv, &rq->client_sa,
-    	"TCP_MISS", have_code, received,
-	meth, &rq->url, source, "-", origin);
-    my_xlog(LOG_HTTP, "not_cached done\n");
+
+    IF_STRDUP(rq->tag, "TCP_MISS");
+    IF_STRDUP(rq->hierarchy, source);
+    IF_STRDUP(rq->source, origin);
+    rq->code = have_code;
+    rq->received = received;
+    log_access(delta_tv, rq, obj);
+    if ( obj ) { obj->flags|=FLAG_DEAD; leave_obj(obj);}
+    my_xlog(LOG_HTTP|LOG_DBG, "send_not_cached(): not_cached done.\n");
     return;
 }
 
@@ -399,8 +411,8 @@ char			*tcp_tag = "TCP_HIT", *meth;
 #define			ROLE_READER	1
 #define			ROLE_WRITER	2
 #define			ROLE_VALIDATOR	3
-int			role;
-char			*content_type, ctbuf[40], *origin;
+int			role, no_more_logs = FALSE;
+char			*origin;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -417,7 +429,7 @@ char			*content_type, ctbuf[40], *origin;
     now = time(NULL);
     if ( ( obj->flags & ANSW_HAS_EXPIRES ) &&
          	( now < obj->times.expires ) ) {
-	my_xlog(LOG_HTTP, "Document not expired, send from mem\n");
+	my_xlog(LOG_HTTP|LOG_DBG, "send_from_mem(): Document not expired, send from mem.\n");
 	goto prepare_send_mem;
     }
     goto revalidate;
@@ -498,6 +510,7 @@ revalidate:
 	    /* continue load to new_obj */
 	    if ( rq->proto == PROTO_FTP ) {
 		ftp_fill_mem_obj(so, rq, headers, new_obj);
+		no_more_logs = TRUE;
 	    } else
 		continue_load(rq, so, server_so, new_obj);
 	    DECR_WRITERS(new_obj);
@@ -519,7 +532,7 @@ revalidate:
     }
 
 done:
-    my_xlog(LOG_HTTP, "from mem sended\n");
+    my_xlog(LOG_HTTP|LOG_DBG, "send_from_mem(): From mem sended.\n");
     if ( new_obj ) leave_obj(new_obj);
     if ( server_so != -1 ) close(server_so);
     gettimeofday(&stop_tv, NULL);
@@ -529,27 +542,19 @@ done:
 	else		    have_code = 555;
     if ( new_obj ) received = new_obj->size;
          else	   received =     obj->size;
-    if ( (content_type = attr_value(obj->headers, "Content-Type")) ) {
-	char *p;
-	strncpy(ctbuf, content_type, sizeof(ctbuf)-1);
-        p = &ctbuf[0];
-	ctbuf[sizeof(ctbuf)-1] = 0;
-	while (*p) {
-	    if ( isspace(*p) || *p==';' ) {
-		*p = 0;
-		break;
-	    }
-	    p++;
-	}
-	content_type = ctbuf;
-    } else {
-	content_type = "text/html";
+    if ( parent_port && !TEST(rq->flags, RQ_GO_DIRECT) )
+    		origin = parent_host;
+	else
+		origin = obj->url.host;
+
+    if ( !no_more_logs ) {
+	IF_STRDUP(rq->tag, tcp_tag);
+	IF_STRDUP(rq->hierarchy, "NONE");
+	IF_STRDUP(rq->source, origin);
+	rq->code = have_code;
+	rq->received = received;
+	log_access(delta_tv, rq, obj);
     }
-    if ( parent_port ) origin = parent_host;
-	else	       origin = obj->url.host;
-    log_access(delta_tv, &rq->client_sa,
-    	tcp_tag, have_code, received,
-	meth, &rq->url, "NONE", content_type, origin);
     LOCK_STATISTICS(oops_stat);
 	oops_stat.hits0++;
 	oops_stat.hits++;
@@ -562,7 +567,6 @@ send_data_from_obj(struct request *rq, int so, struct mem_obj *obj, int flags)
 {
 int 		r, sended, received, state, send_hot_pos, pass=0, sf=0, ssended;
 struct	buff	*send_hot_buff;
-char		*transfer_encoding;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
 int		convert_charset = FALSE;
 int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
@@ -570,7 +574,7 @@ char		*table = NULL;
 struct	pollarg	pollarg;
 
     downgrade_flags = downgrade(rq, obj);
-    my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
+    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Downgrade flags: %x\n", downgrade_flags);
 
     if ( TEST(downgrade_flags, DOWNGRADE_ANSWER) )
 	downgrade_minor = TRUE;
@@ -578,7 +582,7 @@ struct	pollarg	pollarg;
 	convert_from_chunked = TRUE;
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_data_from_obj(): fcntl: %s\n", strerror(errno));
     sended = 0;
     received = obj->size;
     send_hot_buff = NULL;
@@ -617,7 +621,7 @@ send_ready:
 	    header = header->next;
 	}
 	while(header) {
-	    /*my_log("Sending ready header '%s'->'%s'\n", header->attr, header->val);*/
+	    my_xlog(LOG_DBG, "send_data_from_obj(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
 	    if (   !is_attr(header, "Age:") &&
 		   !is_oops_internal_header(header) &&
 
@@ -632,7 +636,7 @@ send_ready:
 		if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
 		    char *s = NULL, *d = NULL, ct_buf[64];
 
-		    /* we change charset only in 'text/*' */
+		    /* we change charset only in 'text/ *' */
 		    if ( strlen(header->val) >= sizeof(ct_buf) ) {
 			s = strdup(header->val);
 		    } else {
@@ -641,7 +645,7 @@ send_ready:
 		    }
 		    if ( s
 		    	&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
-			my_log("rewriten header='%s'\n", d);
+			my_xlog(LOG_DBG, "send_data_from_obj(): Rewriten header = `%s'.\n", d);
 			attach_data(d, strlen(d), hdrs_to_send);
 			attach_data("\r\n", 2, hdrs_to_send);
 			free(d);
@@ -661,11 +665,11 @@ send_ready:
 	}
 	/* send header from memory */
 	if ( flags & MEM_OBJ_WARNING_110 ) {
-	    my_xlog(LOG_HTTP, "Send Warning: 110 oops Stale document\n");
+	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 110 oops Stale document.\n");
 	    attach_av_pair_to_buff("Warning:", "110 oops Stale document", hdrs_to_send);
 	}
 	if ( flags & MEM_OBJ_WARNING_113 ) {
-	    my_xlog(LOG_HTTP, "Send Warning: 113 oops Heuristic expiration used\n");
+	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 113 oops Heuristic expiration used.\n");
 	    attach_av_pair_to_buff("Warning:", "113 oops Heuristic expiration used", hdrs_to_send);
 	}
 	if ( obj->x_content_length && !content_length_sent ) {
@@ -697,7 +701,7 @@ send_ready:
 #endif
     }
     if ( (state == OBJ_READY) && (sended >= obj->size) ) {
-	my_xlog(LOG_HTTP, "obj is ready\n");
+	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): obj is ready.\n");
 	goto done;
     }
     if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
@@ -713,14 +717,20 @@ send_ready:
 	sf |= RQ_CONVERT_FROM_CHUNKED;
     if ( IS_HUPED(&pollarg) )
 	goto done;
-    if ((r=send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL, table)) ) {
-	my_xlog(LOG_HTTP, "send_data_from_mem: send error: %s\n", strerror(errno));
+    if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL, table)) ) {
+	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %s\n", strerror(errno));
 	goto done;
     }
-    if ( (state == OBJ_READY) && (sended == ssended) )
-	goto done;
     if ( rest_in_chunk == -1 )
 	goto done;
+    if ( (state == OBJ_READY) && (sended == ssended) )
+	goto done;
+    if ( (state == OBJ_INPROGR) && (sended == ssended) ) {
+	/* this must not happen, log it */
+	if ( obj->url.host && obj->url.path )
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_obj(): Impossible event on `%s%s'.\n", obj->url.host, obj->url.path);
+	goto done;
+    }
     if ( !r && convert_from_chunked && !rest_in_chunk ) {
 	/* we sent nothing... this can be because we convert from chunked
 	 * ans we have only part of chunk size value stored in buff. like this:
@@ -759,7 +769,7 @@ struct	buff		*to_server_request = NULL;
 	/* ftp always must be reloaded */
 	new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
 	if ( !new_obj ) {
-	    my_log("Can't create new_obj\n");
+	    my_xlog(LOG_SEVERE, "check_validity(): Can't create new_obj.\n");
 	    goto validate_err;
 	}
 	return(new_obj);
@@ -768,18 +778,18 @@ struct	buff		*to_server_request = NULL;
     /* prepare faked header		*/
     if ( obj->times.last_modified ) {
         if (!mk1123time(obj->times.last_modified, mk1123buff, sizeof(mk1123buff)) ) {
-	    my_log("Can't mk1123time\n");
+	    my_xlog(LOG_SEVERE, "check_validity(): Can't mk1123time.\n");
 	    goto validate_err;
 	}
     }
     else /* No Last-Modified */
     if (!mk1123time(obj->times.date, mk1123buff, sizeof(mk1123buff)) ) {
-	my_log("Can't mk1123time\n");
+	my_xlog(LOG_SEVERE, "check_validity(): Can't mk1123time.\n");
 	goto validate_err;
     }
-    fake_header = xmalloc(19 + strlen(mk1123buff) + 3, "for fake header");
+    fake_header = xmalloc(19 + strlen(mk1123buff) + 3, "check_validity(): for fake header");
     if ( !fake_header ) {
-	my_log("Can't create fake header\n");
+	my_xlog(LOG_SEVERE, "check_validity(): Can't create fake header.\n");
 	goto validate_err;
     }
     sprintf(fake_header, "If-Modified-Since: %s\r\n", mk1123buff);
@@ -790,7 +800,7 @@ struct	buff		*to_server_request = NULL;
 	goto validate_err;
     to_server_request = alloc_buff(2*CHUNK_SIZE);
     if ( !to_server_request ) {
-	my_log("No mem in check_validity\n");
+	my_xlog(LOG_SEVERE, "check_validity(): No mem.\n");
 	goto validate_err;
     }
     r = attach_data(answer, strlen(answer), to_server_request);
@@ -811,19 +821,19 @@ struct	buff		*to_server_request = NULL;
 
     new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
     if ( !new_obj ) {
-	my_log("Can't create new_obj\n");
+	my_xlog(LOG_SEVERE, "check_validity(): Can't create new_obj.\n");
 	goto validate_err;
     }
 
     new_obj->request_time = time(NULL);
     bzero(&answer_stat, sizeof(answer_stat));
-    answer=xmalloc(ANSW_SIZE, "send_from_mem3");
+    answer = xmalloc(ANSW_SIZE, "check_validity(): send_from_mem3");
     if ( !answer ) {
 	goto validate_err;
     }
 
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "check_validity(): fcntl: %s\n", strerror(errno));
     while(1) {
 	struct pollarg pollarg;
 
@@ -831,15 +841,15 @@ struct	buff		*to_server_request = NULL;
 	pollarg.request = FD_POLL_RD;
 	r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 	if ( r < 0  ) {
-	    my_log("select: error on new_obj\n");
+	    my_xlog(LOG_SEVERE, "check_validity(): select: error on new_obj.\n");
 	    goto validate_err;
 	}
 	if ( r == 0 ) {
-	    my_log("select: timed out on new_obj\n");
+	    my_xlog(LOG_SEVERE, "check_validity(): select: timed out on new_obj.\n");
 	    goto validate_err;
 	}
 	if ( IS_HUPED(&pollarg) ) {
-	    my_log("check_validity: server closed connection too early\n");
+	    my_xlog(LOG_SEVERE, "check_validity(): Server closed connection too early.\n");
 	    goto validate_err;
 	}
 	if ( !IS_READABLE(&pollarg) )
@@ -847,21 +857,21 @@ struct	buff		*to_server_request = NULL;
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r <  0 ) {
 	    if ( errno == EAGAIN ) {
-		my_log("Hmm, again select say ready, but read fails\n");
+		my_xlog(LOG_SEVERE, "check_validity(): Hmm, again select say ready, but read fails.\n");
 		continue;
 	    }
-	    my_log("fill_new_obj: select error: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "check_validity(): select error: %s\n", strerror(errno));
 	    goto validate_err;
 	}
 	if ( r == 0 ) {
-	    my_log("check_validity: server closed connection too early\n");
+	    my_xlog(LOG_SEVERE, "check_validity(): Server closed connection too early.\n");
 	    goto validate_err;
 	}
 	if ( !new_obj->container ) {
 		struct	buff *new;
 		new = alloc_buff(CHUNK_SIZE);
 		if ( !new ) {
-		    my_log("Cant create container\n");
+		    my_xlog(LOG_SEVERE, "check_validity(): Can't create container.\n");
 		    goto validate_err;
 		}
 		new_obj->container = new;
@@ -869,11 +879,11 @@ struct	buff		*to_server_request = NULL;
 	if ( !(answer_stat.state & GOT_HDR) ) {
 	    new_obj->size += r;
 	    if ( attach_data(answer, r, new_obj->container) ) {
-		my_log("attach_data error\n");
+		my_xlog(LOG_DBG|LOG_INFORM, "check_validity(): attach_data() error.\n");
 		goto validate_err;
 	    }
 	    if ( check_server_headers(&answer_stat, new_obj, new_obj->container, rq) ) {
-		my_log("check_server_headers\n");
+		my_xlog(LOG_DBG|LOG_INFORM, "check_validity(): check_server_headers().\n");
 		goto validate_err;
 	    }
 	    if ( answer_stat.state & GOT_HDR ) {
@@ -928,21 +938,21 @@ char			*answer = NULL;
 struct	url		*url = &rq->url;
 char			*meth, *source;
 struct	server_answ	answ_state;
-int			received=0, received0 = 0, sended=0, maxfd, resident_size;
+int			received=0, sended=0, maxfd, resident_size;
 struct	buff		*send_hot_buff=NULL;
 int			send_hot_pos=0;
-fd_set			rset, wset;
 struct	timeval		tv, start_tv, stop_tv;
 int			delta_tv;
 int			have_code = 0, pass = 0, rc;
 struct	buff		*to_server_request = NULL;
-char			*content_type, ctbuf[40], origin[MAXHOSTNAMELEN];
+char			origin[MAXHOSTNAMELEN];
 struct	sockaddr_in	peer_sa;
-int			source_type, downgrade_flags;
+int			source_type, downgrade_flags=0;
 int			body_size, header_size, sf = 0, rest_in_chunk = 0;
 char			*table = NULL;
 struct	av		*header = NULL;
 int			convert_charset = FALSE;
+time_t			last_read = global_sec_timer;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -968,8 +978,8 @@ int			convert_charset = FALSE;
 	struct icp_queue_elem *new_qe;
 	struct timeval tv = start_tv;
 	bzero((void*)&peer_sa, sizeof(peer_sa));
-	my_xlog(LOG_HTTP, "sending icp_requests\n");
-	new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"icp_q_e");
+	my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Sending icp requests.\n");
+	new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"fill_mem_obj(): new_qe");
 	if ( !new_qe ) goto icp_failed;
 	bzero(new_qe, sizeof(*new_qe));
 	pthread_cond_init(&new_qe->icpr_cond, NULL);
@@ -992,15 +1002,15 @@ int			convert_charset = FALSE;
 	    /* wait for answers */
 	    if ( pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
 		/* failed */
-		my_xlog(LOG_HTTP, "icp timedout\n");
+		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp timed out.\n");
 	    } else {
 		/* success */
-		my_xlog(LOG_HTTP, "icp_success\n");
+		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp success.\n");
 	    }
 	    new_qe->rq_n = 0;
 	    pthread_mutex_unlock(&new_qe->icpr_mutex);
 	    if ( new_qe->status ) {
-		my_xlog(LOG_HTTP, "Fetch from neighbour\n");
+		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
 		peer_sa = new_qe->peer_sa;
 		source_type = new_qe->type;
 		server_so = peer_connect(so, &new_qe->peer_sa, rq);
@@ -1011,7 +1021,7 @@ int			convert_charset = FALSE;
 		if ( no_direct_connections ) {
 		   /* what now ? */
 		}
-		my_xlog(LOG_HTTP, "Direct\n");
+		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Direct.\n");
 	    }
 	    icp_request_destroy(new_qe);
 	    xfree(new_qe);
@@ -1125,7 +1135,7 @@ int			convert_charset = FALSE;
     }
 
     obj->request_time = time(NULL);
-    answer=xmalloc(ANSW_SIZE+1, "fill_mem_obj2");
+    answer = xmalloc(ANSW_SIZE+1, "fill_mem_obj(): 2");
     if ( !answer ) {
 	obj->flags |= FLAG_DEAD;
 	change_state(obj, OBJ_READY);
@@ -1135,9 +1145,9 @@ int			convert_charset = FALSE;
     bzero(&answ_state, sizeof(answ_state));
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl: %s\n", strerror(errno));
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl: %s\n", strerror(errno));
     while(1) {
 	struct pollarg pollarg[2];
 
@@ -1149,11 +1159,6 @@ int			convert_charset = FALSE;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
 	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
-/*		if ( TEST(obj->flags, ANSW_SHORT_CONTAINER) ) {
-		    SLOWDOWN;
-		    goto ignore_bw_overload;
-		}
-*/
 		r = group_traffic_load(rq_to_group(rq));
 		tv.tv_sec = 0;tv.tv_usec = 0;
 		if ( r < 75 ) /* low load */
@@ -1181,13 +1186,13 @@ int			convert_charset = FALSE;
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
-	    my_log("select: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "fill_mem_obj(): select: %s\n", strerror(errno));
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
 	}
 	if ( r == 0 ) {
-	    my_log("select: timed out\n");
+	    my_xlog(LOG_SEVERE, "fill_mem_obj(): select: timed out.\n");
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
@@ -1204,9 +1209,26 @@ int			convert_charset = FALSE;
 	    if ( rest_in_chunk == -1 ) { /* was last chunk */
 		obj->state = OBJ_READY;
 		change_state_notify(obj);
-		my_log("was last chunk\n");
+		my_xlog(LOG_DBG, "fill_mem_obj(): was last chunk.\n");
 		goto done;
 	    }
+
+	    if ( !rc && (sended == ssended) ) {
+		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
+		    goto read_s;
+		if ( global_sec_timer - last_read > READ_ANSW_TIMEOUT ) {
+		    /* server died on the fly 	*/
+		    my_xlog(LOG_SEVERE, "fill_mem_obj(): server died on the fly.\n");
+		    change_state(obj, OBJ_READY);
+		    obj->flags |= FLAG_DEAD;
+		    goto error;
+		}
+		/* we stay on chunk border, server data not ready - sleep */
+		my_sleep(1);
+		/* and wait again */
+		continue;
+	    }
+
 	    if ( !rc && (sended == ssended) && TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
 		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
 		    goto read_s;
@@ -1216,14 +1238,24 @@ int			convert_charset = FALSE;
 		continue;
 	    }
 
-	    if ( !rc && TEST(sf, RQ_CONVERT_FROM_CHUNKED) && !rest_in_chunk )
-		goto read_s;
+	    if ( !rc && TEST(sf, RQ_CONVERT_FROM_CHUNKED) && !rest_in_chunk ) {
+		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
+		    goto read_s;
+		/* we stay on chunk border, server data not ready - sleep */
+		my_sleep(1);
+		/* and wait again */
+		continue;
+	    }
 
 	    if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
 	    if ((obj->flags & ANSW_KEEP_ALIVE) && obj->content_length) {
 		/* e.g. www.securityfocus.com answer with Connection: Keep-Alive
 		 * even if requested "Close"
 		 */
+		if ( obj->container )
+			header_size = obj->container->used;
+		  else
+			header_size = 0;
 		if ( sended-header_size >= obj->content_length) {
 		    obj->state = OBJ_READY;
 		    change_state_notify(obj);
@@ -1247,7 +1279,7 @@ int			convert_charset = FALSE;
     read_s:
 	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( IS_HUPED(&pollarg[0]) ) {
-		my_log("Connection closed by server\n");
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "fill_mem_obj(): Connection closed by server.\n");
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 		change_state_notify(obj);
@@ -1255,7 +1287,7 @@ int			convert_charset = FALSE;
 	    }
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
-		my_log("select bug(?)\n");
+		my_xlog(LOG_SEVERE, "fill_mem_obj(): select bug(?).\n");
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 		change_state_notify(obj);
@@ -1267,10 +1299,10 @@ int			convert_charset = FALSE;
 	if ( r < 0  ) {
 	    /* Error reading from server */
 	    if ( errno == EAGAIN ) {
-		my_log("Hmm, server_so was ready, but read failed\n");
+		my_xlog(LOG_SEVERE, "fill_mem_obj(): Hmm, server_so was ready, but read failed.\n");
 		continue;
 	    }
-	    my_xlog(LOG_HTTP, "fill_mem_obj: read failed: %s\n", strerror(errno));
+	    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): read failed: %s\n", strerror(errno));
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
@@ -1294,7 +1326,6 @@ int			convert_charset = FALSE;
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 		pollarg.fd = so;
 		pollarg.request = FD_POLL_WR;
-		/*r = select(so+1, NULL, &wset, NULL, &tv);*/
 		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
 		if ( IS_HUPED(&pollarg) )
@@ -1309,11 +1340,12 @@ int			convert_charset = FALSE;
 	    goto done;
 	}
 	/* there is something to read */
+	last_read = global_sec_timer;
 	if ( !obj->container ) {
 	    struct	buff *new;
 	    new = alloc_buff(CHUNK_SIZE);
 	    if ( !new ) {
-		my_log("Cant create container\n");
+		my_xlog(LOG_SEVERE, "fill_mem_obj(): Can't create container.\n");
 		change_state(obj, OBJ_READY);
 		obj->flags |= FLAG_DEAD;
 		goto error;
@@ -1324,14 +1356,14 @@ int			convert_charset = FALSE;
 	    received += r;
 	    obj->size += r;
 	    if ( attach_data(answer, r, obj->container) ) {
-		my_log("attach_data\n");
+		my_xlog(LOG_DBG|LOG_INFORM, "fill_mem_obj(): attach_data().\n");
 		obj->flags |= FLAG_DEAD;
 		change_state(obj, OBJ_READY);
 		goto error;
 	    }
 	    if ( (obj->state < OBJ_INPROGR)
 	         && check_server_headers(&answ_state, obj, obj->container, rq) ) {
-		my_log("check_server_headers\n");
+		my_xlog(LOG_DBG|LOG_INFORM, "fill_mem_obj(): check_server_headers().\n");
 		/*
 		    If we can't parse server header - let client do it.
 		    This can be old server, which can send only content without
@@ -1366,10 +1398,10 @@ int			convert_charset = FALSE;
 		    char	*vary = attr_value(obj->headers, "Vary:" ), *temp_vary;
 
 		    if ( vary && (temp_vary = strdup(vary)) ) {
-			my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+			my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
 			/* 1. skip spaces */
 			p = temp_vary;
-			while ( *p && isspace(*p) ) p++;
+			while ( *p && IS_SPACE(*p) ) p++;
 			t = p;
 			/* split on ',' */
 			while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) ) {
@@ -1377,7 +1409,7 @@ int			convert_charset = FALSE;
 			    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
 
 			    t = NULL;
-			    my_xlog(LOG_HTTP, "Chk hdr: %s\n", p);
+			    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Chk hdr: %s\n", p);
 			    value = attr_value(rq->av_pairs, p);
 			    if ( value ) {
 				/* format and attach */
@@ -1385,7 +1417,7 @@ int			convert_charset = FALSE;
 				if ( a_len <= sizeof(a_buf) ) {
 				    fav = a_buf;
 				} else {
-				    fav = xmalloc(a_len, "");
+				    fav = xmalloc(a_len, "fill_mem_obj(): fav");
 				}
 				if ( fav ) {
 				    sprintf(fav, "%s%s:", pref, p);
@@ -1396,7 +1428,7 @@ int			convert_charset = FALSE;
 			    } /* value */
 			} /* while tokens */
 			if (temp_vary)free(temp_vary);
-			my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+			my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
 		    }
 		}
 		change_state(obj, OBJ_INPROGR);
@@ -1407,7 +1439,7 @@ int			convert_charset = FALSE;
 		    else
 			body_size = 0;
 		downgrade_flags = downgrade(rq, obj);
-		my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
+		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Downgrade flags: %x\n", downgrade_flags);
 		hdrs_to_send = alloc_buff(512); /* most headers fit this (?) */
 		if ( !hdrs_to_send ) goto error;
 		header = obj->headers;
@@ -1418,7 +1450,7 @@ int			convert_charset = FALSE;
 		    header = header->next;
 		}
 		while(header) {
-	    	/*my_log("Sending ready header '%s'->'%s'\n", header->attr, header->val);*/
+	    	my_xlog(LOG_DBG, "fill_mem_obj(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
 	    	if ( 
 			/* we must not send Tr.-Enc. and Cont.-Len. if we convert
 			 * from chunked							*/
@@ -1429,7 +1461,7 @@ int			convert_charset = FALSE;
 			if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
 			    char *s = NULL, *d = NULL, ct_buf[64];
 
-			    /* we change charset only in 'text/*' */
+			    /* we change charset only in 'text/ *' */
 			    if ( strlen(header->val) >= sizeof(ct_buf) ) {
 				s = strdup(header->val);
 			    } else {
@@ -1438,7 +1470,7 @@ int			convert_charset = FALSE;
 			    }
 			    if ( s
 			    	&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
-				my_log("rewriten header='%s'\n", d);
+				my_xlog(LOG_DBG, "fill_mem_obj(): Rewriten header = `%s'.\n", d);
 				attach_data(d, strlen(d), hdrs_to_send);
 				attach_data("\r\n", 2, hdrs_to_send);
 				free(d);
@@ -1491,6 +1523,7 @@ int			convert_charset = FALSE;
 				   READ_ANSW_TIMEOUT);
 		    }
 		    pump_data(obj, rq, so, server_so);
+		    received = rq->received;
 		    goto done1;
 		}
 	    }
@@ -1498,7 +1531,7 @@ int			convert_charset = FALSE;
 	    body_size += r;
 	    /* store data in hot_buff */
 	    if ( store_in_chain(answer, r, obj) ) {
-		my_log("Can't store\n");
+		my_xlog(LOG_SEVERE, "fill_mem_obj(): Can't store.\n");
 		obj->flags |= FLAG_DEAD;
 		change_state(obj, OBJ_READY);
 		goto error;
@@ -1506,11 +1539,10 @@ int			convert_charset = FALSE;
 	    received += r;
 	    obj->size += r;
 	    change_state_notify(obj);
-        rcv_d:;
 	}
     }
 error:
-    my_xlog(LOG_HTTP, "fill_mem_obj: load error\n");
+    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): load error.\n");
     if ( server_so != -1 ) close(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
@@ -1519,26 +1551,12 @@ error:
     if ( obj->status_code ) have_code = obj->status_code;
 	else		    have_code = 555;
 
-    if ( (content_type = attr_value(obj->headers, "Content-Type")) ) {
-	char *p;
-	strncpy(ctbuf, content_type, sizeof(ctbuf)-1);
-        p = &ctbuf[0];
-	ctbuf[sizeof(ctbuf)-1] = 0;
-	while (*p) {
-	    if ( isspace(*p) || *p==';' ) {
-		*p = 0;
-		break;
-	    }
-	    p++;
-	}
-	content_type = ctbuf;
-    } else {
-	content_type = "text/html";
-    }
-
-    log_access(delta_tv, &rq->client_sa,
-    	"TCP_ERROR", have_code, received,
-	meth, &rq->url, source, content_type,origin);
+    IF_STRDUP(rq->tag, "TCP_ERROR");
+    IF_STRDUP(rq->source, origin);
+    IF_STRDUP(rq->hierarchy, source);
+    rq->code = have_code;
+    rq->received = received;
+    log_access(delta_tv, rq, obj);
     DECR_WRITERS(obj);
     return;
 done:
@@ -1551,7 +1569,7 @@ done:
     obj->flags |= FLAG_DEAD;
     /* if object too large remove it right now */
     if ( resident_size > maxresident ) {
-	my_xlog(LOG_HTTP, "Obj is too large - remove it\n");
+	my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Obj is too large - remove it.\n");
 	obj->flags |= FLAG_DEAD;
     } else {
 	obj->resident_size = resident_size;
@@ -1559,7 +1577,7 @@ done:
     }
 
 done1:
-    my_xlog(LOG_HTTP, "loaded successfully: received: %d\n", received);
+    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Loaded successfully: received: %d\n", received);
     if ( server_so != -1 ) close(server_so);
     if ( answer ) free(answer);
     gettimeofday(&stop_tv, NULL);
@@ -1567,25 +1585,12 @@ done1:
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
     if ( obj->status_code ) have_code = obj->status_code;
 	else		    have_code = 555;
-    if ( (content_type = attr_value(obj->headers, "Content-Type")) ) {
-	char *p;
-	strncpy(ctbuf, content_type, sizeof(ctbuf)-1);
-        p = &ctbuf[0];
-	ctbuf[sizeof(ctbuf)-1] = 0;
-	while (*p) {
-	    if ( isspace(*p) || *p==';' ) {
-		*p = 0;
-		break;
-	    }
-	    p++;
-	}
-	content_type = ctbuf;
-    } else {
-	content_type = "text/html";
-    }
-    log_access(delta_tv, &rq->client_sa,
-    	"TCP_MISS", have_code, received,
-	meth, &rq->url, source, content_type,origin);
+    IF_STRDUP(rq->tag, "TCP_MISS");
+    IF_STRDUP(rq->hierarchy, source);
+    IF_STRDUP(rq->source, origin);
+    rq->code = have_code;
+    rq->received = received;
+    log_access(delta_tv, rq, obj);
     DECR_WRITERS(obj);
     return;
 }
@@ -1596,9 +1601,8 @@ continue_load(struct request *rq, int so, int server_so, struct mem_obj *obj)
 int			received=0, received0 = 0, sended=0, maxfd, pass=0, ssended, sf=0;
 struct	buff		*send_hot_buff;
 int			send_hot_pos;
-fd_set			rset, wset;
 struct	timeval		tv;
-int			r, rest_in_chunk = 0, downgrade_flags = 0;
+int			r, rc, rest_in_chunk = 0, downgrade_flags = 0;
 char			*answer=NULL;
 struct	av		*header;
 char			*table = NULL;
@@ -1610,7 +1614,7 @@ int			convert_charset = FALSE;
     send_hot_pos = 0;
 
     downgrade_flags = downgrade(rq, obj);
-    my_xlog(LOG_HTTP, "Downgrade flags: %x\n", downgrade_flags);
+    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Downgrade flags: %x\n", downgrade_flags);
     header = obj->headers;
     if ( !header ) goto error ;
     hdrs_to_send = alloc_buff(512);
@@ -1630,7 +1634,7 @@ int			convert_charset = FALSE;
 	    if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
 		char *s = NULL, *d = NULL, ct_buf[64];
 
-		/* we change charset only in 'text/*' */
+		/* we change charset only in 'text/ *' */
 		if ( strlen(header->val) >= sizeof(ct_buf) ) {
 		    s = strdup(header->val);
 		} else {
@@ -1639,7 +1643,7 @@ int			convert_charset = FALSE;
 		}
 		if ( s
 			&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
-		    my_log("rewriten header='%s'\n", d);
+		    my_xlog(LOG_DBG, "continue_load(): Rewriten header = `%s'.\n", d);
 		    attach_data(d, strlen(d), hdrs_to_send);
 		    attach_data("\r\n", 2, hdrs_to_send);
 		    free(d);
@@ -1677,15 +1681,15 @@ int			convert_charset = FALSE;
     if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) sf |= RQ_HAS_BANDWIDTH;
     if ( !(obj->flags & ANSW_NO_STORE) )
 	obj->flags &= ~ANSW_NO_CACHE;
-    answer = xmalloc(ANSW_SIZE+1, "continue_load1");
+    answer = xmalloc(ANSW_SIZE+1, "continue_load(): 1");
     if ( ! answer )  {
-	my_log("continue_load: no mem\n");
+	my_xlog(LOG_SEVERE, "continue_load(): no mem.\n");
 	change_state(obj, OBJ_READY);
 	obj->flags |= FLAG_DEAD;
 	goto error;
     }
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "continue_load(): fcntl: %s\n", strerror(errno));
     while(1) {
 	struct	pollarg pollarg[2];
 
@@ -1721,60 +1725,69 @@ int			convert_charset = FALSE;
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
-	    my_log("select: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "continue_load(): select: %s\n", strerror(errno));
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
 	}
 	if ( r == 0 ) {
-	    my_log("select: timed out\n");
+	    my_xlog(LOG_SEVERE, "continue_load(): select: timed out.\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
 	}
 	if ( (so != -1) && (IS_WRITEABLE(&pollarg[1])||IS_HUPED(&pollarg[1])) ) {
-	   r--;
-	   if ( IS_HUPED(&pollarg[1]) ) {
+	    r--;
+	    if ( IS_HUPED(&pollarg[1]) ) {
 		so = -1;
 		goto are_we_alone;
-	   }
-	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table) ) {
+	    }
+	    ssended = sended;
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) ) {
 		so = -1;
 		goto are_we_alone;
-	   }
-	   if ( rest_in_chunk == -1 ) {
-		my_log("We sent last chunk, rec-sent=%d\n", received-sended);
+	    }
+	    if ( !rc && (sended == ssended) && TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
+		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
+		    goto read_s;
+		/* we stay on chunk border, server data not ready - sleep */
+		my_sleep(1);
+		/* and wait again */
+		continue;
+	    }
+	    if ( rest_in_chunk == -1 ) {
+		my_xlog(LOG_DBG, "continue_load(): We sent last chunk, rec-sent = %d\n", received-sended);
 		change_state(obj, OBJ_READY);
 		goto done;
-	   }
-	   if ( TEST(obj->flags, ANSW_KEEP_ALIVE) && obj->content_length) {
+	    }
+	    if ( TEST(obj->flags, ANSW_KEEP_ALIVE) && obj->content_length) {
 		if ( sended >= obj->container->used + obj->content_length ) {
 		    change_state(obj, OBJ_READY);
 		    goto done;
 		}
-	   }
+	    }
 	}
    are_we_alone:
 	if ( so == -1 ) {
 	    lock_obj(obj);
 	    if ( (obj->refs <= 1) && !FORCE_COMPLETION(obj) ) /* we are only who refers to this obj */ {
-		my_log("we alone: %d\n", obj->refs);
+		my_xlog(LOG_DBG, "continue_load(): We alone: %d\n", obj->refs);
 		obj->state = OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 	    }
 	    unlock_obj(obj);
-	    my_xlog(LOG_HTTP, "fill_mem_obj: Send failed: %s\n", strerror(errno));
+	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Send failed: %s\n", strerror(errno));
 	    if ( obj->state == OBJ_READY ) {
 		change_state_notify(obj);
 		goto error;	/* no one heard */
 	    }
-	    my_xlog(LOG_HTTP, "Continue to load - we are not alone\n");
+	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Continue to load - we are not alone.\n");
 	}
     read_s:;
 	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
-		my_log("select bug(?)\n");
+		my_xlog(LOG_SEVERE, "continue_load(): select bug(?).\n");
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 		change_state_notify(obj);
@@ -1785,10 +1798,10 @@ int			convert_charset = FALSE;
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r < 0  ) {
 	    if ( errno == EAGAIN)  {
-		my_log("Hmm in continue load\n");
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "continue_load(): Hmm in continue load.\n");
 		continue;
 	    }
-	    my_xlog(LOG_HTTP, "fill_mem_obj: Read failed: %s\n", strerror(errno));
+	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Read failed: %s\n", strerror(errno));
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -1824,7 +1837,7 @@ int			convert_charset = FALSE;
 	}
 	/* store data in hot_buff */
 	if ( store_in_chain(answer, r, obj) ) {
-	    my_log("Can't store\n");
+	    my_xlog(LOG_SEVERE, "continue_load(): Can't store.\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -1849,7 +1862,6 @@ send_data_from_buff(int so, struct buff **hot, int *pos, int *sended)
 {
 int		r, to_send;
 struct	buff	*b = *hot;
-fd_set		wset;
 struct	timeval tv;
 struct	pollarg	pollarg;
 
@@ -1865,7 +1877,7 @@ do_it:
 	goto do_it;
     }
     if ( to_send < 0 ) {
-	my_log("What the fuck? to_send = %d\n", to_send);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff(): What the fuck? to_send = %d\n", to_send);
 	return(-1);
     }
     tv.tv_sec = READ_ANSW_TIMEOUT; tv.tv_usec = 0 ;
@@ -1896,8 +1908,8 @@ do_it:
 int
 send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
 {
-int		r, to_send, cz_here, faked_sent, chunk_size;
-struct	buff	*b = *hot, *t = NULL, *nt;
+int		r, to_send, cz_here, faked_sent, chunk_size, ss,sp;
+struct	buff	*b = *hot;
 char		*cb, *ce, *cd;
 char		ch_sz[16];	/* buffer to collect chunk size	*/
 u_char		recode_buff[2048];
@@ -1906,7 +1918,7 @@ char		*source;
     if ( !*hot )
 	return(-1);
     if ( TEST(flags, RQ_CONVERT_FROM_CHUNKED) && !rest_in_chunk ) {
-	my_log("Check yourself: sending chunked in send_data_from_buff\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): Check yourself: sending chunked in send_data_from_buff.\n");
 	return(-1);
     }
     if ( TEST(flags, RQ_CONVERT_FROM_CHUNKED ) )
@@ -1922,7 +1934,7 @@ do_it:
 	goto do_it;
     }
     if ( to_send < 0 ) {
-	my_log("What the fuck1? to_send = %d\n", to_send);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck1? to_send = %d\n", to_send);
 	return(-1);
     }
     /** send no more than 512 bytes at once if we control bandwith
@@ -1976,7 +1988,9 @@ do_it_chunked:
 	cz_here = FALSE;
 	cd = ch_sz;
 	*cd = 0;
-	while ( ( cb < ce ) && isspace(*cb) ) {
+	ss = *sended;
+	sp = *pos;
+	while ( ( cb < ce ) && IS_SPACE(*cb) ) {
 	    cb++;
 	    (*sended)++;
 	    (*pos)++;
@@ -1989,6 +2003,8 @@ do_it_chunked:
 		*sended += faked_sent;
 		goto send_chunked;
 	    } else {
+		*sended = sp;
+		*pos = sp;
 		return(0);
 	    }
 	}
@@ -2017,14 +2033,14 @@ do_it_chunked:
 	    }
 	}
 	if ( cz_here ) {
-	    /*my_xlog(LOG_HTTP, "Got chunk size: %s\n", ch_sz);*/
+	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_buff_no_wait(): Got chunk size: %s\n", ch_sz);
 	    *hot = b;
 	    *pos = cb - b->data;
 	    *sended += faked_sent;
 	    cd = ch_sz;
 	    r = sscanf(ch_sz, "%x", &chunk_size);
 	    if ( r != 1) {
-		my_log("no cs in %s\n", ch_sz);
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): No cs in %s\n", ch_sz);
 		return(-1);
 	    }
 	    if ( !chunk_size ) {
@@ -2032,7 +2048,7 @@ do_it_chunked:
 		*rest_in_chunk = -1;
 		return(0);
 	    }
-	    /*my_xlog(LOG_HTTP, "Got chunk size: %d\n", chunk_size);*/
+	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_buff_no_wait(): Got chunk size: %d\n", chunk_size);
 	    *rest_in_chunk = chunk_size;
 	    if ( obj ) {
 		obj->x_content_length_sum += chunk_size;
@@ -2059,7 +2075,7 @@ do_it_chunked:
 	    goto send_chunked;
  	}
    	if ( to_send < 0 ) {
-	    my_log("What the fuck2? to_send = %d\n", to_send);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck2? to_send = %d\n", to_send);
 	    return(-1);
 	}
 	if ( TEST(flags, RQ_HAS_BANDWIDTH) ) to_send = MIN(to_send, 512);
@@ -2083,6 +2099,8 @@ do_it_chunked:
 	} else
 	    source = b->data+*pos;
 	r = send(so, source, to_send, 0);
+	if ( r == 0 )
+	    return(-1);
 	if ((r < 0) && (errno == EWOULDBLOCK) ) {
 	    return(0);
 	}
@@ -2222,9 +2240,9 @@ int	r;
 	return(writet(so, CRLF, 2, READ_ANSW_TIMEOUT));
     }
     if ( !val ) return(-1);
-    buf = xmalloc(strlen(attr) + 1 + strlen(val) + 3,"send_av_pair");
+    buf = xmalloc(strlen(attr) + 1 + strlen(val) + 3, "send_av_pair(): 1");
     if ( !buf ) {
-	my_log("No mem at send_av_pair\n");
+	my_xlog(LOG_SEVERE, "send_av_pair(): No mem at send_av_pair.\n");
 	return(-1);
     }
     sprintf(buf, "%s %s\r\n", attr, val);
@@ -2239,11 +2257,11 @@ format_av_pair(char* attr, char* val)
 char	*buf;
 
     if ( *attr )
-	buf = xmalloc(strlen(attr) + 1 + strlen(val) + 3,"send_av_pair");
+	buf = xmalloc(strlen(attr) + 1 + strlen(val) + 3, "format_av_pair(): 1");
     else
-	buf = xmalloc(3,"send_av_pair");
+	buf = xmalloc(3, "format_av_pair(): 2");
     if ( !buf ) {
-	my_log("No mem at send_av_pair\n");
+	my_xlog(LOG_SEVERE, "format_av_pair(): No mem at send_av_pair.\n");
 	return(NULL);
     }
     if ( *attr )
@@ -2266,15 +2284,15 @@ time_t	corrected_initial_age, resident_time, current_age;
     resident_time = 		time(NULL) - obj->response_time;
     current_age = 		corrected_initial_age + resident_time;
 
-/*    my_log("obj->times.date: %d\n", obj->times.date);
-    my_log("obj->response_time: %d\n", obj->response_time);
-    my_log("apparent_age: %d\n", apparent_age);
-    my_log("corrected_received_age: %d\n", corrected_received_age);
-    my_log("responce_delay: %d\n", response_delay);
-    my_log("corrected_initial_age: %d\n", corrected_initial_age);
-    my_log("resident_time: %d\n", resident_time);
-    my_log("current_age: %d\n", current_age);
-*/
+    my_xlog(LOG_DBG, "current_obj_age(): obj->times.date: %d\n", obj->times.date);
+    my_xlog(LOG_DBG, "current_obj_age(): obj->response_time: %d\n", obj->response_time);
+    my_xlog(LOG_DBG, "current_obj_age(): apparent_age: %d\n", apparent_age);
+    my_xlog(LOG_DBG, "current_obj_age(): corrected_received_age: %d\n", corrected_received_age);
+    my_xlog(LOG_DBG, "current_obj_age(): responce_delay: %d\n", response_delay);
+    my_xlog(LOG_DBG, "current_obj_age(): corrected_initial_age: %d\n", corrected_initial_age);
+    my_xlog(LOG_DBG, "current_obj_age(): resident_time: %d\n", resident_time);
+    my_xlog(LOG_DBG, "current_obj_age(): current_age: %d\n", current_age);
+
     return(current_age);
 }
 /* return positive freshness time if got from headers
@@ -2311,7 +2329,7 @@ struct	sockaddr_in 	server_sa;
 	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
 	return(-1);
     }
-    bind_server_so(server_so);
+    bind_server_so(server_so, rq);
     if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
 	say_bad_request(client_so, "Can't translate name to address", url->host, ERR_DNS_ERR, rq);
 	close(server_so);
@@ -2347,7 +2365,7 @@ struct	sockaddr_in 	server_sa;
     if ( server_so == -1 ) {
 	return(-1);
     }
-    bind_server_so(server_so);
+    bind_server_so(server_so, rq);
     if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
 	close(server_so);
 	return(-1);
@@ -2390,7 +2408,7 @@ struct	sockaddr_in	dst_sa;
 	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
 	return(-1);
     }
-    bind_server_so(server_so);
+    bind_server_so(server_so, rq);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
 	say_bad_request(client_so, "Can't connect to parent", strerror(errno), ERR_TRANSFER, rq);
@@ -2426,7 +2444,7 @@ struct	sockaddr_in	dst_sa;
     if ( server_so == -1 ) {
 	return(-1);
     }
-    bind_server_so(server_so);
+    bind_server_so(server_so, rq);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
 	close(server_so);
@@ -2440,13 +2458,13 @@ peer_connect(int client_so, struct sockaddr_in *peer_sa, struct request *rq)
 {
 int 			server_so = -1, r;
 
-    my_xlog(LOG_HTTP, "Connecting to peer\n");
+    my_xlog(LOG_HTTP|LOG_DBG, "Connecting to peer\n");
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	say_bad_request(client_so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
 	return(-1);
     }
-    bind_server_so(server_so);
+    bind_server_so(server_so, rq);
     r = connect(server_so, (struct sockaddr*)peer_sa, sizeof(*peer_sa));
     if ( r == -1 ) {
 	say_bad_request(client_so, "Can't connect to parent", strerror(errno), ERR_TRANSFER, rq);
@@ -2475,7 +2493,7 @@ int	via_inserted = FALSE;
     if ( !tmpbuff ) return(NULL);
     rlen = strlen(meth) + 1/*sp*/ + strlen(url->path) + 1/*sp*/ +
            strlen(httpv) + 2/* \r\n */;
-    answer = xmalloc(ROUND(rlen+1,CHUNK_SIZE), "send_not_cached"); /* here answer is actually *request* buffer */
+    answer = xmalloc(ROUND(rlen+1,CHUNK_SIZE), "build_direct_request(): 1"); /* here answer is actually *request* buffer */
     if ( !answer )
 	goto fail;
     sprintf(answer, "%s %s %s\r\n", meth, url->path, httpv);
@@ -2500,11 +2518,16 @@ int	via_inserted = FALSE;
 	    /* attach my Via: */
 	    if ( (fav = format_av_pair(av->attr, av->val)) ) {
 		char	*buf;
+
 		buf = strchr(fav, '\r');
 		if ( buf ) *buf = 0;
 		if ( !buf ) {
 		    buf = strchr(fav, '\n');
 		    if ( buf ) *buf = 0;
+		}
+		if ( loop_detected(fav) ) {
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "build_direct_request(): Loop detected: %s\n", fav);
+		    goto fail;
 		}
 		/* ", host_name:port (oops ver)" */
 		buf = malloc(strlen(fav)+2+strlen(host_name)+7+10+strlen(version)+2+1);
@@ -2630,7 +2653,7 @@ struct	av	*av;
 	strlen(url->path) + 1/*sp*/ +
 	strlen(httpv) + 2/* \r\n */;
 
-    answer = xmalloc(ROUND(rlen+1, CHUNK_SIZE), "send_not_cached"); /* here answer is actually *request* buffer */
+    answer = xmalloc(ROUND(rlen+1, CHUNK_SIZE), "build_parent_request(): 1"); /* here answer is actually *request* buffer */
     if ( !answer )
 	return NULL;
 
@@ -2667,6 +2690,10 @@ struct	av	*av;
 		if ( !buf ) {
 		    buf = strchr(fav, '\n');
 		    if ( buf ) *buf = 0;
+		}
+		if ( loop_detected(fav) ) {
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "build_parent_request(): Loop detected: %s\n", fav);
+		    goto fail;
 		}
 		/* ", host_name:port (oops ver)" */
 		buf = malloc(strlen(fav)+2+strlen(host_name)+7+10+strlen(version)+2+1);
@@ -2751,12 +2778,13 @@ char	*transfer_encoding = NULL;
 	if ( obj->headers )
 	    transfer_encoding = attr_value(obj->headers, "Transfer-Encoding");
 	if ( transfer_encoding && !strncasecmp("chunked", transfer_encoding, 7)) {
-	    my_xlog(LOG_HTTP, "Turn on Chunked Gateway\n");
+	    my_xlog(LOG_HTTP|LOG_DBG, "downgrade(): Turn on Chunked Gateway.\n");
 	    res |= UNCHUNK_ANSWER;
 	}
     }
     return(res);
 }
+
 void
 process_vary_headers(struct mem_obj *obj, struct request *rq)
 {
@@ -2767,10 +2795,10 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 	char	*vary = attr_value(obj->headers, "Vary:" ), *temp_vary;
 
 	if ( vary && (temp_vary = strdup(vary)) ) {
-	    my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+	    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
 	    /* 1. skip spaces */
 	    p = temp_vary;
-	    while ( *p && isspace(*p) ) p++;
+	    while ( *p && IS_SPACE(*p) ) p++;
 		t = p;
 		/* split on ',' */
 		while ( (p = (char*)strtok_r(t, " ,", &tok_ptr)) ) {
@@ -2778,7 +2806,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 		    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
 
 		    t = NULL;
-		    my_xlog(LOG_HTTP, "Chk hdr: %s\n", p);
+		    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Chk hdr: %s\n", p);
 		    value = attr_value(rq->av_pairs, p);
 		    if ( value ) {
 			/* format and attach */
@@ -2786,7 +2814,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 			if ( a_len <= sizeof(a_buf) ) {
 			    fav = a_buf;
 			} else {
-			    fav = xmalloc(a_len, "");
+			    fav = xmalloc(a_len, "process_vary_headers(): fav");
 			}
 			if ( fav ) {
 			    sprintf(fav, "%s%s:", pref, p);
@@ -2796,10 +2824,11 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 		    } /* value */
 		} /* while tokens */
 	    if (temp_vary)free(temp_vary);
-	    my_xlog(LOG_HTTP, "Vary=%s\n", vary);
+	    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
 	 }
     }
 }
+
 void
 check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 {
@@ -2856,6 +2885,7 @@ check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 	    }
 	}
 }
+
 char*
 check_rewrite_charset(char *s, struct request *rq, struct av *header, int* convert_charset)
 {
@@ -2881,10 +2911,10 @@ int	dsize = 0;
 		goto not_text;
 	}
 	t = NULL;
-	my_log("token: '%s'\n", p);
-	while ( *p && isspace(*p) ) p++;
+	my_xlog(LOG_DBG, "check_rewrite_charset(): Token: `%s'.\n", p);
+	while ( *p && IS_SPACE(*p) ) p++;
 	if ( !strncasecmp(p, "charset=", 8) ) {
-	    my_log("Alter charset from %s to %s\n",
+	    my_xlog(LOG_DBG|LOG_INFORM, "check_rewrite_charset(): Alter charset from `%s' to `%s'.\n",
 	    	   p+8, rq->src_charset);
 	    strncat(d, "; charset=", dsize-strlen(d)-1);
 	    strncat(d, rq->src_charset, dsize-strlen(d)-1);
@@ -2907,10 +2937,10 @@ char	*cont_type;
     if ( rq && rq->av_pairs ) {
 	cont_type = attr_value(rq->av_pairs, "Content-Type:");
 	if ( cont_type ) {
-	    my_log("rq->content_type = %s\n", cont_type);
+	    my_xlog(LOG_DBG|LOG_INFORM, "can_recode_rq_content(): rq->content_type = %s\n", cont_type);
 	    res = TRUE;
 	} else {
-	    my_log("No cont type in rq\n");
+	    my_xlog(LOG_DBG|LOG_INFORM, "can_recode_rq_content(): No cont type in rq.\n");
 	    res = TRUE;
 	}
     }
@@ -2933,7 +2963,7 @@ struct	pollarg pollarg[2];
 	if ( r <= 0) {
 	    goto done;
 	}
-	if ( IS_HUPED(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
+	if ( IS_HUPED(&pollarg[0]) || IS_HUPED(&pollarg[1]) )
 	    goto done;
 	if ( IS_READABLE(&pollarg[0]) ) {
 	    char b[1024];
@@ -2943,6 +2973,7 @@ struct	pollarg pollarg[2];
 		goto sel_again;
 	    if ( r <= 0 )
 		goto done;
+	    if ( rq ) rq->received += r;
 	    if ( rq->cs_to_client_table
 			&& rq->cs_to_client_table->list
 			&& rq->cs_to_client_table->list->string)
@@ -2975,4 +3006,23 @@ struct	pollarg pollarg[2];
     }
 done:
     return;
+}
+
+/* form out Via: value and check if it is already in request via */
+int
+loop_detected(char *rq_via)
+{
+char	*buf;
+
+    if ( !rq_via ) return(FALSE);
+    buf = malloc(strlen(host_name) + 10 + strlen(version) +8 + 1);
+    if ( !buf )
+	return(FALSE);
+    sprintf(buf, "%s:%d (Oops %s)" , host_name, http_port, version);
+    if ( strstr(rq_via, buf) ) {
+	free(buf);
+	return(TRUE);
+    }
+    free(buf);
+    return(FALSE);
 }

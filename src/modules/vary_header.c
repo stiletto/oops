@@ -22,6 +22,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -89,7 +90,6 @@ struct	header_action	*a, *n;
 int
 mod_config_beg()
 {
-struct	header_action	*a, *n;
     WRLOCK_VARY_CONFIG ;
     if ( actions ) {
 	free_act_list(actions);
@@ -100,6 +100,7 @@ struct	header_action	*a, *n;
 	default_action = NULL;
     }
     UNLOCK_VARY_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -108,6 +109,7 @@ mod_config_end()
 
     WRLOCK_VARY_CONFIG ;
     UNLOCK_VARY_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -118,18 +120,18 @@ struct	header_action	*new;
 
     WRLOCK_VARY_CONFIG ;
 
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
     /* first field must be header name */
     header = p;
-    while ( *p && !isspace(*p) ) p++;
+    while ( *p && !IS_SPACE(*p) ) p++;
     if ( *p ) {
 	*p = 0;
-	verb_printf("header: '%s'\n", header);
+	verb_printf("header: `%s'.\n", header);
 	/* now we must have action */
 	p++;
-	while( *p && isspace(*p) ) p++;
+	while( *p && IS_SPACE(*p) ) p++;
 	action = p;
-	verb_printf("action: '%s'\n", action);
+	verb_printf("action: `%s'.\n", action);
 	if ( *p ) {
 	    if ( !strcasecmp(action, "ignore") )
 		act = ACTION_IGNORE;
@@ -157,7 +159,6 @@ struct	header_action	*new;
 	    }
 	}
     }
-done:
     UNLOCK_VARY_CONFIG ;
     return(MOD_CODE_OK);
 }
@@ -178,7 +179,6 @@ int			matched = TRUE, agents_equal;
     RDLOCK_VARY_CONFIG ;
 
     while ( curr ) {
-	char	hdr_buff[128];
 
 	if ( curr->action == ACTION_IGNORE ) {
 	    curr = curr->next;

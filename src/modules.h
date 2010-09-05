@@ -25,6 +25,7 @@
 #define	MOD_LOAD(m)		(m->general.load)
 #define	MOD_UNLOAD(m)		(m->general.unload)
 #define	MOD_CONFIG(m)		(m->general.config)
+#define	MOD_RUN(m)		(m->general.mod_run)
 #define	MOD_CONFIG_BEG(m)	(m->general.config_beg)
 #define	MOD_CONFIG_END(m)	(m->general.config_end)
 
@@ -36,7 +37,7 @@ struct	general_module {
 	struct general_module	*next;
 	void			*handle;
 	char			name[MODNAMELEN];
-	int			(*load)();
+	int			(*load)(void);
 	int			(*unload)();
 	int			(*config_beg)();
 	int			(*config_end)();
@@ -44,10 +45,13 @@ struct	general_module {
 	struct general_module	*next_global;
 	int			type;
 	char			info[MODINFOLEN];
+	int			(*mod_run)();
 };
 
 struct	log_module {
 	struct	general_module	general;
+	int	(*mod_log)(int, struct request *, struct mem_obj *);
+	int	(*mod_reopen)();
 };
 
 struct	err_module {
@@ -90,3 +94,4 @@ struct	pre_body_module {
 
 struct	general_module	*module_by_name(char*);
 struct	auth_module	*auth_module_by_name(char*);
+int	Compare_Agents(char *, char *);

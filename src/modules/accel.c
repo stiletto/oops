@@ -22,6 +22,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -31,7 +32,6 @@
 
 #include	"../oops.h"
 #include	"../modules.h"
-#include	"../gnu_regex.h"
 
 char	module_type   = MODULE_REDIR ;
 char	module_name[] = "accel" ;
@@ -44,15 +44,29 @@ static	rwl_t	accel_lock;
 
 #define	MAP_STRING		1
 #define	MAP_REGEX		2
-#define	MAP_STRING_CS		4
-#define	MAP_REGEX_CS		8
-#define	MAP_ACL			16
+#define	MAP_STRING_CS		3
+#define	MAP_REGEX_CS		4
+#define	MAP_ACL			5
+
+char	*mapnames[7] = {
+	"?",
+	"string",
+	"regex",
+	"string+charset",
+	"regex+charset",
+	"acl",
+	"?"};
 
 #define	MAXMATCH		10
-
+#define	INIT_PMATCH(p)		do {\
+				int i;\
+				    for(i=0;i<MAXMATCH;i++)\
+					p[i].rm_so = p[i].rm_eo = -1;\
+				} while(0)
 #define	NMYPORTS	4
 static	myport_t	myports[NMYPORTS];	/* my ports		*/
 static	int		nmyports;		/* actual number	*/
+static	char		*myports_string = NULL;
 
 static	refresh_pattern_t	*refr_patts;
 
@@ -64,6 +78,8 @@ struct	to_host {
 	char		failed;		/* TRUE or FALSE 		*/
 	time_t		last_failed;	/* when failed to connect 	*/
 };
+
+#define	MAP_REVERSE	1
 
 struct	map {
 	struct	map	*next;
@@ -82,6 +98,8 @@ struct	map {
 	struct	map	*next_in_hash;		/* link in hash	table for usual maps,
 						   next map for acl, regex maps		*/
 	int		ortho;			/* something orthogonal to hash function*/
+	char		*config_line;		/* original config line			*/
+	int		flags;			/* flags like 'reverse'			*/
 };
 
 typedef	struct	rewrite_location_ {
@@ -95,11 +113,11 @@ typedef	struct	map_hash_ {
 	struct	map	*next;
 } map_hash_t;
 
-static	struct	map	*maps, *default_map, *new_map();
+static	struct	map	*maps, *default_map, *new_map(void);
 static	struct	map	*find_map(struct request*, size_t, regmatch_t*, char*);
 static	struct	map	*other_maps_chain;
 static	map_hash_t	*map_hash_table;
-static	struct	to_host	*new_to_host();
+static	struct	to_host	*new_to_host(void);
 static	int		rewrite_host;
 static	int		use_host_hash;
 static	void		free_maps(struct map *);
@@ -109,8 +127,9 @@ static	void		parse_map_regex(char*);
 static	void		parse_map_regex_charset(char*);
 static	void		parse_map_charset(char*);
 static	void		parse_map_file(char*);
-static  void		check_map_file_age();
+static  void		check_map_file_age(void);
 static	void		reload_map_file(void);
+static  int		on_my_port(struct request *);
 static	int		sleep_timeout, dead_timeout;
 static	char		*build_destination(char*,regmatch_t*, char*);
 static	char		*build_src(struct request *);
@@ -120,6 +139,8 @@ static	void		free_rewrite_location(rewrite_location_t*);
 
 static	char		map_file[MAXPATHLEN];
 static	time_t		map_file_mtime = 0, map_file_check_time = 0;
+static	int		deny_proxy_requests;
+static	int		ip_lookup;
 
 unsigned
 hash_function(char *s)
@@ -199,7 +220,7 @@ mod_load()
     nmyports = 0;
     maps = NULL;
     default_map = NULL;
-    sleep_timeout = 600;
+    sleep_timeout = 30;
     dead_timeout = 20;
     refr_patts = NULL;
     rewrite_location = NULL;
@@ -208,6 +229,9 @@ mod_load()
     use_host_hash = 0;
     map_hash_table = NULL;
     other_maps_chain = NULL;
+    myports_string = NULL;
+    deny_proxy_requests = 1;
+    ip_lookup = TRUE;
     return(MOD_CODE_OK);
 }
 int
@@ -249,9 +273,25 @@ mod_config_beg()
     dead_timeout = 20;
     map_file_mtime = 0;
     map_file_check_time = 0;
+    if ( myports_string ) free(myports_string);
+    myports_string = NULL;
+    deny_proxy_requests = 1;
+    ip_lookup = TRUE;
     UNLOCK_ACCEL_CONFIG ;
     return(MOD_CODE_OK);
 }
+int
+mod_run()
+{
+    WRLOCK_ACCEL_CONFIG ;
+    if ( myports_string ) {
+	nmyports = parse_myports(myports_string, &myports[0], NMYPORTS);
+	verb_printf("%s will use %d ports\n", module_name, nmyports);
+    }
+    UNLOCK_ACCEL_CONFIG ;
+    return(MOD_CODE_OK);
+}
+
 int
 mod_config_end()
 {
@@ -266,21 +306,20 @@ mod_config_end()
 int
 mod_config(char *config)
 {
-char		*p = config, *s, *d, *o;
-char		buf[MAXHOSTNAMELEN+10];
-struct	map	*map;
+char		*p = config;
 
     WRLOCK_ACCEL_CONFIG ;
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
 
     if ( !strncasecmp(p, "myport", 6) ) {
 	p += 6;
-	while (*p && isspace(*p) ) p++;
-	nmyports = parse_myports(p, &myports, NMYPORTS);
+	while (*p && IS_SPACE(*p) ) p++;
+	myports_string = strdup(p);
+	/*nmyports = parse_myports(p, &myports, NMYPORTS);*/
 	verb_printf("%s will use %d ports\n", module_name, nmyports);
     } else
     if ( !strncasecmp(p, "rewrite_host", 12) ) {
-	p += 12; while (*p && isspace(*p) ) p++;
+	p += 12; while (*p && IS_SPACE(*p) ) p++;
 	if ( !strcasecmp(p, "yes") ) {
 	    rewrite_host = TRUE;
 	    verb_printf("%s will rewrite 'Host:' header\n", module_name);
@@ -291,28 +330,37 @@ struct	map	*map;
     } else
     if ( !strncasecmp(p, "dead_timeout", 12) ) {
 	p += 12;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	dead_timeout = atoi(p);
     } else
     if ( !strncasecmp(p, "use_host_hash", 13) ) {
 	p += 13;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	use_host_hash = atoi(p);
+    } else
+    if ( !strncasecmp(p, "proxy_requests", 14) ) {
+	p += 14;
+	while (*p && IS_SPACE(*p) ) p++;
+	deny_proxy_requests = !strncasecmp(p, "deny", 4);
+    } else
+    if ( !strncasecmp(p, "ip_lookup", 9) ) {
+	p += 9;
+	while (*p && IS_SPACE(*p) ) p++;
+	ip_lookup = strncasecmp(p, "no", 4);
     } else
     if ( !strncasecmp(p, "sleep_timeout", 13) ) {
 	p += 13;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	sleep_timeout = atoi(p);
     } else
     if ( !strncasecmp(p, "file", 4) )
 	parse_map_file(p);
-done:
     UNLOCK_ACCEL_CONFIG ;
     return(MOD_CODE_OK);
 }
 
 struct	map
-*new_map()
+*new_map(void)
 {
 struct	map	*res;
 
@@ -324,7 +372,7 @@ struct	map	*res;
 }
 
 struct to_host
-*new_to_host()
+*new_to_host(void)
 {
 struct	to_host	*res;
 
@@ -362,6 +410,7 @@ struct	to_host	*host, *next_host;
 	    host = next_host;
 	}
 	pthread_mutex_destroy(&map->last_lock);
+	if ( map->config_line ) free(map->config_line);
 	free(map);
 	map = next_map;
     }
@@ -372,8 +421,7 @@ redir_rewrite_header(char **hdr, struct request *rq, int *flags)
 {
 struct	map		*map;
 struct	url		url, new_url;
-char			*p, *new_host, *new_location = NULL, *src = NULL, *new_l_val = NULL;
-char			*old_path;
+char			*p, *new_location = NULL, *src = NULL, *new_l_val = NULL;
 regmatch_t		pmatch[MAXMATCH];
 rewrite_location_t	*rl;
 
@@ -383,18 +431,19 @@ rewrite_location_t	*rl;
     if ( strncasecmp(*hdr, "Location:", 9) ) return(MOD_CODE_OK);
 
     p = (*hdr) + 9;
-    while ( *p && isspace(*p) ) p++;
+    while ( *p && IS_SPACE(*p) ) p++;
     if ( !*p )
-	return;
+	return(MOD_CODE_OK);
 
     RDLOCK_ACCEL_CONFIG ;
 
     bzero(&url, sizeof(url));
     bzero(&new_url, sizeof(new_url));
 
-    my_xlog(LOG_HTTP, "redir_rewrite_header called for '%s'\n", *hdr);
+    my_xlog(LOG_HTTP|LOG_DBG, "redir_rewrite_header(): called for `%s'.\n", *hdr);
 
     src = build_src(rq);
+    INIT_PMATCH(pmatch);
     map = find_map(rq, MAXMATCH, pmatch, src);
 
     if ( !map )
@@ -405,6 +454,7 @@ rewrite_location_t	*rl;
 	/* if the source match acl	*/
 	if ( rl->acl_index && url_match_named_acl_by_index(src, rl->acl_index) ) {
 	    /* if 'Location:' value match rl->preg	*/
+	    INIT_PMATCH(pmatch);
 	    if ( !regexec(&rl->preg, p, MAXMATCH, (regmatch_t*)&pmatch, 0) ) {
 		/* here it is 		*/
 		new_l_val = build_destination(p, pmatch, rl->dst);
@@ -454,6 +504,9 @@ done:
 /*
    this return OK if connected or will not connect.
    result - in resulting_so.
+
+   We connect to 'dst' in map if there are no backups. Otherwise we connect
+   to backups
 */
 
 int
@@ -461,26 +514,35 @@ redir_connect(int *resulting_so, struct request *rq, int *flags)
 {
 struct	map		*map;
 struct	to_host		*host;
-int			max_attempts, so = -1, saved_so, rc;
+int			max_attempts, so = -1, rc;
 struct	sockaddr_in	server_sa;
 regmatch_t		pmatch[MAXMATCH];
-char			*src = NULL;
+char			*src = NULL, *destination = NULL;
+struct	url		tmp_url;
 
     /* this lock can be long (if we can't connect immediately) */
+    bzero(&tmp_url, sizeof(tmp_url));
     RDLOCK_ACCEL_CONFIG ;
-    my_log("redir_connect called\n");
     if ( !rq  ) goto done;;
     if ( !resulting_so ) goto done;
 
     src = build_src(rq);
+    INIT_PMATCH(pmatch);
     map = find_map(rq, MAXMATCH, pmatch, src);
     if ( !map || !map->hosts ) goto done;
     /* connect using next server */
     max_attempts = map->hosts;
+    if ( max_attempts > 1 ) /* we skip firsh host (dst) */
+	max_attempts--;
     pthread_mutex_lock(&map->last_lock);
     host = map->last_used;
-    if ( !host )
+    if ( !host ) {
+	if ( (map->hosts > 1) && map->to_hosts->next ) {
+	    /* skip dst - we use only backups to connect to destination */
+	    host = map->to_hosts->next;
+	} else
 	host = map->to_hosts;
+    }
     map->last_used = host->next;
     /* if host marked as failed and sleep_timeout passed - try it */
     if ( host->failed && (global_sec_timer - host->last_failed > sleep_timeout) )
@@ -503,13 +565,16 @@ char			*src = NULL;
 	        ||(map->type==MAP_ACL)
 	        ||(map->type==MAP_REGEX_CS))
 	    	  && (host == map->to_hosts) ) {
-		use_name = rq->url.host;
-		use_port = rq->url.port;
+		destination = build_destination(src,pmatch, map->to_hosts->name);
+		parse_raw_url(destination, &tmp_url);
+		use_name = tmp_url.host;
+		use_port = tmp_url.port;
+		if ( !use_port ) use_port = 80;
 	    } else {
 		use_name = host->name;
 		use_port = host->port;
 	    }
-	    my_xlog(LOG_HTTP, "accel:redir_connect: connecting to %s:%d\n", use_name, use_port);
+	    my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Connecting to %s:%d\n", use_name, use_port);
 	    rc = str_to_sa(use_name, (struct sockaddr*)&server_sa);
 	    server_sa.sin_port = htons(use_port);
 	    if ( rc ) /* have no name */
@@ -533,7 +598,7 @@ char			*src = NULL;
 		    *resulting_so = so;
 		    goto done;
 		}
-		my_xlog(LOG_HTTP, "accel: Connect failed\n");
+		my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Connect failed\n");
 	    }
 	    if ( so != -1 ) {
 		close(so);
@@ -556,7 +621,9 @@ char			*src = NULL;
     return(MOD_CODE_ERR);
 done:
     UNLOCK_ACCEL_CONFIG ;
-    if ( src ) free(src);
+    IF_FREE(src);
+    IF_FREE(destination);
+    free_url(&tmp_url);
     return(MOD_CODE_OK);
 }
 
@@ -571,23 +638,58 @@ struct	av		*host_av;
     check_map_file_age();
 
     RDLOCK_ACCEL_CONFIG ;
-    my_log("redir called\n");
+    my_xlog(LOG_DBG|LOG_INFORM, "redir(): accel called.\n");
     if ( !rq ) goto done;
 
     src = build_src(rq);
-    pmatch[0].rm_so = pmatch[0].rm_eo = -1;
+    INIT_PMATCH(pmatch);
     map = find_map(rq, MAXMATCH, pmatch, src);
-    if ( !map || !map->to_hosts) goto done;
+    if ( map && map->to_hosts)
+	goto map_found;
 
-    if ( rq->original_host ) free(rq->original_host);
+    if ( deny_proxy_requests ) {
+	if ( rq && on_my_port(rq) && rq->url.host ) {
+	    struct	output_object	*output;
+	    UNLOCK_ACCEL_CONFIG ;
+	    output = malloc(sizeof(*output));
+	    if ( output ) {
+		char	proxy_deny[] = "<body>Proxy access denied<br></body>";
+		bzero(output, sizeof(*output));
+		output->body = alloc_buff(128);
+		put_av_pair(&output->headers,"HTTP/1.0", "400 Access denied");
+		put_av_pair(&output->headers,"Expires:", "Thu, 01 Jan 1970 00:00:01 GMT");
+		put_av_pair(&output->headers,"Content-Type:", "text/html");
+
+		if ( output->body ) {
+		    attach_data(proxy_deny, sizeof(proxy_deny), output->body);
+		}
+		process_output_object(so, output, rq);
+		free_output_obj(output);
+		if ( flags ) *flags |= MOD_AFLAG_OUT;
+	    }
+	    return(MOD_CODE_ERR);
+	}
+    }
+    goto done;
+map_found:
+    if ( map->config_line ) my_xlog(LOG_HTTP|LOG_DBG, "redir(): request matched to %s map `%s'.\n",
+	mapnames[map->type], map->config_line);
+
+    IF_FREE ( rq->original_host );
     rq->original_host = NULL;
+    IF_FREE ( rq->original_path );
+    rq->original_path = NULL;
 
     ohost = attr_value(rq->av_pairs, "host:");
     if ( ohost ) /* we was able to extract Host: */
 	rq->original_host = strdup(ohost);
 
+    if ( rq->url.path ) rq->original_path = strdup(rq->url.path);
+
     /* Now! rewrite url */
     if ( rq->url.host ) free(rq->url.host);
+    rq->url.host = NULL;
+    
     switch (map->type) {
 case MAP_STRING_CS:
 	if ( map->cs_to_server_table ) {
@@ -602,6 +704,9 @@ case MAP_STRING_CS:
 	    strncpy(rq->src_charset, map->src_cs_name, sizeof(rq->src_charset)-1 );
 case MAP_STRING:
 	/* 1. rewrite host part			*/
+	if ( TEST(map->flags, MAP_REVERSE) && ohost) {
+	    rq->url.host = strdup(ohost);
+	} else
 	if ( map->to_hosts->name ) {
 	    rq->url.host = strdup(map->to_hosts->name);
 	}
@@ -640,7 +745,9 @@ case MAP_REGEX:
 	    destination = build_destination(src,pmatch, map->to_hosts->name);
 	if ( destination ) {
 	    struct url	url;
-	    my_xlog(LOG_HTTP, "accel: new dest: %s\n", destination);
+
+	    bzero(&url, sizeof(url));
+	    my_xlog(LOG_HTTP|LOG_DBG, "redir(): new dest: %s\n", destination);
 	    /* we must split new destination */
 	    if ( !parse_raw_url(destination, &url) ) {
 		/* it is ok 				  */
@@ -648,6 +755,10 @@ case MAP_REGEX:
 		if ( !url.port ) url.port = 80;
 		url.httpv = rq->url.httpv;
 		rq->url.httpv = NULL;
+		if ( TEST(map->flags, MAP_REVERSE) && ohost ) {
+		    IF_FREE(url.host);
+		    url.host = strdup(ohost);
+		}
 		free_url(&rq->url);
 		memcpy(&rq->url, &url, sizeof(url));
 	    }
@@ -656,7 +767,7 @@ case MAP_REGEX:
 	break;
 
 default:
-	my_log("Unknown MAP type %d\n", map->type);
+	my_xlog(LOG_SEVERE, "redir(): Unknown MAP type %d\n", map->type);
 	goto done;
     }
 
@@ -694,8 +805,37 @@ done:
     return(MOD_CODE_OK);
 }
 
-struct map
-*find_map(struct request *rq, size_t nmatch, regmatch_t pmatch[], char *src)
+int
+on_my_port(struct request *rq)
+{
+u_short	port;
+
+    if ( rq ) {
+	port = ntohs(rq->my_sa.sin_port);
+    } else
+	return(FALSE);
+    if ( nmyports > 0 ) {
+	int     n = nmyports;
+	myport_t *mp = myports;
+	/* if this is not on my port */
+	while( n ) {
+	    /* if ports are equal and addresseses are equal (unless wildcard myport) */
+	    if (    ( mp->port == port)
+	         && (   (mp->in_addr.s_addr == INADDR_ANY) 
+	             || (mp->in_addr.s_addr == rq->my_sa.sin_addr.s_addr)) )
+	         break;
+	    n--;mp++;
+	}
+	if ( !n ) {
+	    return(FALSE);  /* not my */
+	}
+	return(TRUE);
+    }
+    return(FALSE);
+}
+
+struct map *
+find_map(struct request *rq, size_t nmatch, regmatch_t pmatch[], char *src)
 {
 struct	map		*res = NULL, *map = maps;
 struct	sockaddr_in	map_sa;
@@ -721,8 +861,8 @@ u_short			port;
     } else
 	return(NULL);
 
-    my_log("accel: it's my\n");
-    /* first - take destination from 'Host:'			*/
+    my_xlog(LOG_DBG|LOG_INFORM, "find_map(): it's my.\n");
+    /* first - take destination from 'Host:'		*/
     if ( rq->original_host ) {
 	host = rq->original_host;
     } else
@@ -757,7 +897,7 @@ u_short			port;
 		    }
 		    if (    !strcasecmp(host_buf, this->from_host)
 			 && (port == this->from_port) ) {
-			my_xlog(LOG_HTTP, "Found in hash\n");
+			my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Found in hash.\n");
 			goto hash_found;
 		    }
 		    this = this->next_in_hash;
@@ -771,14 +911,14 @@ u_short			port;
 		case MAP_REGEX_CS:
 		case MAP_REGEX:
 		    if ( src && !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
-			my_xlog(LOG_HTTP, "accel: Host %s found in regex map\n", host);
+			my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
 			goto hash_found;
 		    }
 		    break;
 		case MAP_ACL:
 		    if ( rq_match_named_acl_by_index(rq, this->acl_index)
 			&& !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
-			my_xlog(LOG_HTTP, "accel: Host %s found in acl map\n", host);
+			my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
 			goto hash_found;
 		    }
 		    break;
@@ -794,32 +934,34 @@ u_short			port;
 	case MAP_STRING_CS:
 	case MAP_STRING:
 		if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
-		    my_xlog(LOG_HTTP, "accel: Host %s found in string map\n", host);
+		    my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in string map.\n", host);
 		    return(map);
 		}
 		break;
 	case MAP_REGEX_CS:
 	case MAP_REGEX:
 		if ( src && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
-		    my_xlog(LOG_HTTP, "accel: Host %s found in regex map\n", host);
+		    my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
 		    return(map);
 		}
 		break;
 	case MAP_ACL:
 		if ( rq_match_named_acl_by_index(rq, map->acl_index)
 		    && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
-		    my_xlog(LOG_HTTP, "accel: Host %s found in acl map\n", host);
+		    my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
 		    return(map);
 		}
 		break;
 	default:
-		my_log("Here is unknown map type %d\n", map->type);
+		my_xlog(LOG_SEVERE, "find_map(): Here is unknown map type %d\n", map->type);
 		break;
 	    }
 	    map = map->next;
 	}
     }
 try_addresses:
+    if ( ip_lookup == FALSE )
+	goto done;
     /* If we didn't find hostname from host - try addresses   */
     map = maps;
     while ( map ) {
@@ -827,7 +969,7 @@ try_addresses:
 	    str_to_sa(map->from_host, (struct sockaddr*)&map_sa);
 	    if ( (map_sa.sin_addr.s_addr == rq->my_sa.sin_addr.s_addr) &&
 		(!map->from_port || (map->from_port == ntohs(rq->my_sa.sin_port)) ) ) {
-		my_log("Map found: %s\n", map->from_host);
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "find_map(): Map found: %s\n", map->from_host);
 		break;
 	    }
 	}
@@ -836,7 +978,7 @@ try_addresses:
 
     if ( !map ) {
 	if ( !default_map ) goto done;
-	my_log("Default used\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "find_map(): Default used.\n");
 	map = default_map;
     }
     res = map;
@@ -849,9 +991,9 @@ parse_map_file(char *p)
 {
 
     p += 4;
-    while ( *p && isspace(*p) ) p++;
+    while ( *p && IS_SPACE(*p) ) p++;
     strncpy(map_file, p, sizeof(map_file) - 1);
-    verb_printf("accel: use %s as mapfile\n", map_file);
+    verb_printf("parse_map_file(): Use %s as mapfile.\n", map_file);
 }
 
 void
@@ -860,31 +1002,43 @@ parse_map(char *p)
 char		*s, *d, *o;
 char		buf[MAXHOSTNAMELEN+10];
 struct	map	*map;
+char		*config_line = NULL;
+int		flags = 0;
 
     /* map from[:port] to1[:port1] to2[:port2] ... */
-    p += 3; while (*p && isspace(*p) ) p++;
+    p += 3;
+    if ( *p == '/' ) {
+	p++;
+	/* switch */
+	if ( tolower(*p) == 'r' )
+	    flags |= MAP_REVERSE;
+	while (*p && !IS_SPACE(*p) ) p++;
+    }
+    while (*p && IS_SPACE(*p) ) p++;
+    config_line = strdup(p);
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
         *d++ = *s++;
     *d = 0;
     p = s;
     if ( strlen(buf) ) {
         u_short port = 80;
-	char	*path;
 
         if ( ( o = strchr(buf, ':') ) ) {
 	    port = atoi(o+1);
 	    *o = 0;
 	}
-	printf("host=%s, port=%d\n", buf, port);
+	printf("parse_map(): host = %s, port = %d\n", buf, port);
 	map = new_map();
 	if ( !map ) goto done;
 	bzero(map, sizeof(*map));
 	map->type = MAP_STRING;
 	map->from_host = strdup(buf);
 	map->from_port = port;
+	map->config_line = config_line; config_line = NULL;
+	map->flags = flags;
 do_next_host:
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	if ( !*p ) {
 	    if ( !maps ) maps = map;
 	      else {
@@ -896,7 +1050,7 @@ do_next_host:
 	    goto done;
 	}
 	s = p; d = buf;
-	while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 	*d++ = *s++;
 	*d = 0;
 	p = s;
@@ -913,10 +1067,10 @@ do_next_host:
 		port = atoi(o+1);
 		*o = 0;
 	    }
-	    printf("mapped to %s, port=%d path=%s\n", buf, port, path?path:"NULL");
+	    printf("parse_map(): Mapped to %s, port = %d path = %s\n", buf, port, path?path:"NULL");
 	    to_host = new_to_host();
 	    if ( !to_host ) {
-		free(path);
+		IF_FREE(path);
 		free_maps(map);
 		goto done;
 	    }
@@ -937,6 +1091,7 @@ do_next_host:
         goto do_next_host;
     }
  done:;
+    if ( config_line ) free(config_line);
 }
 
 void
@@ -947,12 +1102,16 @@ char		buf[MAXHOSTNAMELEN+10];
 struct	map	*map;
 int		first = TRUE;
 int		acl_index;
+char		*config_line = NULL;
+
 
     /* map_acl	ACLNAME SRC DST backup ... */
 
-    p += 7; while (*p && isspace(*p) ) p++;
+    p += 7; while (*p && IS_SPACE(*p) ) p++;
+    config_line = strdup(p);
+
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
         *d++ = *s++;
     *d = 0;
     p = s;
@@ -960,40 +1119,42 @@ int		acl_index;
     /* get acl name */
     acl_index = acl_index_by_name(buf);
     if ( !acl_index ) {
-	verb_printf("ACCEL: Can't find ACL %s\n", buf);
-	return;
+	verb_printf("parse_map_acl(): Can't find ACL %s\n", buf);
+	goto done;
     }
-    while (*p && isspace(*p) ) p++;
+    while (*p && IS_SPACE(*p) ) p++;
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
         *d++ = *s++;
     *d = 0;
     if ( !strlen(buf) ) {
-	verb_printf("ACCEL: Wrong map_acl line\n");
-	return;
+	verb_printf("parse_map_acl(): Wrong map_acl line\n");
+	goto done;
     }
     map = new_map();
     if ( !map ) goto done;
     bzero(map, sizeof(*map));
     map->type = MAP_ACL;
     map->acl_index = acl_index;
-    while (*p && isspace(*p) ) p++;
+    map->config_line = config_line; config_line = NULL;
+    while (*p && IS_SPACE(*p) ) p++;
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
         *d++ = *s++;
     *d = 0;
     if ( !strlen(buf) ) {
-	verb_printf("ACCEL: Wrong map_acl line\n");
-	return;
+	verb_printf("parse_map_acl(): Wrong map_acl line\n");
+	free_maps(map);
+	goto done;
     }
     if (regcomp(&map->preg, buf, REG_EXTENDED|REG_ICASE)) {
-	verb_printf("Cant regcomp %s\n", buf);
+	verb_printf("parse_map_acl(): Cant regcomp %s\n", buf);
 	free(map);
 	goto done;
     }
     p = s;
 do_next_host:
-    while (*p && isspace(*p) ) p++;
+    while (*p && IS_SPACE(*p) ) p++;
     if ( !*p ) {
 	if ( !maps ) maps = map;
 	  else {
@@ -1005,14 +1166,14 @@ do_next_host:
 	goto done;
     }
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
     *d++ = *s++;
     *d = 0;
     p = s;
     if ( strlen(buf) ) {
 	struct	to_host	*to_host, *next;
 
-	printf("mapped to %s\n", buf);
+	printf("parse_map_acl(): mapped to %s\n", buf);
 	to_host = new_to_host();
 	if ( !to_host ) {
 	    free_maps(map);
@@ -1040,6 +1201,7 @@ do_next_host:
     goto do_next_host;
 
 done:;
+    if ( config_line ) free(config_line);
 }
 
 void
@@ -1049,11 +1211,22 @@ char		*s, *d, *o;
 char		buf[MAXHOSTNAMELEN+10];
 struct	map	*map;
 int		first = TRUE;
+char		*config_line = NULL;
+int		flags = 0;
 
     /* map_regex SRC DEST backup1[:port1] ... */
-    p += 9; while (*p && isspace(*p) ) p++;
+    p += 9;
+    if ( *p == '/' ) {
+	p++;
+	/* switch */
+	if ( tolower(*p) == 'r' )
+	    flags |= MAP_REVERSE;
+	while (*p && !IS_SPACE(*p) ) p++;
+    }
+    while (*p && IS_SPACE(*p) ) p++;
+    config_line = strdup(p);
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
         *d++ = *s++;
     *d = 0;
     p = s;
@@ -1061,14 +1234,16 @@ int		first = TRUE;
 	map = new_map();
 	if ( !map ) goto done;
 	bzero(map, sizeof(*map));
+        map->config_line = config_line; config_line = NULL;
 	map->type = MAP_REGEX;
+	map->flags |= flags;
 	if (regcomp(&map->preg, buf, REG_EXTENDED|REG_ICASE)) {
-	    verb_printf("Cant regcomp %s\n", buf);
+	    verb_printf("parse_map_regex(): Cant regcomp %s\n", buf);
 	    free(map);
 	    goto done;
 	}
 do_next_host:
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	if ( !*p ) {
 	    if ( !maps ) maps = map;
 	      else {
@@ -1080,14 +1255,14 @@ do_next_host:
 	    goto done;
 	}
 	s = p; d = buf;
-	while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 	*d++ = *s++;
 	*d = 0;
 	p = s;
 	if ( strlen(buf) ) {
 	    struct	to_host	*to_host, *next;
 
- 	    printf("mapped to %s\n", buf);
+ 	    printf("parse_map_regex(): mapped to %s\n", buf);
 	    to_host = new_to_host();
 	    if ( !to_host ) {
 		free_maps(map);
@@ -1115,6 +1290,7 @@ do_next_host:
         goto do_next_host;
     }
  done:;
+    if ( config_line ) free(config_line);
 }
 
 void
@@ -1126,53 +1302,56 @@ struct	map		*map;
 struct	charset		*source_charset = NULL, *destination_charset = NULL;
 struct	string_list	*to_ser, *to_cli;
 int			i;
+char		*config_line = NULL;
+
 
     /* map_charset src_charset dst_charset from[:port] to1[:port1] to2[:port2] ... */
     p += 11;
-    while (*p && isspace(*p) ) p++; s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) ) *d++ = *s++; *d=0;
+    while (*p && IS_SPACE(*p) ) p++; s = p; d = buf;
+    config_line = strdup(p);
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) ) *d++ = *s++; *d=0;
     p = s;
     /* src charset */
-    printf("parse_map_charset: src charset: %s\n", buf);
+    printf("parse_map_charset(): src charset: %s\n", buf);
     if ( charsets )
 	source_charset = lookup_charset_by_name(charsets, buf);
     if ( !source_charset ) {
-	verb_printf("accel: parse_map_charset: unknown charset %s\n", buf);
+	verb_printf("parse_map_charset(): Unknown charset %s\n", buf);
 	goto done;
     }
-    while (*p && isspace(*p) ) p++; s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) ) *d++=*s++; *d=0;
+    while (*p && IS_SPACE(*p) ) p++; s = p; d = buf;
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) ) *d++=*s++; *d=0;
     p = s;
     /* dst charset */
-    printf("parse_map_charset: dst charset: %s\n", buf);
+    printf("parse_map_charset(): dst charset: %s\n", buf);
     if ( charsets )
 	destination_charset = lookup_charset_by_name(charsets, buf);
     if ( !destination_charset ) {
-	verb_printf("accel: parse_map_charset: unknown charset %s\n", buf);
+	verb_printf("parse_map_charset(): Unknown charset %s\n", buf);
 	goto done;
     }
     if ( !source_charset->Table || !destination_charset->Table ) {
-	verb_printf("accel: parse_map_charset: some charset doesn't have Table\n");
+	verb_printf("parse_map_charset(): Some charset doesn't have a table.\n");
 	goto done;
     }
-    while (*p && isspace(*p) ) p++; s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) ) *d++ = *s++;*d=0;
+    while (*p && IS_SPACE(*p) ) p++; s = p; d = buf;
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) ) *d++ = *s++;*d=0;
     p = s;
     if ( strlen(buf) ) {
         u_short port = 80;
-	char	*path;
 
         if ( ( o = strchr(buf, ':') ) ) {
 	    port = atoi(o+1);
 	    *o = 0;
 	}
-	printf("host=%s, port=%d\n", buf, port);
+	printf("parse_map_charset(): host=%s, port=%d\n", buf, port);
 	map = new_map();
 	if ( !map ) goto done;
 	bzero(map, sizeof(*map));
 	map->type = MAP_STRING_CS;
 	map->from_host = strdup(buf);
 	map->from_port = port;
+        map->config_line = config_line; config_line = NULL;
 	forw = malloc(128);
 	back = malloc(128);
 	if ( !forw || !back ) {
@@ -1184,7 +1363,7 @@ int			i;
 	for(i=0;i<128;i++) {
 	    u_char *src = source_charset->Table;
 	    u_char *dst = destination_charset->Table;
-	    u_char sc, dc;
+	    u_char sc;
 
 	    sc = src[i];
 	    forw[sc-128] = dst[i];
@@ -1218,7 +1397,7 @@ int			i;
 	    map->src_cs_name = strdup(source_charset->Name);
 	}
 do_next_host:
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	if ( !*p ) {
 	    if ( !maps ) maps = map;
 	      else {
@@ -1230,7 +1409,7 @@ do_next_host:
 	    goto done;
 	}
 	s = p; d = buf;
-	while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 	*d++ = *s++;
 	*d = 0;
 	p = s;
@@ -1247,7 +1426,7 @@ do_next_host:
 		port = atoi(o+1);
 		*o = 0;
 	    }
-	    printf("mapped to %s, port=%d path=%s\n", buf, port, path?path:"NULL");
+	    printf("parse_map_charset(): Mapped to %s, port = %d path = %s\n", buf, port, path?path:"NULL");
 	    to_host = new_to_host();
 	    if ( !to_host ) {
 		free(path);
@@ -1271,22 +1450,26 @@ do_next_host:
         goto do_next_host;
     }
  done:;
+    if ( config_line ) free(config_line);
 }
 
 void
 parse_map_regex_charset(char *p)
 {
-char			*s, *d, *o, *ss, *dd, *forw, *back;
+char			*s, *d, *o, *forw, *back;
 char			buf[MAXHOSTNAMELEN+10];
 struct	map		*map;
 int			first = TRUE, i;
 struct	charset		*source_charset = NULL, *destination_charset = NULL;
 struct	string_list	*to_ser, *to_cli;
+char		*config_line = NULL;
+
 
     /* map_regex_charset CLIENTCHARSET SERVERCHARSET SRC DEST backup1[:port1] ... */
-    p += 17; while (*p && isspace(*p) ) p++;
+    p += 17; while (*p && IS_SPACE(*p) ) p++;
+    config_line = strdup(p);
     s = p; d = buf;
-    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
         *d++ = *s++;
     *d = 0;
     p = s;
@@ -1295,28 +1478,29 @@ struct	string_list	*to_ser, *to_cli;
 	if ( !map ) goto done;
 	bzero(map, sizeof(*map));
 	map->type = MAP_REGEX_CS;
+        map->config_line = config_line; config_line = NULL;
 	if ( charsets )
 	    source_charset = lookup_charset_by_name(charsets, buf);
 	if ( !source_charset ) {
-	    verb_printf("ACCEL:Source charset: UNKNOWN %s\n", buf);
+	    verb_printf("parse_map_regex_charset(): Source charset: UNKNOWN %s\n", buf);
 	    free_maps(map);
 	    goto done;
 	} else
-	    verb_printf("ACCEL:Source charset: %s\n", buf);
-	while (*s && isspace(*s) ) s++;
+	    verb_printf("parse_map_regex_charset(): Source charset: %s\n", buf);
+	while (*s && IS_SPACE(*s) ) s++;
 	d = buf;
-	while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 	    *d++ = *s++;
 	*d = 0;
 	destination_charset = lookup_charset_by_name(charsets, buf);
 	if ( !destination_charset ) {
-	    verb_printf("ACCEL:Destination charset: UNKNOWN %s\n", buf);
+	    verb_printf("parse_map_regex_charset(): Destination charset: UNKNOWN %s\n", buf);
 	    free_maps(map);
 	    goto done;
 	} else
-	    verb_printf("ACCEL:Destination charset: %s\n", buf);
+	    verb_printf("parse_map_regex_charset(): Destination charset: %s\n", buf);
 	if ( !source_charset->Table || !destination_charset->Table ) {
-	    verb_printf("ACCEL:One of the charsets have no Table\n", buf);
+	    verb_printf("parse_map_regex_charset(): One of the charsets have no table.\n", buf);
 	    free_maps(map);
 	    goto done;
 	}
@@ -1324,13 +1508,13 @@ struct	string_list	*to_ser, *to_cli;
 	/* and we must build src->dst and reverse	*/
 	forw = malloc(128);
 	if ( !forw ) {
-	    verb_printf("ACCEL:no mem for forw\n");
+	    verb_printf("parse_map_regex_charset(): No mem for forw.\n");
 	    free_maps(map);
 	    goto done;
 	}
 	back = malloc(128);
 	if ( !back ) {
-	    verb_printf("ACCEL:no mem for back\n", buf);
+	    verb_printf("parse_map_regex_charset(): No mem for back.\n", buf);
 	    free(forw);
 	    free_maps(map);
 	    goto done;
@@ -1338,7 +1522,7 @@ struct	string_list	*to_ser, *to_cli;
 	for(i=0;i<128;i++) {
 	    u_char *src = source_charset->Table;
 	    u_char *dst = destination_charset->Table;
-	    u_char sc, dc;
+	    u_char sc;
 
 	    sc = src[i];
 	    forw[sc-128] = dst[i];
@@ -1346,14 +1530,14 @@ struct	string_list	*to_ser, *to_cli;
 	}
 	map->cs_to_server_table = alloc_l_string_list();
 	if ( !map->cs_to_server_table ) {
-	    verb_printf("Can't alloc recode table\n");
+	    verb_printf("parse_map_regex_charset(): Can't alloc recode table.\n");
 	    free_maps(map);
 	    goto done;
 	}
 	lock_l_string_list(map->cs_to_server_table);
 	map->cs_to_client_table = alloc_l_string_list();
 	if ( !map->cs_to_client_table ) {
-	    verb_printf("Can't alloc recode table\n");
+	    verb_printf("parse_map_regex_charset(): Can't alloc recode table.\n");
 	    free_maps(map);
 	    goto done;
 	}
@@ -1363,7 +1547,7 @@ struct	string_list	*to_ser, *to_cli;
 	if ( to_ser )
 	    bzero(to_ser, sizeof(*to_ser));
 	  else {
-	    verb_printf("Can't alloc recode table\n");
+	    verb_printf("parse_map_regex_charset(): Can't alloc recode table.\n");
 	    free(forw);
 	    free(back);
 	    free_maps(map);
@@ -1373,7 +1557,7 @@ struct	string_list	*to_ser, *to_cli;
 	if ( to_ser )
 	    bzero(to_cli, sizeof(*to_cli));
 	  else {
-	    verb_printf("Can't alloc recode table\n");
+	    verb_printf("parse_map_regex_charset(): Can't alloc recode table.\n");
 	    free(forw);
 	    free(back);
 	    free(to_ser);
@@ -1387,20 +1571,20 @@ struct	string_list	*to_ser, *to_cli;
 	if ( source_charset->Name ) {
 	    map->src_cs_name = strdup(source_charset->Name);
 	}
-	while (*s && isspace(*s) ) s++;
+	while (*s && IS_SPACE(*s) ) s++;
 	d = buf;
-	while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 	    *d++ = *s++;
 	*d = 0;
 	p = s;
 	if (regcomp(&map->preg, buf, REG_EXTENDED|REG_ICASE)) {
-	    verb_printf("Cant regcomp %s\n", buf);
+	    verb_printf("parse_map_regex_charset(): Cant regcomp %s\n", buf);
 	    free_maps(map);
 	    goto done;
 	}
 
 do_next_host:
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	if ( !*p ) {
 	    if ( !maps ) maps = map;
 	      else {
@@ -1412,14 +1596,14 @@ do_next_host:
 	    goto done;
 	}
 	s = p; d = buf;
-	while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 	*d++ = *s++;
 	*d = 0;
 	p = s;
 	if ( strlen(buf) ) {
 	    struct	to_host	*to_host, *next;
 
- 	    printf("mapped to %s\n", buf);
+ 	    printf("parse_map_regex_charset(): Mapped to %s\n", buf);
 	    to_host = new_to_host();
 	    if ( !to_host ) {
 		free_maps(map);
@@ -1447,7 +1631,9 @@ do_next_host:
         goto do_next_host;
     }
  done:;
+    if ( config_line ) free(config_line);
 }
+
 char*
 build_destination(char *src, regmatch_t *pmatch, char *target)
 {
@@ -1498,16 +1684,21 @@ char		*result = NULL, *s, *d, esc, doll;
 	    s++;
 	    continue;
 	}
-	if ( isdigit(*s) && doll ) {
+	if ( IS_DIGIT(*s) && doll ) {
 	    /* insert n-th subexpression */
 	    n = *s - '0';
 	    if ( ( n > 0 ) && (n<=subs) && ( n < MAXMATCH) ) {
 		int	copylen;
 		curr = &pmatch[n];
-		copylen = curr->rm_eo - curr->rm_so;
 
-		memcpy(d, src+curr->rm_so, copylen);
-		d+=copylen;
+		if ( curr->rm_so != -1 ) {
+		    copylen = curr->rm_eo - curr->rm_so;
+
+		    if ( copylen > 0 ) {
+			memcpy(d, src+curr->rm_so, copylen);
+			d+=copylen;
+		    }
+		}
 	    }
 	    s++;
 	    doll = FALSE;
@@ -1523,9 +1714,9 @@ char		*result = NULL, *s, *d, esc, doll;
 char*
 build_src(struct request *rq)
 {
-char			*url = NULL, *host;
+char			*url = NULL, *host, *path;
 int			urllen;
-u_short			port;
+u_short			port=80;
 
     if ( !rq || !rq->av_pairs) return(NULL);
     if ( rq->original_host ) {
@@ -1533,14 +1724,20 @@ u_short			port;
     } else
 	host = attr_value(rq->av_pairs, "host");
     if ( !host ) return(NULL);
+    if ( rq->original_path ) {
+	path = rq->original_path;
+    } else
+	path = rq->url.path;
+    if ( !path ) return(NULL);
+
     /* now build url for regex matching				*/
-    if ( rq->url.path) {
+    if ( path ) {
 	char	*dd;
 
 	urllen = strlen(host)
-		+strlen(rq->url.path) + 20;
+		+strlen(path) + 20;
 	url = malloc(urllen);
-	if ( dd = strchr(host, ':') ) {
+	if ( (dd = strchr(host, ':')) ) {
 	    u_short host_port;
 	    *dd = 0;
 	    host_port = atoi(dd+1);
@@ -1550,22 +1747,23 @@ u_short			port;
 	if ( url ) {
 	    if ( port != 80 )
 		sprintf(url, "http://%s:%d%s", host,port,
-				rq->url.path);
+				path);
 	      else
 		sprintf(url, "http://%s%s", host,
-				rq->url.path);
+				path);
 	}
 	if ( dd ) *dd = ':';
     }
     return(url);
 }
+
 void
 insert_rewrite_location(char *p)
 {
 char	*t, *token, *ptr;
 char	*acl = NULL, *src = NULL, *dst = NULL;
 char	*src_buf = NULL, *dst_buf = NULL;
-int	acl_index;
+int	acl_index=0;
 rewrite_location_t	*new, *next;
 
     if ( !p ) return;
@@ -1577,7 +1775,7 @@ rewrite_location_t	*new, *next;
 	if ( !acl ) {
 	    acl = token;
 	    acl_index = acl_index_by_name(token);
-	    if ( !acl_index ) verb_printf("ACCEL: Unknown ACL %s\n", acl);
+	    if ( !acl_index ) verb_printf("insert_rewrite_location(): Unknown ACL %s\n", acl);
 	} else
 	if ( !src ) {
 	    src = token;
@@ -1597,7 +1795,7 @@ rewrite_location_t	*new, *next;
 	    new->acl_index = acl_index;
 	    new->dst = dst_buf; dst_buf = NULL;
 	    if ( regcomp(&new->preg, src_buf, REG_EXTENDED|REG_ICASE) ) {
-		verb_printf("ACCEL: Can't compile regex %s\n", src_buf);
+		verb_printf("insert_rewrite_location(): Can't compile regex %s\n", src_buf);
 		goto error;
 	    }
 	    /* 3. insert in list	*/
@@ -1611,7 +1809,7 @@ rewrite_location_t	*new, *next;
 	    /* done */
 	}
     } else {
-	verb_printf("ACCEL: wrong rewrite_location directive; %s\n", p);
+	verb_printf("insert_rewrite_location(): wrong rewrite_location directive; %s\n", p);
     }
 done:
     if ( dst_buf ) free(dst_buf);
@@ -1624,6 +1822,7 @@ error:
     }
     goto done;
 }
+
 void
 free_rewrite_location(rewrite_location_t *list)
 {
@@ -1639,7 +1838,7 @@ rewrite_location_t	*next;
 }
 
 void
-check_map_file_age()
+check_map_file_age(void)
 {
     if ( global_sec_timer - map_file_check_time > 60 )
 	reload_map_file();
@@ -1661,18 +1860,18 @@ struct	map	*map;
 
     rc = stat(map_file, &sb);
     if ( rc == -1 ) {
-	verb_printf("accel: Can't stat %s: %s\n", map_file, strerror(errno));
-	my_log("accel: Can't stat %s: %s\n", map_file, strerror(errno));
+	verb_printf("reload_map_file(): Can't stat %s: %s\n", map_file, strerror(errno));
+	my_xlog(LOG_SEVERE, "reload_map_file(): Can't stat %s: %s\n", map_file, strerror(errno));
 	return;
     }
     if ( sb.st_mtime <= map_file_mtime )
 	return;
     WRLOCK_ACCEL_CONFIG ;
     map_file_mtime = sb.st_mtime;
-    my_log("accel: reload mapfile\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "reload_map_file(): reload mapfile\n");
     mf = fopen(map_file, "r");
     if ( !mf ) {
-	verb_printf("accel: Can't fopen %s: %s", map_file, strerror(errno));
+	verb_printf("reload_map_file(): Can't fopen %s: %s", map_file, strerror(errno));
 	goto done;
     }
     if ( map_hash_table ) {
@@ -1704,32 +1903,32 @@ struct	map	*map;
       char *p;
 	buf[sizeof(buf)-1] = 0;
 	if ( (p = strchr(buf,'\n')) ) *p = 0;
-	verb_printf("accel: got line: %s\n", buf);
-	p = buf; while ( *p && isspace(*p) ) p++;
+	verb_printf("reload_map_file(): got line: %s\n", buf);
+	p = buf; while ( *p && IS_SPACE(*p) ) p++;
 	if ( *p == '#' ) continue;
 	if ( !strncasecmp(p, "dead_timeout", 12) ) {
 	    p += 12;
-	    while (*p && isspace(*p) ) p++;
+	    while (*p && IS_SPACE(*p) ) p++;
 	    dead_timeout = atoi(p);
 	} else
 	if ( !strncasecmp(p, "sleep_timeout", 13) ) {
 	    p += 13;
-	    while (*p && isspace(*p) ) p++;
+	    while (*p && IS_SPACE(*p) ) p++;
 	    sleep_timeout = atoi(p);
 	} else
 	if ( !strncasecmp(p, "refresh_pattern", 15) ) {
 	    p += 15;
-	    verb_printf("%s will use refresh pattern\n", module_name);
+	    verb_printf("reload_map_file(): %s will use refresh pattern.\n", module_name);
 	    parse_refresh_pattern(&refr_patts, p);
 	} else
 	if ( !strncasecmp(p, "rewrite_location", 16) ) {
-	    verb_printf("%s will rewrite 'Location:' host\n", module_name);
+	    verb_printf("reload_map_file(): %s will rewrite 'Location:' host.\n", module_name);
 	    p += 16;
 	    insert_rewrite_location(p);
 	} else
 	if ( !strncasecmp(p, "use_host_hash", 13) ) {
 	    p += 13;
-	    while (*p && isspace(*p) ) p++;
+	    while (*p && IS_SPACE(*p) ) p++;
 	    use_host_hash = atoi(p);
 	    if ( use_host_hash ) {
 		if ( map_hash_table )
@@ -1738,20 +1937,20 @@ struct	map	*map;
 	    }
 	} else
 	if ( !strncasecmp(p, "rewrite_host", 12) ) {
-	    p += 12; while (*p && isspace(*p) ) p++;
+	    p += 12; while (*p && IS_SPACE(*p) ) p++;
 	    if ( !strcasecmp(p, "yes") ) {
 		rewrite_host = TRUE;
-		verb_printf("%s will rewrite 'Host:' header\n", module_name);
+		verb_printf("reload_map_file(): %s will rewrite 'Host:' header.\n", module_name);
 	    } else {
 		rewrite_host = FALSE;
-		verb_printf("%s won't rewrite 'Host:' header\n", module_name);
+		verb_printf("reload_map_file(): %s won't rewrite 'Host:' header.\n", module_name);
 	    }
 	} else
 	if ( !strncasecmp(p, "default", 7) ) {
 	    /* allocate default map */
-	    p += 7;while (*p && isspace(*p) ) p++;
+	    p += 7; while (*p && IS_SPACE(*p) ) p++;
 	    s = p; d = buf;
-	    while ( *s && !isspace(*s) && ( d - buf < sizeof(buf) ) )
+	    while ( *s && !IS_SPACE(*s) && ( d - buf < sizeof(buf) ) )
 		*d++ = *s++;
 	    *d = 0;
 	    p = s;
@@ -1763,7 +1962,7 @@ struct	map	*map;
 		    port = atoi(o+1);
 		    *o = 0;
 		}
-		printf("default host=%s, port=%d\n", buf, port);
+		printf("reload_map_file(): default host = %s, port = %d\n", buf, port);
 		map = new_map();
 		if ( !map ) goto done;
 		bzero(map, sizeof(*map));

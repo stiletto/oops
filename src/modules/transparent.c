@@ -21,6 +21,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -53,8 +54,8 @@ static	rwl_t	tp_lock;
 #define	NMYPORTS	4
 static	myport_t	myports[NMYPORTS];	/* my ports		*/
 static	int		nmyports;		/* actual number	*/
-
-static	char		*build_src(struct request*);
+static	char		*myports_string;
+/* static	char		*build_src(struct request*); */
 
 int
 mod_load()
@@ -65,19 +66,24 @@ mod_load()
 #if	HAVE_IPF==1
     natfd = -1;
 #endif
+    myports_string = NULL;
     return(MOD_CODE_OK);
 }
+
 int
 mod_unload()
 {
     verb_printf("Transparent stopped\n");
     return(MOD_CODE_OK);
 }
+
 int
 mod_config_beg()
 {
     WRLOCK_TP_CONFIG ;
     nmyports = 0;
+    if ( myports_string ) free(myports_string);
+    myports_string = NULL;
 #if	HAVE_IPF==1
     if ( natfd != -1 ) close(natfd);
     natfd = -1;
@@ -85,6 +91,19 @@ mod_config_beg()
     UNLOCK_TP_CONFIG ;
     return(MOD_CODE_OK);
 }
+
+int
+mod_run()
+{
+    if ( myports_string ) {
+	WRLOCK_TP_CONFIG ;
+	nmyports = parse_myports(myports_string, &myports[0], NMYPORTS);
+	verb_printf("%s will use %d ports\n", module_name, nmyports);
+	UNLOCK_TP_CONFIG ;
+    }
+    return(MOD_CODE_OK);
+}
+
 int
 mod_config_end()
 {
@@ -94,18 +113,16 @@ mod_config_end()
 int
 mod_config(char *config)
 {
-char		*p = config, *s, *d, *o;
+char		*p = config;
 
     WRLOCK_TP_CONFIG ;
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
 
     if ( !strncasecmp(p, "myport", 6) ) {
 	p += 6;
-	while (*p && isspace(*p) ) p++;
-	nmyports = parse_myports(p, &myports, NMYPORTS);
-	verb_printf("%s will use %d ports\n", module_name, nmyports);
+	while (*p && IS_SPACE(*p) ) p++;
+	myports_string = strdup(p);
     }
-done:
     UNLOCK_TP_CONFIG ;
     return(MOD_CODE_OK);
 }
@@ -114,11 +131,11 @@ int
 redir(int so, struct group *group, struct request *rq, int *flags)
 {
 char			*host = NULL;
-u_short			port, mport;
+u_short			port;
 char			*dd = NULL;
 
     RDLOCK_TP_CONFIG ;
-    my_log("redir/transparent called\n");
+    my_xlog(LOG_DBG, "redir(): redir/transparent called.\n");
     if ( !rq ) goto done;
     port = ntohs(rq->my_sa.sin_port);
     if ( nmyports > 0 ) {
@@ -139,7 +156,7 @@ char			*dd = NULL;
     if ( rq->url.host )	   /* it have hostpart in url already */
 	goto notdone;
 
-    my_xlog(LOG_HTTP, "transparent: my\n");
+    my_xlog(LOG_HTTP|LOG_DBG, "redir(): transparent: my.\n");
     if ( rq->av_pairs)
 	host = attr_value(rq->av_pairs, "host");
     if ( !host ) {
@@ -156,13 +173,13 @@ char			*dd = NULL;
 	if (natfd < 0) {
 	    natfd = open(IPL_NAT, O_RDONLY, 0);
 	    if (natfd < 0) {
-		my_xlog(LOG_HTTP, "transparent: NAT open failed: %s\n",
+		my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT open failed: %s\n",
 		    strerror(errno));
 		goto notdone;
 	    }
 	}
 	if (ioctl(natfd, SIOCGNATL, &natLookup) < 0) {
-	    my_xlog(LOG_HTTP, "transparent: NAT lookup failed: ioctl(SIOCGNATL)\n");
+	    my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT lookup failed: ioctl(SIOCGNATL).\n");
 	    goto notdone;
 	} else {
 	    struct sockaddr_in	sa;
@@ -180,7 +197,7 @@ char			*dd = NULL;
 #endif
     }
 
-    if ( dd = strchr(host, ':') ) {
+    if ( (dd = strchr(host, ':')) ) {
 	u_short host_port;
 	*dd = 0;
 	host_port = atoi(dd+1);

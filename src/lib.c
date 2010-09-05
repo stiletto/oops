@@ -26,12 +26,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<stdarg.h>
 #include	<netdb.h>
 #include	<ctype.h>
+#include	<pwd.h>
 
 #include	<sys/stat.h>
 #include	<sys/param.h>
 #include	<sys/socket.h>
 #include	<sys/socketvar.h>
 #include	<sys/resource.h>
+
+#if	defined(_AIX)
+#include	<time.h>
+extern	int	seteuid(uid_t);
+extern	int	setegid(gid_t);
+#endif
 
 #if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 #include	<sys/poll.h>
@@ -50,11 +57,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 char	*days[] = {"Sun", "Mon","Tue","Wed","Thu","Fri","Sat"};
 char	*months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-FILE	*logf, *accesslogf;
-void	flush_log();
+void	flush_log(void);
 int	lookup_dns_cache(char* name, struct dns_cache_item *items, int counter);
 int	free_charset(struct charset *charsets);
-
+int	find_bind_acl(struct request *rq);
 int	readt(int, char*, int, int);
 int	my_gethostbyname(char *name);
 char	*my_gethostbyaddr(int);
@@ -90,42 +96,6 @@ va_list ap;
 }
 
 void
-my_log(char *form, ...)
-{
-va_list	ap;
-char		ctbuf[80], *c;
-time_t		now;
-void		*self;
-
-    rwl_wrlock(&log_lock);
-    if ( !logf ) {
-        rwl_unlock(&log_lock);
-    	return;
-    }
-    now = global_sec_timer;
-
-#if	defined(SOLARIS)
-    ctime_r(&now, ctbuf, sizeof(ctbuf)-1);
-#else
-#if	defined(LINUX)
-    ctime_r(&now, ctbuf);
-#else
-    sprintf(ctbuf, "%u\n", now);
-#endif
-#endif
-
-    c = strchr(ctbuf, '\n');
-    if ( c ) *c = ' ';
-    va_start(ap, form);
-    self = (void*)pthread_self();
-    fprintf(logf, "%s [%p]", ctbuf, self);
-    vfprintf(logf, form, ap);
-    rwl_unlock(&log_lock);
-    va_end(ap);
-    return;
-}
-
-void
 my_xlog(int lvl, char *form, ...)
 {
 va_list	ap;
@@ -135,36 +105,41 @@ void		*self;
 
     if ( !TEST(lvl, verbosity_level) ) return;
 
-    rwl_wrlock(&log_lock);
-    if ( !logf ) {
-        rwl_unlock(&log_lock);
-    	return;
-    }
     now = global_sec_timer;
 
 #if	defined(SOLARIS)
     ctime_r(&now, ctbuf, sizeof(ctbuf)-1);
-#else
-#if	defined(LINUX)
+#elif	defined(LINUX)
     ctime_r(&now, ctbuf);
+#elif	defined(BSDOS) || defined(FREEBSD)
+    sprintf(ctbuf, "%lu\n", now);
 #else
     sprintf(ctbuf, "%u\n", now);
-#endif
 #endif
 
     c = strchr(ctbuf, '\n');
     if ( c ) *c = ' ';
     va_start(ap, form);
     self = (void*)pthread_self();
-    fprintf(logf, "%s [%p]", ctbuf, self);
-    vfprintf(logf, form, ap);
-    rwl_unlock(&log_lock);
+
+    if ( TEST(lvl, ~ LOG_PRINT) ) {
+	rwl_wrlock(&log_lock);
+	if ( logf ) {
+	    fprintf(logf, "%s [%p]", ctbuf, self);
+	    vfprintf(logf, form, ap);
+	}
+	rwl_unlock(&log_lock);
+    }
+
+    if ( TEST(lvl, LOG_PRINT) )
+	vprintf(form, ap);
+
     va_end(ap);
     return;
 }
 
 void
-flush_log()
+flush_log(void)
 {
     if ( !logf ) return;
     rwl_rdlock(&log_lock);
@@ -174,17 +149,62 @@ flush_log()
 }
 
 void
-log_access(int elapsed, struct sockaddr_in *sa, char *tag,
-	int code, int size, char *meth, struct url *url, char* hierarchy,
-	char *content, char *source)
+log_access(int elapsed, struct request *rq, struct mem_obj *obj)
 {
-char	*s;
+char		*s = NULL, *urlp = NULL;
+char		*meth, *tag, *content, *hierarchy, *source, ctbuf[40];
+struct	url		*url;
+struct	sockaddr_in	*sa;
+int			code, size;
+char		*proto, *host, *path, *user;
+
+    if ( !rq ) return;
+
+#if	defined(MODULES)
+    check_log_mods(elapsed, rq, obj);
+#endif
+
+    meth	= rq->method;
+    tag		= rq->tag;
+    hierarchy	= rq->hierarchy;
+    size	= rq->received;
+    code	= rq->code;
+
+    if ( obj && obj->headers && (content = attr_value(obj->headers, "Content-Type")) ) {
+	char *p;
+	strncpy(ctbuf, content, sizeof(ctbuf)-1);
+	p = &ctbuf[0];
+	ctbuf[sizeof(ctbuf)-1] = 0;
+	while (*p) {
+	    if ( IS_SPACE(*p) || *p==';' ) {
+		*p = 0;
+		break;
+	    }
+	    p++;
+	}
+	content = ctbuf;
+    } else {
+	content = "text/html";
+    }
+    source = rq->source;
+    sa = &rq->client_sa;
+    url = &rq->url;
+    user = rq->proxy_user;
+
     if ( !meth ) 	meth = "NULL";
     if ( !tag  ) 	tag  = "NULL";
     if ( !hierarchy )   hierarchy = "NULL";
     if ( !content )	content = "NULL";
     if ( !source )	source = "NULL";
     if ( !url )		return;
+    if ( !user )	user = "-";
+
+    proto = url->proto;
+    host = url->host;
+    path = url->path;
+    if ( !proto ) proto = "NULL";
+    if ( !host ) host = "NULL";
+    if ( !path ) path = "/";
 
     pthread_mutex_lock(&accesslog_lock);
     if ( !accesslogf ) {
@@ -192,16 +212,20 @@ char	*s;
 	return;
     }
     s = my_inet_ntoa(sa);
-    if ( s ) fprintf(accesslogf, "%u.000 %d %s %s/%d %d %s %s://%s%s - %s/%s %s\n", (unsigned)global_sec_timer, elapsed, s,
-	tag, code, size, meth,
-	url->proto ? url->proto : "NULL",
-	url->host ? url->host : "NULL",
-	url->path ? url->path : "/NULL",
+    if ( proto && host && path )
+	urlp = malloc(strlen(proto)
+	             +strlen(host)
+	             +strlen(path) + 5);
+    if ( urlp ) sprintf(urlp,"%s://%s%s", proto, host, path);
+    if ( s && urlp ) fprintf(accesslogf, "%u.000 %d %s %s/%d %d %s %-.128s %s %s/%s %s\n", (unsigned)global_sec_timer, elapsed, s,
+	tag, code, size, meth, urlp, user,
 	hierarchy, source,
 	content);
     pthread_mutex_unlock(&accesslog_lock);
-    if ( s ) xfree(s);
+    if ( s )	xfree(s);
+    if ( urlp ) xfree(urlp);
 }
+
 
 void
 do_exit(int code)
@@ -229,7 +253,7 @@ str_to_sa(char *val, struct sockaddr *sa)
 		/* it is */
 		struct	sockaddr_in *sin = (struct sockaddr_in*)sa;
 		sin->sin_family = AF_INET;
-#if	!defined(SOLARIS) && !defined(LINUX)
+#if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF)
 		sin->sin_len	= sizeof(*sin);
 #endif
 		return(0);
@@ -240,15 +264,25 @@ str_to_sa(char *val, struct sockaddr *sa)
 		if ( ns_configured > 0 )
 			ad = my_gethostbyname(val);
 		    else {
-			struct hostent	he_b, *he_x;
+			struct hostent	he_b;
+#if     defined(LINUX)
+            struct hostent *he_x;
+#elif   defined(_AIX)
+			struct hostent_data     he_d;
+#endif /* _AIX */
 			char		he_strb[2048];
 			int		he_errno, rc;
+            rc = 0;
 
 #if	HAVE_GETHOSTBYNAME_R==1
 #if	defined(LINUX)
 			rc = gethostbyname_r(val, &he_b, he_strb, sizeof(he_strb),
 				&he_x,
 				&he_errno);
+			if ( !rc ) he = &he_b;
+			    else   he = NULL;
+#elif  defined(_AIX)
+			rc = gethostbyname_r(val, &he_b, &he_d);
 			if ( !rc ) he = &he_b;
 			    else   he = NULL;
 #else
@@ -262,18 +296,18 @@ str_to_sa(char *val, struct sockaddr *sa)
 			exit(1);
 #endif
 			if ( !he ) {
-			    my_xlog(LOG_DNS, "%s is not a hostname, not an IP addr\n", val);
+			    my_xlog(LOG_DNS|LOG_DBG, "str_to_sa(): %s is not a hostname, not an IP addr\n", val);
 			    return(1);
 			}
 			ad = (*(struct in_addr*)*he->h_addr_list).s_addr;
 		}
 		if ( !ad ) {
-			my_xlog(LOG_DNS, "%s is not a hostname, not an IP addr\n", val);
+			my_xlog(LOG_DNS|LOG_DBG, "str_to_sa(): %s is not a hostname, not an IP addr\n", val);
 			return(1);
 		}
 		((struct sockaddr_in*)sa)->sin_addr.s_addr = ad;
 		((struct sockaddr_in*)sa)->sin_family = AF_INET;
-#if	!defined(SOLARIS) && !defined(LINUX)
+#if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF)
 		((struct sockaddr_in*)sa)->sin_len = sizeof(struct sockaddr_in);
 #endif
 	}
@@ -281,52 +315,90 @@ str_to_sa(char *val, struct sockaddr *sa)
 }
 
 int
-bind_server_so(int server_so)
+bind_server_so(int server_so, struct request *rq)
 {
-int r;
+int	r;
+int	ba_addr;
+
+    if ( rq && ( ba_addr = find_bind_acl(rq) ) ) {
+	struct	sockaddr_in	sa;
+	sa.sin_addr.s_addr = ba_addr;
+	sa.sin_family = AF_INET;
+#if     !defined(SOLARIS) && !defined(LINUX) && !defined(OSF)
+	sa.sin_len = sizeof(sa);
+#endif
+	r = bind(server_so, (struct sockaddr*)&sa, sizeof(sa));
+	if ( r ) {
+	    my_xlog(LOG_SEVERE, "bind_server_so(): Can't bind to bind_acl result: %s\n", strerror(errno));
+	} else
+	    return(r);
+    }
     if ( !connect_from_sa_p )
 	return(0);
     r = bind(server_so, (struct sockaddr*)connect_from_sa_p, sizeof(struct sockaddr_in));
     if ( r ) {
-	my_log("Cant bind: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "bind_server_so(): Can't bind: %s\n", strerror(errno));
     }
     return(r);
 }
 
 void
-init_domain_name()
+init_domain_name(void)
 {
-char	*t=NULL, tmpname[MAXHOSTNAMELEN+1];
+char	*t = NULL, tmpname[MAXHOSTNAMELEN+1];
+int	ip_addr;
 
     tmpname[0] = 0;
+    domain_name[0] = 0;
     gethostname(tmpname, sizeof(tmpname));
     strncpy(host_name, tmpname, sizeof(host_name)-1);
-    if ( !host_name[0] ) {
-	if ( (connect_from[0] != 0) ) {
-	    strncpy(host_name, connect_from, sizeof(host_name)-1);
-        }
-    }
-    t = strchr(tmpname, '.');
-    if ( t ) {
-	strcpy(domain_name,t);	/* safe */
-	if ( !host_name[0] ) {
-	    strcpy(host_name, "proxy");
-	    strncat(host_name, domain_name, sizeof(host_name) - strlen(host_name)-1);
-	}
+    if ( 0 /*(t = strchr(host_name, '.'))*/ ) {
+	strncpy(domain_name, t, sizeof(domain_name)-1);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 1: host_name = `%s' domain_name = `%s'\n",
+		host_name, domain_name);
 	return;
     }
-    if ( (connect_from[0] != 0) && (inet_addr(connect_from)==-1) ) {
-	t = strchr(connect_from, '.');
-    }
-    if ( t ) {
-	memcpy(domain_name,t,sizeof(domain_name)-1);	/* unsafe */
-	if ( !host_name[0] ) {
-	    strcpy(host_name, "proxy");
-	    strncat(host_name, domain_name, sizeof(host_name) - strlen(host_name)-1);
+    if ( bind_addr ) {
+	int ip_addr;
+	if ( (ip_addr = inet_addr(bind_addr)) == -1 ) {
+	    if ( (t = strchr(bind_addr, '.')) ) {
+		strncpy(domain_name, t, sizeof(domain_name)-1);
+		if ( host_name[0] != 0 && !strchr(host_name, '.') )
+		    strncat(host_name, domain_name, sizeof(host_name) - strlen(host_name)-1);
+		else
+		    strncpy(host_name, bind_addr, sizeof(host_name)-1);
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 2: host_name = `%s' domain_name = `%s'\n",
+			host_name, domain_name);
+		return;
+	    }
 	}
-	return;
     }
-    domain_name[0] = 0;
+    if ( connect_from[0] != 0 ) {
+	if ( (ip_addr = inet_addr(connect_from)) == -1 ) {
+	    if ( (t = strchr(connect_from, '.')) ) {
+		strncpy(domain_name, t, sizeof(domain_name)-1);
+		if ( host_name[0] != 0 && !strchr(host_name, '.') )
+		    strncat(host_name, domain_name, sizeof(host_name) - strlen(host_name)-1);
+		else
+		    strncpy(host_name, connect_from, sizeof(host_name)-1);
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 3: host_name = `%s' domain_name = `%s'\n",
+			host_name, domain_name);
+		return;
+	    }
+	}
+    }
+#if	HAVE_DOMAINNAME==1
+    if ( !getdomainname(&tmpname, sizeof(tmpname) ) {
+	strcpy(domain_name, ".");
+	strncat(domain_name, tmpname, sizeof(domain_name)-2);
+    }
+#endif
+    if ( !domain_name[0] && host_name[0] ) {
+	if ( (t = strchr(host_name, '.')) )
+		strncpy(domain_name, t, sizeof(domain_name)-1);
+    }
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 4: host_name = `%s' domain_name = `%s'\n",
+	    host_name, domain_name);
 }
 
 static u_short	q_id = 0;
@@ -334,16 +406,28 @@ char*
 my_gethostbyaddr(int addr)
 {
 struct	dnsqh {
+#if	defined(__IBMC__)
+	u_int           id:16;
+	u_int           flags:16;
+	u_int           qdcount:16;
+	u_int           ancount:16;
+	u_int           nscount:16;
+	u_int           arcount:16;
+#else
 	u_short		id:16;
 	u_short		flags:16;
 	u_short		qdcount:16;
 	u_short		ancount:16;
 	u_short		nscount:16;
 	u_short		arcount:16;
+#endif
 } *qh, *ah;
 u_char		dnsq[512];
 u_char		dnsa[512];
     
+    ah = qh = NULL;
+    bzero(dnsq, sizeof(dnsq));
+    bzero(dnsa, sizeof(dnsa));
     return(NULL);
 }
 
@@ -351,12 +435,21 @@ int
 my_gethostbyname(char *name)
 {
 struct	dnsqh {
+#if	defined(__IBMC__)
+	u_int           id:16;
+	u_int           flags:16;
+	u_int           qdcount:16;
+	u_int           ancount:16;
+	u_int           nscount:16;
+	u_int           arcount:16;
+#else
 	u_short		id:16;
 	u_short		flags:16;
 	u_short		qdcount:16;
 	u_short		ancount:16;
 	u_short		nscount:16;
 	u_short		arcount:16;
+#endif
 } *qh, *ah;
 u_char		dnsq[512];
 u_char		dnsa[512];
@@ -366,7 +459,7 @@ u_char		*q_section = dnsq + 12;
 struct		sockaddr_in	dns_sa;
 u_char		*p, *s, *d, *t, *limit;
 u_short		type, class, ttl, rdl, flags;
-unsigned	result, results=0;
+unsigned	result=0, results=0;
 unsigned	answers[MAX_DNS_ANSWERS], *current=answers;
 struct	in_addr	addr;
 u_char		tmpname[MAXHOSTNAMELEN+1];
@@ -401,12 +494,12 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 
     dns_so = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if ( dns_so == -1 ) {
-	my_log("Can't create DNS socket: %s\n", strerror(errno));
+	my_xlog(LOG_DNS|LOG_SEVERE, "my_gethostbyname(): Can't create DNS socket: %s\n", strerror(errno));
 	return(0);
     }
     bzero(&dns_sa, sizeof(dns_sa));
     dns_sa.sin_family = AF_INET;
-#if	!defined(SOLARIS) && !defined(LINUX)
+#if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF)
     dns_sa.sin_len = sizeof(dns_sa);
 #endif
     rwl_rdlock(&config_lock);
@@ -440,20 +533,20 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 resend:
     r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&dns_sa, sizeof(dns_sa));
     if ( r == -1 ) {
-	my_xlog(LOG_DNS, "Can't send to DNS server: %s\n", strerror(errno));
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Can't send to DNS server: %s\n", strerror(errno));
 	close(dns_so);
 	return(0);
     } else
-	my_xlog(LOG_DNS, "DNS rq sent\n");
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): DNS rq sent\n");
     if ( (ns_configured > 1) && (wait_for_read(dns_so, 500) == FALSE) ) {
 	int i;
 	/* if we have another nameservers, which we can try to send rq */
 	for (i=1;i<ns_configured;i++) {
 	    r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&ns_sa[i], sizeof(struct sockaddr_in));
 	    if ( r == -1 ) {
-		my_xlog(LOG_DNS, "Can't send to DNS server: %s\n", strerror(errno));
+		my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Can't send to DNS server: %s\n", strerror(errno));
 	    } else
-		my_xlog(LOG_DNS, "DNS rq sent\n");
+		my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): DNS rq sent\n");
 	}
     }
     /* wait for response */
@@ -465,10 +558,10 @@ resend:
 	if (--resend_cnt) goto resend;
 	break;
     case(-1): /* error 		*/
-	my_xlog(LOG_DNS, "Error reading DNS answer: %s\n", strerror(errno));
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Error reading DNS answer: %s\n", strerror(errno));
 	break;
     case (0): /* ????? 		*/
-	my_xlog(LOG_DNS, "Emty DNS answer\n");
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Emty DNS answer\n");
 	break;
     default:  /* parse data 	*/
 	ah = (struct dnsqh *)dnsa;
@@ -479,7 +572,7 @@ resend:
 	if ( (flags & 0x8000) && (ah->id == qh->id) && (!(flags&0xf)) ) {
 	    if ( !ntohs(ah->ancount) ) break;
 	} else {
-	    my_xlog(LOG_DNS, "Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
+	    my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
 	    				ah->id, flags);
 	    break;
 	}
@@ -525,11 +618,11 @@ find_IN_A:
 	char			*dns_name;
 	int			i;
 
-	dns_items = xmalloc(sizeof(*dns_items)*results,"dns_items");
-	dns_name  = xmalloc(strlen(name)+1, "dns_name");
+	dns_items = xmalloc(sizeof(*dns_items)*results,"my_gethostbyname(): dns_items");
+	dns_name  = xmalloc(strlen(name)+1, "my_gethostbyname(): dns_name");
 	if ( !dns_items || !dns_name )
 	    goto dns_c_failed;
-	my_xlog(LOG_DNS, "Put %d answers in dns_cache\n", results);
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Put %d answers in dns_cache\n", results);
 	strcpy(dns_name, (char*)&tmpname[0]);
 	ci = dns_items; current = answers;
 	for(i=0;i<results;i++,current++,ci++) {
@@ -539,7 +632,7 @@ find_IN_A:
 	}
 	if ( lookup_dns_cache(dns_name, dns_items, results) ) goto dns_c_failed;
 
-	my_xlog(LOG_DNS, "Done...\n");
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Done...\n");
 	goto fin;
 
     dns_c_failed:
@@ -568,7 +661,7 @@ unsigned		use;
     cp = dns_hash[hash].first;
     while ( cp ) {
 	if ( (cp->stamp == stamp) && !strcmp(name,cp->name) ) {
-	    my_xlog(LOG_DNS, "It's here\n");
+	    my_xlog(LOG_DNS|LOG_DBG, "lookup_dns_cache(): It's here\n");
 	    break;
 	}
 	cp = cp->next;
@@ -595,7 +688,7 @@ unsigned		use;
 	return(result);
     }
     /* insert	*/
-    cp = xmalloc(sizeof(*cp), "dnc_cache");
+    cp = xmalloc(sizeof(*cp), "lookup_dns_cache(): dns_cache");
     if ( cp ) {
 	cp->next = NULL;
 	cp->time = global_sec_timer;
@@ -616,6 +709,7 @@ unsigned		use;
     pthread_mutex_unlock(&dns_cache_lock);
     return(result);
 }
+
 void
 free_dns_hash_entry(struct dns_cache* cp)
 {
@@ -659,7 +753,7 @@ int		year = -1;
 char		*xdate;
 struct	tm	tm;
 
-    xdate = xmalloc(strlen(date) +1, "http_date");
+    xdate = xmalloc(strlen(date) +1, "http_date(): http_date");
     if ( !xdate )
 	return(-1);
     strcpy(xdate, date);
@@ -670,7 +764,7 @@ struct	tm	tm;
 	switch(field) {
 	case FIELD_WDAY:
 		if ( strlen(s) < 3 ) {
-		    my_log("Unparsable date: %s\n", date);
+		    my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 		    free(xdate);
 		    return(-1);
 		}
@@ -696,7 +790,7 @@ struct	tm	tm;
 			wday = 6;
 			break;
 		default:
-			my_log("Unparsable date: %s\n", date);
+			my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			free(xdate);
 			return(-1);
 		}
@@ -709,13 +803,13 @@ struct	tm	tm;
 	case FIELD_MDAY:
 		if ( type == TYPE_RFC ) {
 		    t = 0;
-		    while( *s && isdigit(*s) ) {
+		    while( *s && IS_DIGIT(*s) ) {
 			t = t*10 + (*s - '0');
 			s++;
 		    }
 		    if ( t ) mday = t;
 			else {
-			     my_log("Unparsable date: %s\n", date);
+			     my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			     free(xdate);
 			     return(-1);
 		    }
@@ -732,7 +826,7 @@ struct	tm	tm;
 		    break;
 		} else {
 		    t = 0;
-		    while( *s && isdigit(*s) ) {
+		    while( *s && IS_DIGIT(*s) ) {
 			t = t*10 + (*s - '0');
 			s++;
 		    }
@@ -742,7 +836,7 @@ struct	tm	tm;
 		    }
 		    if ( t ) mday = t;
 			else {
-			     my_log("Unparsable date: %s\n", date);
+			     my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			     free(xdate);
 			     return(-1);
 		    }
@@ -752,7 +846,7 @@ struct	tm	tm;
 	case FIELD_MONT:
 		/* Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec */
 		if ( strlen(s) < 3 ) {
-		    my_log("Unparsable date: %s\n", date);
+		    my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 		    free(xdate);
 		    return(-1);
 		}
@@ -790,7 +884,7 @@ struct	tm	tm;
 			month = 11;
 			break;
 		    default:
-			my_log("Unparsable date: %s\n", date);
+			my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			free(xdate);
 			return(-1);
 		}
@@ -804,11 +898,11 @@ struct	tm	tm;
 		}
 		break;
 	case FIELD_YEAR:
-		if ( type==TYPE_ASC && !isdigit(*s) ) /* here can be zonename */
+		if ( type==TYPE_ASC && !IS_DIGIT(*s) ) /* here can be zonename */
 		    break;
 		year = atoi(s);
 		if ( year == 0 ) {
-		     my_log("Unparsable date: %s\n", date);
+		     my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 		     free(xdate);
 		     return(-1);
 		}
@@ -819,11 +913,11 @@ struct	tm	tm;
 		break;
 	case FIELD_TIME:
 		hour = mins = secs = 0;
-		while (*s && isdigit(*s) ) hour = hour*10 + ((*s++)-'0');
+		while (*s && IS_DIGIT(*s) ) hour = hour*10 + ((*s++)-'0');
 		if ( *s ) s++;
-		while (*s && isdigit(*s) ) mins = mins*10 + ((*s++)-'0');
+		while (*s && IS_DIGIT(*s) ) mins = mins*10 + ((*s++)-'0');
 		if ( *s ) s++;
-		while (*s && isdigit(*s) ) secs = secs*10 + ((*s++)-'0');
+		while (*s && IS_DIGIT(*s) ) secs = secs*10 + ((*s++)-'0');
 		if ( type == TYPE_ASC ) {
 			field = FIELD_YEAR;
 			break;
@@ -890,18 +984,14 @@ time_t		res, dst;
     dst = 0;
     if ( ttm.tm_isdst > 0)
             dst = -3600;
-#if	defined(SOLARIS)
+#if	defined(SOLARIS) || defined(_AIX)
     res -= timezone+dst;
-#else
-#if	defined(FREEBSD) || defined(LINUX)
+#elif	defined(FREEBSD) || (defined(LINUX) && !defined(HAVE__GMTOFF__) )
     res += ttm.tm_gmtoff;
-#else
-#if	defined(HAVE__GMTOFF__)
+#elif	defined(HAVE__GMTOFF__)
     res += ttm.__tm_gmtoff__ - dst;
 #else
     res += ttm.tm_gmtoff - dst;
-#endif
-#endif
 #endif
     return(*time = res);
 }
@@ -983,7 +1073,7 @@ dehtmlize(char *src)
 char	*res;
 u_char	*s=(u_char*)src, *d;
 
-    res = xmalloc(strlen(src) + 1, "dehtmlize"); /* worst case */
+    res = xmalloc(strlen(src) + 1, "dehtmlize(): dehtmlize"); /* worst case */
     if ( !res ) return(NULL);
     d = (u_char*)res;
     while( *s ) {
@@ -1002,6 +1092,25 @@ u_char	*s=(u_char*)src, *d;
 int
 daemon(int nochdir, int noclose)
 {
+pid_t	child;
+
+    /* this is not complete */
+    child = fork();
+    if ( child < 0 ) {
+	fprintf(stderr, "daemon: Can't fork\n");
+	return;
+    }
+    if ( child > 0 ) {
+	/* parent */
+	exit(0);
+    }
+    if ( !nochdir ) {
+	chdir("/");
+    }
+    if ( !noclose ) {
+	fclose(stdout);
+	fclose(stderr);
+    }
     return(0);
 }
 #endif
@@ -1011,23 +1120,23 @@ increase_hash_size(struct obj_hash_entry* hash, int size)
 {
 int	rc; 
     if ( !hash ) {
-	my_log("hash == NULL in increase_hash_size\n");
+	my_xlog(LOG_SEVERE, "increase_hash_size(): hash == NULL in increase_hash_size\n");
 	return;
     }
     if ( size < 0 ) {
-	my_log("size<=0 in increase_hash_size\n");
+	my_xlog(LOG_SEVERE, "increase_hash_size(): size<=0 in increase_hash_size\n");
 	do_exit(1);
 	return;
     }
     if ( !(rc = pthread_mutex_lock(&hash->size_lock)) ) {
 	hash->size += size;
 	if ( hash->size < 0 ) {
-    	    my_log("increase: hash_size has negative value: %d!\n", hash->size);
+    	    my_xlog(LOG_SEVERE, "increase_hash_size(): increase: hash_size has negative value: %d!\n", hash->size);
 	    do_exit(1);
 	}
 	pthread_mutex_unlock(&hash->size_lock);
     } else {
-	my_log("Can't lock hash entry for increase size\n");
+	my_xlog(LOG_SEVERE, "increase_hash_size(): Can't lock hash entry for increase size\n");
     }
 }
 
@@ -1040,7 +1149,7 @@ int	rc;
 	return;
     }
     if ( size < 0 ) {
-	my_log("size<0 in decrease_hash_size\n");
+	my_xlog(LOG_SEVERE, "decrease_hash_size(): size<0 in decrease_hash_size\n");
 	do_exit(1);
 	return;
     }
@@ -1048,17 +1157,17 @@ int	rc;
     if ( !(rc=pthread_mutex_lock(&hash->size_lock)) ) {
 	hash->size -= size;
 	if ( hash->size < 0 ) {
-    	    my_log("decrease: hash_size has negative value: %d!\n", hash->size);
+    	    my_xlog(LOG_SEVERE, "decrease_hash_size(): decrease: hash_size has negative value: %d!\n", hash->size);
 	    do_exit(1);
 	}
 	pthread_mutex_unlock(&hash->size_lock);
     } else {
-	my_log("Can't lock hash entry for decrease size\n");
+	my_xlog(LOG_SEVERE, "decrease_hash_size(): Can't lock hash entry for decrease size\n");
     }
 }
 
 void
-remove_limits()
+remove_limits(void)
 {
 struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 
@@ -1103,34 +1212,36 @@ struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 	}
 #endif
 }
+
 void
-report_limits()
+report_limits(void)
 {
 struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 
 #if	defined(RLIMIT_DATA)
 	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
-	    my_log("RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
 	}
 #endif
 #if	defined(RLIMIT_NOFILE)
 	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
-	    my_log("RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
 	}
 #endif
 #if	defined(RLIMIT_CORE)
 	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
-	    my_log("RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
 	}
 #endif
 #if	defined(RLIMIT_NPROC) && defined(LINUX)
 	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
-	    if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
-		printf("RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
+	    if ( !getrlimit(RLIMIT_NPROC, &rl) ) /* ??? same condition ??? */    {
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
 	    }
 	}
 #endif
 }
+
 int
 calculate_resident_size(struct mem_obj *obj)
 {
@@ -1149,6 +1260,7 @@ struct	av	*av = obj->headers;
     }
     return(rs);
 }
+
 int
 calculate_container_datalen(struct buff *b)
 {
@@ -1171,6 +1283,7 @@ rwl_init(rwl_t	*rwlp)
     rwlp->rwlock = 0;
     rwlp->waiting_writers = 0;
 }
+
 void
 rwl_destroy(rwl_t *rwlp)
 {
@@ -1189,8 +1302,9 @@ rwl_rdlock(rwl_t *rwlp)
 	rwlp->rwlock++;
 	pthread_mutex_unlock(&rwlp->m);
     } else
-	my_log("Cant rdlock\n");
+	my_xlog(LOG_SEVERE, "rwl_rdlock(): Can't rdlock\n");
 }
+
 /* acquire write lock */
 void
 rwl_wrlock(rwl_t *rwlp)
@@ -1204,7 +1318,7 @@ rwl_wrlock(rwl_t *rwlp)
 	rwlp->rwlock = -1;
 	pthread_mutex_unlock(&rwlp->m);
     } else 
-	my_log("Cant rwlock\n");
+	my_xlog(LOG_SEVERE, "rwl_wrlock(): Can't rwlock\n");
 }
 
 /* unlock rwlock */
@@ -1230,7 +1344,12 @@ rwl_unlock(rwl_t *rwlp)
 void
 my_sleep(int sec)
 {
+#if	defined(OSF)
+    /* DU don't want to sleep in poll when number of descriptors is 0 */
+    sleep(sec);
+#else
     (void)poll_descriptors(0, NULL, sec*1000);
+#endif
 }
 
 int
@@ -1248,7 +1367,7 @@ int	rc=-1;
 
 	if ( msec < 0 ) msec = -1;
 	if ( n > MAXPOLLFD ) {
-	    pollfdsaved = pollptr = xmalloc(n*sizeof(struct pollfd),"");
+	    pollfdsaved = pollptr = xmalloc(n*sizeof(struct pollfd),"poll_descriptors(): 1");
 	    if ( !pollptr ) return(-1);
 	} else
 	    pollptr = pollfd;
@@ -1369,6 +1488,7 @@ int	rc=-1;
     }
     return(rc);
 }
+
 #ifdef	FREEBSD
 /* Under FreeBSD all threads get poll/select interrupted (even in
    threads with signals blocked, so we need version of poll_descriptors
@@ -1391,7 +1511,7 @@ int	rc=-1;
 
 	if ( msec < 0 ) msec = -1;
 	if ( n > MAXPOLLFD ) {
-	    pollfdsaved = pollptr = xmalloc(n*sizeof(struct pollfd),"");
+	    pollfdsaved = pollptr = xmalloc(n*sizeof(struct pollfd),"poll_descriptors_S(): 1");
 	    if ( !pollptr ) return(-1);
 	} else
 	    pollptr = pollfd;
@@ -1503,10 +1623,11 @@ int	rc=-1;
     return(rc);
 }
 #endif
+
 char*
 my_inet_ntoa(struct sockaddr_in * sa)
 {
-char * res = xmalloc(20, "my_inet_ntoa");
+char * res = xmalloc(20, "my_inet_ntoa(): 1");
 uint32_t	ia = ntohl(sa->sin_addr.s_addr);
 uint32_t	a,b,c,d;
 
@@ -1516,10 +1637,10 @@ uint32_t	a,b,c,d;
     c = (ia & 0x0000ff00) >> 8;
     d = (ia & 0x000000ff);
     sprintf(res, "%d.%d.%d.%d",
-	ia >> 24,
-	(ia & 0x00ff0000) >> 16,
-	(ia & 0x0000ff00) >> 8,
-	(ia & 0x000000ff));
+	(unsigned)(ia >> 24),
+	(unsigned)((ia & 0x00ff0000) >> 16),
+	(unsigned)((ia & 0x0000ff00) >> 8),
+	(unsigned)((ia & 0x000000ff)));
     return(res);
 }
 
@@ -1530,21 +1651,19 @@ struct buff *next;
 
     while(buff) {
 	next = buff->next;
-	/*my_log("Free buffer: %d of %d, next:%p\n", buff->size, buff->curr_size, buff->next);*/
+	/*my_xlog(LOG_DBG, "free_container(): Free buffer: %d of %d, next: %p\n", buff->size, buff->curr_size, buff->next);*/
 	if ( buff->data ) free(buff->data);
 	free(buff);
 	buff = next;
     }
-    
 }
-
 
 void
 analyze_header(char *p, struct server_answ *a)
 {
 char	*t;
 
-    my_xlog(LOG_HTTP, "--->'%s'\n", p);
+    my_xlog(LOG_HTTP|LOG_DBG, "analyze_header(): ---> `%s'.\n", p);
     if ( !a->status_code ) {
 	/* check HTTP/X.X XXX */
 	if ( !strncasecmp(p, "HTTP/", 5) ) {
@@ -1555,11 +1674,11 @@ char	*t;
 	    }
 	    t = strchr(p, ' ');
 	    if ( !t ) {
-		my_log("Wrong_header: %s\n", p);
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "analyze_header(): Wrong_header: %s\n", p);
 		return;
 	    }
 	    a->status_code = atoi(t);
-	/*    my_log("Status code: %d\n", a->status_code);*/
+	    my_xlog(LOG_DBG, "analyze_header(): Status code: %d\n", a->status_code);
 	}
 	return;
     }
@@ -1567,7 +1686,7 @@ char	*t;
 	char        *x;
 
 	x=p + 30;
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->request_time = atoi(x);
 	return;
     }
@@ -1575,7 +1694,7 @@ char	*t;
 	char        *x;
 
 	x=p + 31;
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->response_time = atoi(x);
 	return;
     }
@@ -1583,7 +1702,7 @@ char	*t;
 	char        *x;
 
 	x=p + 31;
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->x_content_length = atoi(x);
 	return;
     }
@@ -1591,7 +1710,7 @@ char	*t;
 	char        *x;
 
 	x=p + 29;
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->times.expires = atoi(x);
 	SET(a->flags, ANSW_EXPIRES_ALTERED | ANSW_HAS_EXPIRES);
 	return;
@@ -1600,7 +1719,7 @@ char	*t;
 	char        *x;
 	/* length */
 	x=p + 16; /* strlen("content-length: ") */
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->content_len = atoi(x);
 	return;
     }
@@ -1608,17 +1727,17 @@ char	*t;
 	char        *x;
 	/* length */
 	x=p + 6; /* strlen("date: ") */
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->times.date  = global_sec_timer;
-	if (http_date(x, &a->times.date) ) my_log("Can't parse date: %s\n", x);
+	if (http_date(x, &a->times.date) ) my_xlog(LOG_DBG|LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
 	return;
     }
     if ( !strncasecmp(p, "Last-Modified: ", 15) ) {
 	char        *x;
 	/* length */
 	x=p + 15; /* strlen("date: ") */
-	while( *x && isspace(*x) ) x++;
-	if (http_date(x, &a->times.last_modified) ) my_log("Can't parse date: %s\n", x);
+	while( *x && IS_SPACE(*x) ) x++;
+	if (http_date(x, &a->times.last_modified) ) my_xlog(LOG_DBG|LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
 	    else
 		a->flags |= ANSW_LAST_MODIFIED;
 	return;
@@ -1641,7 +1760,7 @@ char	*t;
 	char        *x;
 	/* length */
 	x=p + 15; /* strlen("Cache-Control: ") */
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	if ( strstr(x, "no-store") )
 		a->flags |= ANSW_NO_STORE;
 	if ( strstr(x, "no-cache") )
@@ -1659,7 +1778,7 @@ char	*t;
 	char        *x;
 	/* length */
 	x=p + 12; /* strlen("Connection: ") */
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	if ( !strncasecmp(x, "keep-alive", 10) )
 		a->flags |= ANSW_KEEP_ALIVE;
 	if ( !strncasecmp(x, "close", 5) )
@@ -1670,17 +1789,16 @@ char	*t;
 	char        *x;
 	/* length */
 	x=p + 9; /* strlen("Expires: ") */
-	while( *x && isspace(*x) ) x++;
+	while( *x && IS_SPACE(*x) ) x++;
 	a->times.expires  = time(NULL);
 	if (http_date(x, &a->times.expires)) {
-		my_log("Can't parse date: %s\n", x);
+		my_xlog(LOG_DBG|LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
 		return;
 	}
 	a->flags |= ANSW_HAS_EXPIRES;
 	return;
     }
 }
-
 
 struct av*
 lookup_av_by_attr(struct av *avp, char *attr)
@@ -1720,15 +1838,15 @@ int
 put_av_pair(struct av **pairs, char *attr, char *val)
 {
 struct	av	*new = NULL, *next;
-char		*new_attr, *new_val;
+char		*new_attr=NULL, *new_val = NULL;
 
-    new = xmalloc(sizeof(*new), "for av pair");
+    new = xmalloc(sizeof(*new), "put_av_pair(): for av pair");
     if ( !new ) goto failed;
     bzero(new, sizeof(*new));
-    new_attr=xmalloc( strlen(attr)+1, "for new_attr" );
+    new_attr=xmalloc( strlen(attr)+1, "put_av_pair(): for new_attr" );
     if ( !new_attr ) goto failed;
     strcpy(new_attr, attr);
-    new_val=xmalloc( strlen(val)+1, "for new_val" );
+    new_val=xmalloc( strlen(val)+1, "put_av_pair(): for new_val" );
     if ( !new_val ) goto failed;
     strcpy(new_val, val);
     new->attr = new_attr;
@@ -1756,9 +1874,9 @@ struct	av	*new=NULL, *next;
 char		*attr=avtext, *sp=avtext, *val,holder;
 char		*new_attr=NULL, *new_val=NULL;
 
-    while( *sp && !isspace(*sp) && (*sp != ':') ) sp++;
+    while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
     if ( !*sp ) {
-	my_log("Invalid header string: %s\n", avtext);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "add_header_av(): Invalid header string: %s\n", avtext);
 	return(-1);
     }
     if ( *sp ==':' ) sp++;
@@ -1766,13 +1884,13 @@ char		*new_attr=NULL, *new_val=NULL;
     *sp = 0;
     new = xmalloc(sizeof(*new), "for av pair");
     if ( !new ) goto failed;
-    new_attr=xmalloc( strlen(attr)+1, "for new_attr" );
+    new_attr=xmalloc( strlen(attr)+1, "add_header_av(): for new_attr" );
     if ( !new_attr ) goto failed;
     strcpy(new_attr, attr);
     *sp = holder;
-    val = sp; while( *val && isspace(*val) ) val++;
+    val = sp; while( *val && IS_SPACE(*val) ) val++;
     /*if ( !*val ) goto failed;*/
-    new_val = xmalloc( strlen(val) + 1, "for val");
+    new_val = xmalloc( strlen(val) + 1, "add_header_av(): for val");
     if ( !new_val ) goto failed;
     strcpy(new_val, val);
     new->attr = new_attr;
@@ -1798,7 +1916,7 @@ int
 check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b, struct request *rq)
 {
 char	*start, *beg, *end, *p;
-char	holder, its_here=0, off;
+char	holder, its_here=0, off=2;
 char	*p1 = NULL;
 
     if ( !b || !b->data ) return(0);
@@ -1870,9 +1988,14 @@ go:
 		old = b;
 		obj->container = b = new;
 	    } else {
-		my_log("Cannot allocate mem for container\n");
+		my_xlog(LOG_SEVERE, "check_server_headers(): Cannot allocate mem for container\n");
 		return(-1);
 	    }
+	}
+	/* if requested don't cache documents without "Last-Modified" */
+	if ( dont_cache_without_last_modified
+		&& !TEST(a->flags, ANSW_LAST_MODIFIED) ) {
+	    SET(obj->flags, ANSW_NO_STORE|ANSW_NO_CACHE);
 	}
 	/* allocate data storage */
 	if ( a->content_len ) {
@@ -1955,6 +2078,7 @@ go:
     }
     return(0);
 }
+
 struct	buff*
 alloc_buff(int size)
 {
@@ -1962,10 +2086,10 @@ char		*t, *d;
 struct buff	*b;
 
     if ( size <=0 ) return(NULL);
-    t = xmalloc(sizeof(struct buff), "alloc_buff1");
+    t = xmalloc(sizeof(struct buff), "alloc_buff(): 1");
     if ( !t ) return(NULL);
     bzero(t, sizeof(struct buff));
-    d = xmalloc(size, "alloc_buff2");
+    d = xmalloc(size, "alloc_buff(): 2");
     if ( !d ) {
 	free(t);
 	return(NULL);
@@ -1976,6 +2100,7 @@ struct buff	*b;
     b->used = 0;
     return(b);
 }
+
 /* store in hot_buff, allocate buffs if need*/
 int
 store_in_chain(char *src, int size, struct mem_obj *obj)
@@ -2029,7 +2154,7 @@ int	tot;
 
     if ( size <= 0 ) return(-1);
     if ( !buff->data ) {
-	t = xmalloc(((size / CHUNK_SIZE) + 1) * CHUNK_SIZE, "attach_data1");
+	t = xmalloc(((size / CHUNK_SIZE) + 1) * CHUNK_SIZE, "attach_data(): 1");
 	if (!t) return(-1);
 	buff->data = t;
 	memcpy(t, src, size);
@@ -2043,9 +2168,9 @@ int	tot;
     } else {
 	tot = buff->used + size;
 	tot = ((tot / CHUNK_SIZE) + 1) * CHUNK_SIZE;
-	t = xmalloc(tot, "attach_data2");
+	t = xmalloc(tot, "attach_data(): 2");
 	if (!t ) {
-	    my_log("No mem in attach data\n");
+	    my_xlog(LOG_SEVERE, "attach_data(): No mem in attach data\n");
 	    return(-1);
 	}
 	memcpy(t, buff->data, buff->used);
@@ -2056,9 +2181,6 @@ int	tot;
     }
     return(0);
 }
-
-
-
 
 
 #undef	malloc
@@ -2094,25 +2216,26 @@ int			num = 0;
 	num++;
 	if ( buf->state==BU_BUSY ) {
 	    x = buf->data + buf->current_size;
-	    if ( *x     != 'd' ) {my_log("cb, Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+1) != 'e' ) {my_log("cb,Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+2) != 'a' ) {my_log("cb,Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+3) != 'd' ) {my_log("cb,Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    my_log("Busy block: %s\n", buf->descr);
+	    if ( *x     != 'd' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+1) != 'e' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+2) != 'a' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+3) != 'd' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    my_xlog(LOG_SEVERE, "list_all_mallocs(): Busy block: %s\n", buf->descr);
 	    if (!strcmp(buf->descr, "string"))
-		my_log("<%s>\n", buf->data);
+		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "list_all_mallocs(): <%s>\n", buf->data);
 	} else {
 	    int i = buf->size;
 	    x=buf->data;
 	    for(;i;i--,x++) if (*x) {
-		my_log("free buffer '%s' destroyed\n", buf->descr);
+		my_xlog(LOG_SEVERE, "list_all_mallocs(): free buffer `%s' destroyed\n", buf->descr);
 		do_exit(0);
 	    };
 	}
 	buf=buf->next;
     }
-    my_log("Total bufs: %d\n", num);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "list_all_mallocs(): Total bufs: %d\n", num);
 }
+
 void
 check_all_buffs()
 {
@@ -2123,15 +2246,15 @@ char			*x;
     while(buf) {
 	if ( buf->state==BU_BUSY ) {
 	    x = buf->data + buf->current_size;
-	    if ( *x     != 'd' ) {my_log("cb, Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+1) != 'e' ) {my_log("cb,Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+2) != 'a' ) {my_log("cb,Destroyed: '%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+3) != 'd' ) {my_log("cb,Destroyed: '%s'\n",buf->data); do_exit(0);}
+	    if ( *x     != 'd' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+1) != 'e' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+2) != 'a' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+3) != 'd' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
 	} else {
 	    int i = buf->size;
 	    x=buf->data;
 	    for(;i;i--,x++) if (*x) {
-		my_log("free buffer '%s' destroyed\n", buf->descr);
+		my_xlog(LOG_SEVERE, "check_all_buffs(): free buffer `%s' destroyed.\n", buf->descr);
 		do_exit(0);
 	    };
 	}
@@ -2147,7 +2270,7 @@ xmalloc(size_t	size, char *d)
 char	*p;
 
 	if ( size < 0 ) {
-	    my_log("Alloc %d for %s\n", size, d);
+	    my_xlog(LOG_DBG, "xmalloc(): Alloc %d for %s\n", size, d);
 	    do_exit(1);
 	}
 	p = malloc(size);
@@ -2162,9 +2285,9 @@ struct malloc_buf	*buf;
 	malloc_mutex_inited = 1;
     }
     if ( !d ) {
-	my_log("Invalid malloc call\n");
+	my_xlog(LOG_SEVERE, "xmalloc(): Invalid malloc call\n");
     }
-    my_log("xmalloc: %d for %s\n", size, d);
+    my_xlog(LOG_DBG, "xmalloc(): %d for %s\n", size, d);
     pthread_mutex_lock(&malloc_mutex);
     check_all_buffs();
     b = &m;
@@ -2179,7 +2302,7 @@ struct malloc_buf	*buf;
 	int	i = buf->size;
 	x=buf->data;
 	for(;i;i--,x++) if (*x) {
-		my_log("free buffer '%s' destroyed\n", buf->descr);
+		my_xlog(LOG_SEVERE, "xmalloc(): free buffer `%s' destroyed.\n", buf->descr);
 		do_exit(0);
 	};
 	buf->current_size  = size;
@@ -2191,7 +2314,7 @@ struct malloc_buf	*buf;
 	*(x+2)	= 'a';
 	*(x+3)	= 'd';
 	pthread_mutex_unlock(&malloc_mutex);
-	my_log("returning old %p\n", buf->data);
+	my_xlog(LOG_DBG, "xmalloc(): returning old %p\n", buf->data);
 	return(buf->data);
     } else {
 	char *x;
@@ -2211,7 +2334,7 @@ struct malloc_buf	*buf;
 	*(x+2)	= 'a';
 	*(x+3)	= 'd';
 	pthread_mutex_unlock(&malloc_mutex);
-	my_log("returning new %p\n", buf->data);
+	my_xlog(LOG_DBG, "xmalloc(): returning new %p\n", buf->data);
 	return(buf->data);
     }
 #endif
@@ -2234,24 +2357,24 @@ char			*x;
 #else
 
     pthread_mutex_lock(&malloc_mutex);
-    printf("free %p\n", ptr);
+    printf("xfree(): free %p\n", ptr);
     while(buf) {
 	if ( buf->data == ptr ) {
-	    my_log("free %s\n", buf->descr);
+	    my_xlog(LOG_DBG, "xfree(): free %s\n", buf->descr);
 	    x = buf->data + buf->current_size;
-	    if ( *x     != 'd' ) {my_log("Destroyed: %s\n",buf->data); do_exit(0);}
-	    if ( *(x+1) != 'e' ) {my_log("Destroyed: %s\n",buf->data); do_exit(0);}
-	    if ( *(x+2) != 'a' ) {my_log("Destroyed: %s\n",buf->data); do_exit(0);}
-	    if ( *(x+3) != 'd' ) {my_log("Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *x     != 'd' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *(x+1) != 'e' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *(x+2) != 'a' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *(x+3) != 'd' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
 	    buf->state= BU_FREE;
 	    bzero(buf->data, buf->size);
-	    printf("freed %p %d bytes\n", buf->data, buf->size);
+	    printf("xfree(): freed %p %d bytes\n", buf->data, buf->size);
 	    pthread_mutex_unlock(&malloc_mutex);
 	    return;
 	}
 	buf=buf->next;
     }
-    printf("Freeing not allocated\n");
+    printf("xfree(): Freeing not allocated\n");
     do_exit(0);
 #endif
 }
@@ -2335,13 +2458,13 @@ lookup_mime_type(char *path)
 struct mime_types_ *mt = mime_types;
 char		   *ext;
 
-    my_log("Looking up mimetype for %s\n", path);
+    my_xlog(LOG_DBG|LOG_INFORM, "lookup_mime_type(): Looking up mimetype for %s\n", path);
     /* extract ext from path */
     ext = strrchr(path, '.');
     if ( ext ) ext++;
     if ( ext && *ext ) while ( mt->ext ) {
 	if ( !strcasecmp(ext,mt->ext) ) {
-	    my_xlog(LOG_HTTP, "type: %s\n", mt->type);
+	    my_xlog(LOG_HTTP|LOG_DBG, "lookup_mime_type(): type: %s\n", mt->type);
 	    return(mt->type);
 	}
 	mt++;
@@ -2365,6 +2488,7 @@ int i;
     base64_value['='] = 0;
 
 }
+
 char*
 base64_encode(char *src) {
 int		bits, char_count, len;
@@ -2375,7 +2499,7 @@ unsigned char 	c;
     len = strlen(src);
     lim = src+len;
 
-    res = xmalloc((len*4)/3+4, "b64e");
+    res = xmalloc((len*4)/3+4, "base64_encode(): 1");
     if ( !res )
 	return(NULL);
     o_char = res;
@@ -2411,6 +2535,7 @@ unsigned char 	c;
     }
     return(res);
 }
+
 char *
 base64_decode(char *p)
 {
@@ -2424,7 +2549,7 @@ long val;
 	return NULL;
 
     base_result_sz = strlen(p);
-    result = xmalloc(base_result_sz+1,"");
+    result = xmalloc(base_result_sz+1,"base64_decode(): 1");
 
     val = c = 0;
     for (j = 0; *p && j + 3 < base_result_sz; p++) {
@@ -2483,7 +2608,7 @@ add_new_charset(struct charset **charsets, char *name)
 struct	charset *result;
 char		*newname;
 
-    result = xmalloc(sizeof(*result), "new charset");
+    result = xmalloc(sizeof(*result), "add_new_charset(): new charset");
     if ( !result ) return(NULL);
     newname = xmalloc(strlen(name)+1, "");
     if ( !newname ) {
@@ -2521,6 +2646,7 @@ free_charset(struct charset *charset)
     xfree(charset);
     return(0);
 }
+
 void
 free_output_obj(struct output_object *obj)
 {
@@ -2531,6 +2657,7 @@ free_output_obj(struct output_object *obj)
     free(obj);
     return;
 }
+
 void
 free_avlist(struct av *av)
 {
@@ -2544,6 +2671,7 @@ struct	av *next;
 	av = next;
     }
 }
+
 void
 process_output_object(int so, struct output_object *obj, struct request *rq)
 {
@@ -2551,7 +2679,6 @@ int		rc = 0,r, sended, ssended, send_hot_pos;
 struct	av	*av;
 struct	timeval	tv;
 struct	buff	*send_hot_buff;
-fd_set		wset;
 struct	pollarg	pollarg;
 
 #ifdef	MODULES
@@ -2606,7 +2733,7 @@ char	res;
     if ( !strcasecmp(day, "fri") ) res =  32; else
     if ( !strcasecmp(day, "sat") ) res =  64; else
     if ( !strcasecmp(day, "all") ) res = 127; else
-    res = -1;
+    res = (char)-1;
     return(res);
 }
 
@@ -2682,42 +2809,20 @@ int	offset = sizeof("X-oops-internal-rq");
 }
 
 int
-tcp_port_in_use(u_short port)
+tcp_port_in_use(u_short port, struct in_addr *addr)
 {
-struct	tcpport	*curr = tcpports;
+struct	listen_so_list	*ls = listen_so_list;
 
-    while ( curr ) {
-	if ( curr->port == port ) {
-	    return(curr->so);
-	}
-	curr = curr->next;
+    while ( ls ) {
+	if ( ls->port && (ls->port == port)
+	     && (   (ls->addr.s_addr == INADDR_ANY) /* we binded on all addrs */
+	          ||(ls->addr.s_addr == addr->s_addr)
+	        )
+	   ) return(ls->so);
+	ls = ls->next;
     }
     return(0);
-}
 
-void
-add_to_tcp_port_in_use(u_short port, int so)
-{
-struct	tcpport	*new = malloc(sizeof(*new));
-
-    if ( !new ) return;
-    new->port = port;
-    new->next = tcpports;
-    new->so = so;
-    tcpports = new;
-}
-
-void
-free_tcp_ports_in_use()
-{
-struct	tcpport	*curr = tcpports, *next;
-
-    while( curr ) {
-	next = curr->next;
-	free(curr);
-	curr = next;
-    }
-    tcpports = NULL;
 }
 
 void
@@ -2731,7 +2836,7 @@ memcpy_to_lower(char *d, char *s, size_t size)
 }
 
 struct l_string_list *
-alloc_l_string_list()
+alloc_l_string_list(void)
 {
 struct l_string_list *new;
     new = malloc(sizeof(*new));
@@ -2770,6 +2875,7 @@ leave_l_string_list(struct l_string_list *l_list)
 	}
     }
 }
+
 void
 free_refresh_patterns(refresh_pattern_t *r_p)
 {
@@ -2782,6 +2888,7 @@ refresh_pattern_t	*next;
 	r_p = next;
     }
 }
+
 void
 set_refresh_pattern(struct request *rq, refresh_pattern_t *list)
 {
@@ -2797,13 +2904,71 @@ set_refresh_pattern(struct request *rq, refresh_pattern_t *list)
     }
 }
 
+int
+find_bind_acl(struct request *rq)
+{
+bind_acl_t	*curr;
+
+    if ( !rq ) return(0);
+    curr = bind_acl_list;
+    while(curr) {
+	if ( check_acl_access(curr->acl_list, rq) == TRUE ) {
+	    if ( curr->addr.s_addr == INADDR_ANY ) {
+		struct	sockaddr_in	sa;
+		bzero(&sa, sizeof(sa));
+		if ( curr->name && !str_to_sa(curr->name, (struct sockaddr*)&sa) )
+		    curr->addr.s_addr = sa.sin_addr.s_addr;
+	    }
+	    return(curr->addr.s_addr);
+	}
+	curr = curr->next;
+    }
+    return(0);
+}
+
+void
+parse_bind_acl(char *string)
+{
+char		*bind_addr, *p, *acls;
+bind_acl_t	*new, *next;
+
+    if ( !string ) return;
+    while(*string && IS_SPACE(*string)) string++;
+    new = calloc(1, sizeof(*new));
+    if ( !new )
+	return;
+    bind_addr = strdup(string);
+    if ( !bind_addr ) return;
+    p = bind_addr;
+    while ( *p && !IS_SPACE(*p) ) p++;
+    if ( !*p ) {
+	free(bind_addr);
+	verb_printf("parse_bind_acl(): Invalid bind_acl line\n");
+	return;
+    }
+    *p = 0;
+    if ( bind_addr ) new->name = strdup(bind_addr);
+    acls = ++p;
+    parse_acl_access(&new->acl_list, acls);
+    free(bind_addr);
+    printf("parse_bind_acl(): String: %s\n", string);
+    if ( !bind_acl_list ) {
+	bind_acl_list = new;
+	return;
+    }
+    next = bind_acl_list;
+    while ( next->next )
+	next = next->next;
+    next->next = new;
+}
+
 void
 parse_refresh_pattern(refresh_pattern_t **list, char *p)
 {
 char		*t, *f, *tok_ptr;
 char		*aclname = NULL, *minp = NULL, *lmp = NULL, *maxp = NULL;
-int		acl_index, min, max, lm;
-refresh_pattern_t *new, *curr, *next;
+int		acl_index=0, min=0, max=0, lm=0;
+refresh_pattern_t *new, *curr;
 
     if ( !list || !p )
 	return;
@@ -2816,7 +2981,7 @@ refresh_pattern_t *new, *curr, *next;
 	    aclname = f ;
 	    acl_index = acl_index_by_name(aclname);
 	    if ( !acl_index ) {
-		verb_printf("ACL '%s' NOT FOUND\n", aclname);
+		verb_printf("parse_refresh_pattern(): acl `%s' not found.\n", aclname);
 		return;
 	    }
 	    continue;
@@ -2843,6 +3008,7 @@ refresh_pattern_t *new, *curr, *next;
     new = malloc(sizeof(*new));
     if ( !new ) return;
     bzero(new, sizeof(*new));
+    if ( min > max ) min = max;
     new->min = min;
     new->max = max;
     new->lmt = lm;
@@ -2855,4 +3021,30 @@ refresh_pattern_t *new, *curr, *next;
     while ( curr->next )
 	curr = curr->next;
     curr->next = new;
+}
+
+void
+set_euser(char *user)
+{
+int		rc;
+struct passwd	*pwd = NULL;
+uid_t		uid = 0;
+gid_t		gid = 0;
+
+    if ( !user ) {
+	uid = getuid();
+	gid = getgid();
+    } else {
+	if ( (pwd = getpwnam(user)) ) {
+	    uid = pwd->pw_uid;
+	    gid = pwd->pw_gid;
+	} else
+	    printf("set_euser(): Can't getpwnam `%s'.\n", oops_user);
+    }
+    rc = setegid(gid);
+    if ( rc == -1 )
+	printf("set_euser(): Can't setegid(): %s\n", strerror(errno));
+    rc = seteuid(uid);
+    if ( rc == -1 )
+	printf("set_euser(): Can't seteuid(): %s\n", strerror(errno));
 }

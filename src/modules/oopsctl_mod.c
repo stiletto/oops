@@ -22,6 +22,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 #include	<sys/un.h>
 
 #include	<netinet/in.h>
@@ -53,7 +54,7 @@ static	void	open_oopsctl_so();
 int
 mod_load()
 {
-    printf("oopsctl started\n");
+    printf("Oopsctl started\n");
     rwl_init(&oopsctl_config_lock);
     socket_path[0] = 0;
     html_refresh = 0;
@@ -75,17 +76,26 @@ mod_config_beg()
     socket_path[0] = 0;
     html_refresh = 0;
     UNLOCK_OOPSCTL_CONFIG ;
+    return(MOD_CODE_OK);
+}
+
+int
+mod_run()
+{
+    WRLOCK_OOPSCTL_CONFIG ;
+    if ( oops_user ) set_euser(oops_user);
+    if ( socket_path[0] ) {
+	open_oopsctl_so();
+    }
+    if ( oops_user ) set_euser(NULL);
+    UNLOCK_OOPSCTL_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
 mod_config_end()
 {
-
-    WRLOCK_OOPSCTL_CONFIG ;
-    if ( socket_path[0] ) {
-	open_oopsctl_so();
-    }
-    UNLOCK_OOPSCTL_CONFIG ;
+    return(MOD_CODE_OK);
 }
 
 int
@@ -95,18 +105,17 @@ char	*p = config;
 
     WRLOCK_OOPSCTL_CONFIG ;
 
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
     if ( !strncasecmp(p, "socket_path", 11) ) {
 	p += 11;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(socket_path, p, sizeof(socket_path) -1 );
     }
     if ( !strncasecmp(p, "html_refresh", 12) ) {
 	p += 12;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	html_refresh = atoi(p);
     }
-done:
     UNLOCK_OOPSCTL_CONFIG ;
     return(MOD_CODE_OK);
 }
@@ -120,40 +129,13 @@ char *ptr = buff, c;
     *buff = 0;
     while( read(so, &c, 1) == 1 ) {
 	/* skip any leading space chars */
-	if ( (ptr==buff) && isspace(c) ) continue;
+	if ( (ptr==buff) && IS_SPACE(c) ) continue;
 	if ( c == '\n' || c == '\r' ) {
 	    return(1);
 	}
 	*ptr = c; ptr++; *ptr = 0;
         if ( ptr - buff >= len -1 )
             return(1);
-    }
-    return(0);
-}
-
-int
-process_command(int so, char *command)
-{
-    if ( !strcasecmp(command, "reconfigure") ) {
-	kill(my_pid, SIGHUP);
-    } else
-    if ( !strcasecmp(command, "shutdown") || !strcasecmp(command, "stop")) {
-	kill(my_pid, SIGTERM);
-    }
-    if ( !strcasecmp(command, "rotate") ) {
-	kill(my_pid, SIGWINCH);
-    }
-    if ( !strcasecmp(command, "help") ) {
-	print_help(so);
-    }
-    if ( !strcasecmp(command, "stat") ) {
-	print_stat(so);
-    }
-    if ( !strcasecmp(command, "htmlstat") ) {
-	print_htmlstat(so);
-    }
-    if ( !strcasecmp(command, "quit") ) {
-	return(0);
     }
     return(0);
 }
@@ -172,6 +154,7 @@ char	**p, *help_message[] = {"reconfigure - re-read config file (like kill -HUP)
 	write(so, *p, strlen(*p));
 	p++;
     }
+    return(0);
 }
 
 int
@@ -182,32 +165,33 @@ int			uptime = global_sec_timer - start_time;
 struct	storage_st	*storage;
 struct	general_module	*mod;
 struct	peer		*peer;
-int			last_min_req_rate, last_min_hit_rate,last_min_icp_rate;
-int			tot_req_rate, tot_hit_rate;
-int			peer_hits_percent;
-int			max_req_rate, max_icp_rate, max_hit_rate;
-off_t			free_pages_p;
+float			last_min_req_rate, last_min_hit_rate,last_min_icp_rate;
+float			tot_req_rate, tot_hit_rate;
+float			peer_hits_percent;
+float			max_req_rate, max_icp_rate, max_hit_rate;
+float			free_pages_p;
 char			ctime_buf[30] = "";
 
     if ( oops_stat.requests_http1 ) {
-	last_min_req_rate = oops_stat.requests_http1/6;
-	last_min_hit_rate = (oops_stat.hits1*1000)/oops_stat.requests_http1;
+	last_min_req_rate = oops_stat.requests_http1/6e1;
+	last_min_hit_rate = (oops_stat.hits1*1e2)/oops_stat.requests_http1;
     } else {
 	last_min_req_rate = last_min_hit_rate = 0;
     }
-    last_min_icp_rate = oops_stat.requests_icp1/6;
+    last_min_icp_rate = oops_stat.requests_icp1/6e1;
     if ( uptime ) {
-	tot_req_rate = (oops_stat.requests_http*10)/uptime;
+	tot_req_rate = (oops_stat.requests_http*1e0)/uptime;
 	if ( oops_stat.requests_http )
-		tot_hit_rate = (oops_stat.hits*1000)/oops_stat.requests_http;
+		tot_hit_rate = (oops_stat.hits*1e2)/oops_stat.requests_http;
 	    else
 		tot_hit_rate = 0;
     } else {
 	tot_req_rate = tot_hit_rate = 0;
+	uptime = 1;
     }
-    max_req_rate = oops_stat.requests_http0_max/6;
-    max_icp_rate = oops_stat.requests_icp0_max/6;
-    max_hit_rate = oops_stat.hits0_max/6;
+    max_req_rate = oops_stat.requests_http0_max/6e1;
+    max_icp_rate = oops_stat.requests_icp0_max/6e1;
+    max_hit_rate = oops_stat.hits0_max/6e1;
     write(so, "## --  General info   --\n", 25);
     sprintf(buf, "Version      : %s, DB version: %s\n", version, db_ver);
     write(so, buf, strlen(buf));
@@ -218,33 +202,69 @@ char			ctime_buf[30] = "";
     CTIME_R(&global_sec_timer, ctime_buf);
     sprintf(buf,  "Last update  : %s", ctime_buf);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Clients      : %d (max: %d)\n", clients_number, oops_stat.clients_max);
+    sprintf(buf, "Clients      : %d (max: %d)\n", (int)clients_number, (int)oops_stat.clients_max);
     write(so, buf, strlen(buf));
-    sprintf(buf, "HTTP requests: %d\n", oops_stat.requests_http);
+    sprintf(buf, "HTTP requests: %d\n", (int)oops_stat.requests_http);
     write(so, buf, strlen(buf));
-    sprintf(buf, "ICP  requests: %d\n", oops_stat.requests_icp);
+    sprintf(buf, "ICP  requests: %d\n", (int)oops_stat.requests_icp);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Total hits   : %d\n", oops_stat.hits);
+    sprintf(buf, "Total hits   : %d\n", (int)oops_stat.hits);
     write(so, buf, strlen(buf));
     if ( current_workers ) {
 	sprintf(buf, "Thread pool  : %d ready to serve (out of %d max)\n", current_workers, max_workers);
 	write(so, buf, strlen(buf));
     }
-    sprintf(buf, "Curr.req.rate: %d.%d req/sec (max: %d.%d)\n",
-	last_min_req_rate/10, last_min_req_rate%10,
-	max_req_rate/10, max_req_rate%10);
+    sprintf(buf, "Curr.req.rate: %.2f req/sec (max: %.2f)\n",
+	last_min_req_rate, max_req_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Tot.req.rate : %d.%d req/sec\n", tot_req_rate/10, tot_req_rate%10);
+    sprintf(buf, "Tot.req.rate : %.2f req/sec\n", tot_req_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Curr.hit.rate: %d.%d %%\n",
-	last_min_hit_rate/10, last_min_hit_rate%10);
+    sprintf(buf, "Curr.hit.rate: %.2f %%\n", last_min_hit_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Tot.hit.rate : %d.%d %%\n", tot_hit_rate/10, tot_hit_rate%10);
+    sprintf(buf, "Tot.hit.rate : %.2f %%\n", tot_hit_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Curr.icp.rate: %d.%d req/sec (max: %d.%d)\n",
-	last_min_icp_rate/10, last_min_icp_rate%10,
-	max_icp_rate/10, max_icp_rate%10);
+    sprintf(buf, "Curr.icp.rate: %.2f req/sec (max: %.2f)\n",
+	last_min_icp_rate, max_icp_rate);
     write(so, buf, strlen(buf));
+#if	HAVE_GETRUSAGE
+    {
+    unsigned long utime, stime, utime0, stime0, total;
+    unsigned long delta, deltatime, deltau, deltas;
+
+    deltatime= (oops_stat.timestamp - oops_stat.timestamp0)*1000;
+    if ( deltatime <= 0 ) deltatime = 60000;
+    utime = oops_stat.rusage.ru_utime.tv_sec*1000 +
+            oops_stat.rusage.ru_utime.tv_usec/1000;
+    stime = oops_stat.rusage.ru_stime.tv_sec*1000 +
+            oops_stat.rusage.ru_stime.tv_usec/1000;
+    utime0 = oops_stat.rusage0.ru_utime.tv_sec*1000 +
+            oops_stat.rusage0.ru_utime.tv_usec/1000;
+    stime0 = oops_stat.rusage0.ru_stime.tv_sec*1000 +
+            oops_stat.rusage0.ru_stime.tv_usec/1000;
+    delta = (utime+stime) - (utime0+stime0);
+    deltau = utime - utime0;
+    deltas = stime - stime0;
+    write(so, "## --       CPU       --\n", 25);
+    sprintf(buf, "Total usage  : %dms\n", (int)(utime+stime));
+    write(so, buf, strlen(buf));
+    sprintf(buf, "Delta usage  : %dms\n", (int)delta);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "Delta time   : %dms\n", (int)deltatime);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "Curr. CPU    : %.2f %% (%.2fs+%.2fu)\n",
+	    (1e2*delta)/deltatime,
+	    (1e2*deltas)/deltatime,
+	    (1e2*deltau)/deltatime);
+    write(so, buf, strlen(buf));
+    total=utime+stime;
+    uptime = 1000*uptime;
+    sprintf(buf, "Aver. CPU    : %.2f %% (%.2fs+%.2fu)\n",
+	    (1e2*total)/uptime,
+	    (1e2*stime)/uptime,
+	    (1e2*utime)/uptime);
+    write(so, buf, strlen(buf));
+    }
+#endif
     /* storages */
     write(so, "## --    storages     --\n", 25);
     RDLOCK_CONFIG;
@@ -253,27 +273,20 @@ char			ctime_buf[30] = "";
 	sprintf(buf, "Storage      : %s\n", storage->path);
 	write(so, buf, strlen(buf));
 	if ( storage->size != -1 )
-#if	defined(WITH_LARGE_FILES)
-	    sprintf(buf, "Size         : %lld bytes (%dMb)\n", storage->size,
-					(int)(storage->size/(off_t)(1024*1024)));
-#else
-	    sprintf(buf, "Size         : %d bytes (%dMb)\n", storage->size,
-					storage->size/(1024*1024));
-#endif
+	    sprintf(buf, "Size         : %.2f MB\n",
+					(1e0*storage->size)/(1024*1024));
 	else
-	    sprintf(buf, "Size         : %d blks (%dMb)\n",
-					storage->super.blks_total,
-					(int)((long long)storage->super.blks_total*4)/1024);
+	    sprintf(buf, "Size         : %.2f MB\n",
+					(storage->super.blks_total*4e0)/1024);
 	write(so, buf, strlen(buf));
 	if ( storage->super.blks_free == 0 || storage->super.blks_total == 0 )
-	    free_pages_p = 0;
+		free_pages_p = 0;
 	    else
-		free_pages_p = ((long long)1000*(long long)storage->super.blks_free)/storage->super.blks_total;
-	sprintf(buf, "Free blks    : %d blks (%dMb) %d.%d %%\n",
+		free_pages_p = (1e2*storage->super.blks_free)/storage->super.blks_total;
+	sprintf(buf, "Free blks    : %d blks (%.2fMb) %.2f %%\n",
 		storage->super.blks_free,
-		(int)(((off_t)storage->super.blks_free*STORAGE_PAGE_SIZE)/(off_t)(1024*1024)),
-		(free_pages_p == 0) ? 0 : free_pages_p/10,
-		(free_pages_p == 0) ? 0 : free_pages_p%10);
+		(1e0*storage->super.blks_free*STORAGE_PAGE_SIZE)/(1024*1024),
+		free_pages_p);
 	write(so, buf, strlen(buf));
 	sprintf(buf, "State        : %s\n", (storage->flags&ST_READY)?
 					"READY":"NOT_READY");
@@ -314,6 +327,7 @@ char			ctime_buf[30] = "";
 	    type = "Document body begins";
 	    break;
 	default:
+	    type = "Unknown";
 	    break;
 	}
 	info = mod->info?mod->info:"";
@@ -349,20 +363,18 @@ char			ctime_buf[30] = "";
 	if ( peer->an_recvd == 0 || peer->hits_recvd == 0 )
 	    peer_hits_percent = 0;
 	    else
-		peer_hits_percent = (peer->hits_recvd*1000)/peer->an_recvd;
-        sprintf(buf, "Hits recvd   : %d (%d.%d %%)\n", peer->hits_recvd,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
+		peer_hits_percent = (peer->hits_recvd*1e2)/peer->an_recvd;
+        sprintf(buf, "Hits recvd   : %d (%.2f %%)\n", peer->hits_recvd,
+			peer_hits_percent);
 	write(so, buf, strlen(buf));
         sprintf(buf, "Reqs recvd   : %d\n", peer->rq_recvd);
 	write(so, buf, strlen(buf));
 	if ( peer->hits_sent == 0 || peer->rq_recvd == 0 )
 	    peer_hits_percent = 0;
 	    else
-		peer_hits_percent = (peer->hits_sent*1000)/peer->rq_recvd;
-        sprintf(buf, "Hits sent    : %d (%d.%d %%)\n", peer->hits_sent,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
+		peer_hits_percent = (peer->hits_sent*1e2)/peer->rq_recvd;
+        sprintf(buf, "Hits sent    : %d (%.2f %%)\n", peer->hits_sent,
+			peer_hits_percent);
 	write(so, buf, strlen(buf));
         sprintf(buf, "Status       : %s\n",
         	TEST(peer->state, PEER_DOWN)?"DOWN":"UP");
@@ -373,6 +385,7 @@ char			ctime_buf[30] = "";
     UNLOCK_CONFIG ;
     sprintf(buf,"## -- end of icp peers--\n");
     write(so, buf, strlen(buf));
+    return(0);
 }
 
 int
@@ -383,33 +396,33 @@ int			uptime = global_sec_timer - start_time;
 struct	storage_st	*storage;
 struct	general_module	*mod;
 struct	peer		*peer;
-int			last_min_req_rate, last_min_hit_rate, last_min_icp_rate;
-int			tot_req_rate, tot_hit_rate;
-int			max_req_rate, max_icp_rate, max_hit_rate;
-int			peer_hits_percent;
-int			free_pages_p;
+float			last_min_req_rate, last_min_hit_rate, last_min_icp_rate;
+float			tot_req_rate, tot_hit_rate;
+float			max_req_rate, max_icp_rate, max_hit_rate;
+float			peer_hits_percent;
+float			free_pages_p;
 char			ctime_buf[30];
 
     if ( oops_stat.requests_http1 ) {
-	last_min_req_rate = oops_stat.requests_http1/6;
-	last_min_hit_rate = (oops_stat.hits1*1000)/oops_stat.requests_http1;
+	last_min_req_rate = oops_stat.requests_http1/6e1;
+	last_min_hit_rate = (oops_stat.hits1*1e2)/oops_stat.requests_http1;
     } else {
 	last_min_req_rate = last_min_hit_rate = 0;
     }
-
+    last_min_icp_rate = oops_stat.requests_icp1/6e1;
     if ( uptime ) {
-	tot_req_rate = (oops_stat.requests_http*10)/uptime;
+	tot_req_rate = (oops_stat.requests_http*1e0)/uptime;
 	if ( oops_stat.requests_http )
-		tot_hit_rate = (oops_stat.hits*1000)/oops_stat.requests_http;
+		tot_hit_rate = (oops_stat.hits*1e2)/oops_stat.requests_http;
 	    else
 		tot_hit_rate = 0;
     } else {
 	tot_req_rate = tot_hit_rate = 0;
+	uptime = 1;
     }
-    max_req_rate = oops_stat.requests_http0_max/6;
-    max_icp_rate = oops_stat.requests_icp0_max/6;
-    max_hit_rate = oops_stat.hits0_max/6;
-    last_min_icp_rate = oops_stat.requests_icp1/6;
+    max_req_rate = oops_stat.requests_http0_max/6e1;
+    max_icp_rate = oops_stat.requests_icp0_max/6e1;
+    max_hit_rate = oops_stat.hits0_max/6e1;
     sprintf(buf, "<html><title>Oops stat</title>\n");
     write(so, buf, strlen(buf));
     if ( html_refresh ) {
@@ -427,62 +440,92 @@ char			ctime_buf[30];
     CTIME_R(&global_sec_timer, ctime_buf);
     sprintf(buf,  "<tr><td>Last update<td>%s", ctime_buf);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Clients<td>%d (max: %d)\n", clients_number, oops_stat.clients_max);
+    sprintf(buf, "<tr><td>Clients<td>%d (max: %d)\n", (int)clients_number, (int)oops_stat.clients_max);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>HTTP requests<td>%d\n", oops_stat.requests_http);
+    sprintf(buf, "<tr><td>HTTP requests<td>%d\n", (int)oops_stat.requests_http);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>ICP  requests<td>%d\n", oops_stat.requests_icp);
+    sprintf(buf, "<tr><td>ICP  requests<td>%d\n", (int)oops_stat.requests_icp);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Total hits<td>%d\n", oops_stat.hits);
+    sprintf(buf, "<tr><td>Total hits<td>%d\n", (int)oops_stat.hits);
     write(so, buf, strlen(buf));
     if ( current_workers ) {
 	sprintf(buf, "<tr><td>Thread pool<td>%d ready to serve (out of %d max)\n", current_workers, max_workers);
 	write(so, buf, strlen(buf));
     }
-    sprintf(buf, "<tr><td>Curr.req.rate<td>%d.%d req/sec (max: %d.%d)\n",
-	last_min_req_rate/10, last_min_req_rate%10,
-	max_req_rate/10, max_req_rate%10);
+    sprintf(buf, "<tr><td>Curr.req.rate<td>%.2f req/sec (max: %.2f)\n",
+	last_min_req_rate, max_req_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Tot.req.rate<td>%d.%d req/sec\n",
-	tot_req_rate/10, tot_req_rate%10);
+    sprintf(buf, "<tr><td>Tot.req.rate<td>%.2f req/sec\n",
+	tot_req_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Curr.hit.rate<td>%d.%d %%\n",
-	last_min_hit_rate/10, last_min_hit_rate%10);
+    sprintf(buf, "<tr><td>Curr.hit.rate<td>%.2f %%\n",
+	last_min_hit_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Tot.hit.rate<td>%d.%d %%\n", tot_hit_rate/10, tot_hit_rate%10);
+    sprintf(buf, "<tr><td>Tot.hit.rate<td>%.2f %%\n", tot_hit_rate);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Curr.icp.rate<td>%d.%d req/sec (max: %d.%d)\n",
-	last_min_icp_rate/10, last_min_icp_rate%10,
-	max_icp_rate/10, max_icp_rate%10);
+    sprintf(buf, "<tr><td>Curr.icp.rate<td>%.2f req/sec (max: %.2f)\n",
+	last_min_icp_rate, max_icp_rate);
     write(so, buf, strlen(buf));
+#if	HAVE_GETRUSAGE
+    {
+    unsigned long utime, stime, utime0, stime0, total;
+    unsigned long delta, deltatime, deltau, deltas;
+
+    deltatime= (oops_stat.timestamp - oops_stat.timestamp0)*1000;
+    if ( deltatime <= 0 ) deltatime = 60000;
+    utime = oops_stat.rusage.ru_utime.tv_sec*1000 +
+            oops_stat.rusage.ru_utime.tv_usec/1000;
+    stime = oops_stat.rusage.ru_stime.tv_sec*1000 +
+            oops_stat.rusage.ru_stime.tv_usec/1000;
+    utime0 = oops_stat.rusage0.ru_utime.tv_sec*1000 +
+            oops_stat.rusage0.ru_utime.tv_usec/1000;
+    stime0 = oops_stat.rusage0.ru_stime.tv_sec*1000 +
+            oops_stat.rusage0.ru_stime.tv_usec/1000;
+    delta = (utime+stime) - (utime0+stime0);
+    deltau = utime - utime0;
+    deltas = stime - stime0;
+    sprintf(buf, "<tr><td>Total usage<td>%dms\n", (int)(utime+stime));
+    write(so, buf, strlen(buf));
+    sprintf(buf, "<tr><td>Delta usage<td>%dms\n", (int)delta);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "<tr><td>Delta time<td>%dms\n", (int)deltatime);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "<tr><td>Curr. CPU<td>%.2f %% (%.2fs+%.2fu)\n",
+	    (1e2*delta)/deltatime,
+	    (1e2*deltas)/deltatime,
+	    (1e2*deltau)/deltatime);
+    write(so, buf, strlen(buf));
+    total=utime+stime;
+    uptime = 1000*uptime;
+    sprintf(buf, "<tr><td>Aver. CPU<td>%.2f %% (%.2fs+%.2fu)\n",
+	    (1e2*total)/uptime,
+	    (1e2*stime)/uptime,
+	    (1e2*utime)/uptime);
+    write(so, buf, strlen(buf));
+    }
+#endif
     /* storages */
     sprintf(buf, "<tr bgcolor=blue><td><font color=yellow>Storages</font><td>&nbsp\n");
     write(so, buf, strlen(buf));
     RDLOCK_CONFIG;
     storage = storages;
     while(storage) {
-	sprintf(buf, "<tr><td>Storage<td>%s\n", storage->path);
+	sprintf(buf, "<tr><td><b>Storage<td><b>%s\n", storage->path);
 	write(so, buf, strlen(buf));
 	if ( storage->size != -1 )
-#if	defined(WITH_LARGE_FILES)
-	    sprintf(buf, "<tr><td>Size<td>%lld bytes (%dMb)\n", storage->size,
-					(int)(storage->size/(off_t)(1024*1024)));
-#else
-	    sprintf(buf, "<tr><td>Size<td>%d bytes (%dMb)\n", storage->size,
-					storage->size/(1024*1024));
-#endif
+	    sprintf(buf, "<tr><td>Size<td>%.2f MB\n",
+					(1e0*storage->size/(1024*1024)));
 	else
-	    sprintf(buf, "<tr><td>Size<td>%d blks (%dMb)\n", storage->super.blks_total,
-					(int)((long long)(storage->super.blks_total*4)/1024));
+	    sprintf(buf, "<tr><td>Size<td>%d blks (%.2f MB)\n", storage->super.blks_total,
+					(storage->super.blks_total*4e0)/1024);
 	write(so, buf, strlen(buf));
 	if ( storage->super.blks_free == 0 || storage->super.blks_total == 0 )
 	    free_pages_p = 0;
 	    else
-		free_pages_p = ((long long)1000*(long long)storage->super.blks_free)/storage->super.blks_total;
-	sprintf(buf, "<tr><td>Free blks<td>%d blks (%dMb) %d.%d %%\n", storage->super.blks_free,
-					(int)(((off_t)storage->super.blks_free*STORAGE_PAGE_SIZE)/(off_t)(1024*1024)),
-					(free_pages_p == 0) ? 0 : free_pages_p/10,
-					(free_pages_p == 0) ? 0 : free_pages_p%10);
+		free_pages_p = (1e2*storage->super.blks_free)/storage->super.blks_total;
+	sprintf(buf, "<tr><td>Free blks<td>%d blks (%.2fMb) %.2f %%\n", storage->super.blks_free,
+					((1e0*storage->super.blks_free)*STORAGE_PAGE_SIZE)/(1024*1024),
+					free_pages_p);
 	write(so, buf, strlen(buf));
 	sprintf(buf, "<tr><td>State<td>%s\n", (storage->flags&ST_READY)?
 					"READY":"<font color=red>NOT_READY</font>");
@@ -523,6 +566,7 @@ char			ctime_buf[30];
 	    type = "Document body begins";
 	    break;
 	default:
+	    type = "Unknown";
 	    break;
 	}
 	info = mod->info?mod->info:"";
@@ -535,7 +579,7 @@ char			ctime_buf[30];
     RDLOCK_CONFIG ;
     peer = peers;
     while ( peer ) {
-        sprintf(buf, "<tr><td>Name<td>%s %d %d\n", peer->name, peer->http_port, peer->icp_port);
+        sprintf(buf, "<tr><td><b>Name<td><b>%s %d %d\n", peer->name, peer->http_port, peer->icp_port);
 	write(so, buf, strlen(buf));
 	switch( peer->type ) {
 	case PEER_PARENT:
@@ -557,20 +601,18 @@ char			ctime_buf[30];
 	if ( peer->an_recvd == 0 || peer->hits_recvd == 0 )
 	    peer_hits_percent = 0;
 	    else
-		peer_hits_percent = (peer->hits_recvd*1000)/peer->an_recvd;
-        sprintf(buf, "<tr><td>Hits recvd<td>%d (%d.%d %%)\n", peer->hits_recvd,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
+		peer_hits_percent = (peer->hits_recvd*1e2)/peer->an_recvd;
+        sprintf(buf, "<tr><td>Hits recvd<td>%d (%.2f %%)\n", peer->hits_recvd,
+			peer_hits_percent);
 	write(so, buf, strlen(buf));
         sprintf(buf, "<tr><td>Reqs recvd<td>%d\n", peer->rq_recvd);
 	write(so, buf, strlen(buf));
 	if ( peer->hits_sent == 0 || peer->rq_recvd == 0 )
 	    peer_hits_percent = 0;
 	    else
-		peer_hits_percent = (peer->hits_sent*1000)/peer->rq_recvd;
-        sprintf(buf, "<tr><td>Hits sent<td>%d (%d.%d %%)\n", peer->hits_sent,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
-			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
+		peer_hits_percent = (peer->hits_sent*1e2)/peer->rq_recvd;
+        sprintf(buf, "<tr><td>Hits sent<td>%d (%.2f %%)\n", peer->hits_sent,
+			peer_hits_percent);
 	write(so, buf, strlen(buf));
         sprintf(buf, "<tr><td>Status<td>%s\n",
         	TEST(peer->state, PEER_DOWN)?"DOWN":"UP");
@@ -581,6 +623,34 @@ char			ctime_buf[30];
     UNLOCK_CONFIG ;
     sprintf(buf, "</table></body></html>\n");
     write(so, buf, strlen(buf));
+    return(0);
+}
+
+int
+process_command(int so, char *command)
+{
+    if ( !strcasecmp(command, "reconfigure") ) {
+	kill(my_pid, SIGHUP);
+    } else
+    if ( !strcasecmp(command, "shutdown") || !strcasecmp(command, "stop")) {
+	kill(my_pid, SIGTERM);
+    }
+    if ( !strcasecmp(command, "rotate") ) {
+	kill(my_pid, SIGWINCH);
+    }
+    if ( !strcasecmp(command, "help") ) {
+	print_help(so);
+    }
+    if ( !strcasecmp(command, "stat") ) {
+	print_stat(so);
+    }
+    if ( !strcasecmp(command, "htmlstat") ) {
+	print_htmlstat(so);
+    }
+    if ( !strcasecmp(command, "quit") ) {
+	return(0);
+    }
+    return(0);
 }
 
 void*
@@ -594,7 +664,7 @@ char	command[128];
     work = arg;
     so = work->so;
     free(work);
-    my_log("Accept called on %d\n", so);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_call(): Accept called on %d\n", so);
     /* done */
     while( read_command(so, command, sizeof(command)) &&
            process_command(so, command) );
@@ -606,9 +676,7 @@ void
 open_oopsctl_so()
 {
 struct	sockaddr_un	sun_addr;
-struct	sockaddr_in	sin_addr;
 int			rc;
-int			so, one = -1;
 
     oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
     if ( oopsctl_so == -1 ) {
@@ -628,9 +696,12 @@ int			so, one = -1;
     }
     chmod(socket_path, 0600);
     listen(oopsctl_so, 5);
-    add_socket_to_listen_list(oopsctl_so, 0, &process_call);
+    add_socket_to_listen_list(oopsctl_so, 0, 0, &process_call);
 
 /*
+int			so, one = -1;
+struct	sockaddr_in	sin_addr;
+
     so = socket(AF_INET, SOCK_STREAM, 0);
     setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
     bzero(&sin_addr, sizeof(sin_addr));

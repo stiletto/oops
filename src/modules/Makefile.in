@@ -1,41 +1,66 @@
 CC = @CC@
 LIBS = @LIBS@
 CFLAGS = @CFLAGS@
+LDFLAGS = @LDFLAGS@
+LD = @LD@
 SOFLAGS = @SOFLAGS@
 OPT_MODS = @OPT_MODS@
 
-.SUFFIXES:	.c .so
+.SUFFIXES:	.c .o .so
 
-.c.so:
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) $< -o $@
+#.c.o:
+#	${CC} ${CFLAGS} ${CDEFS} -c $<
+#
+#.o.so:
+#	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
+
 
 all:	log_dummy.so err.so passwd_file.so lang.so redir.so oopsctl_mod.so oopsctl \
-	vary_header.so accel.so transparent.so $(OPT_MODS)
+	vary_header.so accel.so transparent.so custom_log.so $(OPT_MODS)
 
 log_dummy.so:	log_dummy.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) log_dummy.c -o log_dummy.so
+	${CC} ${CFLAGS} ${CDEFS} -c log_dummy.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o log_dummy.so log_dummy.o
 
-err.so:	err.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) err.c -o err.so
+err.so:		err.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c err.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o err.so err.o
 
 lang.so:	lang.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) lang.c -o lang.so
+	${CC} ${CFLAGS} ${CDEFS} -c lang.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o lang.so lang.o
 
 oopsctl_mod.so:	oopsctl_mod.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) oopsctl_mod.c -o oopsctl_mod.so
+	${CC} ${CFLAGS} ${CDEFS} -c oopsctl_mod.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o oopsctl_mod.so oopsctl_mod.o
+
+passwd_file.so:	passwd_file.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c passwd_file.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o passwd_file.so passwd_file.o
+
+redir.so:	redir.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c redir.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o redir.so redir.o
+
+vary_header.so:	vary_header.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c vary_header.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o vary_header.so vary_header.o
+
+accel.so:	accel.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c accel.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o accel.so accel.o
+
+transparent.so:	transparent.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c transparent.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o transparent.so transparent.o
+
+custom_log.so:	custom_log.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c custom_log.c
+	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o custom_log.so custom_log.o
 
 oopsctl: oopsctl.c ../modules.h ../config.h  ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} oopsctl.c $(LIBS) -o oopsctl
 
-passwd_file.so:	passwd_file.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) passwd_file.c -o passwd_file.so
-
-redir.so:	redir.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) redir.c -o redir.so
-
-vary_header.so: vary_header.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) vary_header.c -o vary_header.so
-
 clean:
-	rm -f *\.so
+	rm -f *.o *.so oopsctl
 

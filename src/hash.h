@@ -43,4 +43,6 @@ extern int hash_release(hash_t *tbl, void **data);
 extern void *hash_delete(hash_t *tbl, void **dataptr);
 extern int hash_operate(hash_t *tbl, void (*ptr)(void *, void *, void *),
 	  void *usr_arg);
+extern	void hash_destroy(hash_t *tbl, void (*ptr)(void*) );
+
 /* EndSourceFile hash.h */

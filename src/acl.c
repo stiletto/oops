@@ -34,6 +34,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<sys/socket.h>
 #include	<sys/socketvar.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -52,7 +53,7 @@ int			port_deny(struct group *, struct request *);
 struct group *
 rq_to_group(struct request * rq)
 {
-struct	cidr_net	*net;
+struct	cidr_net	*net=NULL;
 int			i;
 struct	group		*g = groups;
 struct	in_addr		*addr = &rq->client_sa.sin_addr;
@@ -60,7 +61,7 @@ struct	in_addr		*addr = &rq->client_sa.sin_addr;
     /* First check networks_acl for each group	*/
     while ( g ) {
 	if (    g->networks_acl
-	     && check_acl_list(g->networks_acl, rq) ) return(g);
+	     && check_acl_list((acl_chk_list_t*)g->networks_acl, rq) ) return(g);
 	g = g->next;
     }
     if ( !sorted_networks_cnt || !sorted_networks_ptr )
@@ -71,7 +72,7 @@ struct	in_addr		*addr = &rq->client_sa.sin_addr;
 		break;
 	net = net->next;
     }
-    if ( i < sorted_networks_cnt )
+    if ( (i < sorted_networks_cnt) && net )
 	return(net->group);
     return(NULL);
 }
@@ -79,7 +80,7 @@ struct	in_addr		*addr = &rq->client_sa.sin_addr;
 int
 is_domain_allowed(char *name, struct acls *acls)
 {
-struct	domain_list	*allow = NULL, *deny = NULL, *best_allow = NULL, *best_deny = NULL;
+struct	domain_list	*best_allow = NULL, *best_deny = NULL;
 struct	domain_list	*best_allow1, *best_deny1, *dom;
 struct	acl		*acl;
 
@@ -121,11 +122,8 @@ struct	acl		*acl;
 }
 
 int
-deny_http_access(int so, struct request *rq)
+deny_http_access(int so, struct request *rq, struct group *group)
 {
-struct  sockaddr_in		peer;
-int				peerlen = sizeof(peer);
-struct  group			*group;
 struct	acl			*acl;
 struct	domain_list		*dom, *best_allow, *best_deny;
 struct	domain_list		*best_allow1, *best_deny1;
@@ -144,20 +142,20 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 		return(0);
 	strncpy(host+strlen(host), t, sizeof(host) - strlen(host) -1 );
     }
-    group = rq_to_group(rq);
+    if ( !group ) group = rq_to_group(rq);
     s = my_inet_ntoa(&rq->client_sa);
     if ( !group ) {
 	if ( s ) {
-	    my_log("No group for address %s - access denied\n", s);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "deny_http_access(): No group for address %s - access denied\n", s);
 	    xfree(s);
 	}
 	return(ACCESS_DOMAIN);
     }
-    if ( s ) my_log("Connect from %s - group [%s]\n",
+    if ( s ) my_xlog(LOG_DBG, "deny_http_access(): Connect from %s - group [%s]\n",
 		s, group->name);
     if ( !group->http || !group->http->allow ) {
 	if (s) {
-	    my_log("No http or http_>allow for address %s - access denied\n", s);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "deny_http_access(): No http or http_>allow for address %s - access denied\n", s);
 	    xfree(s);
 	}
 	return(ACCESS_DOMAIN);
@@ -235,7 +233,7 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 	      else
 		dstdomain_cache_result = DSTDCACHE_ALLOW;
 	}
-	new = xmalloc(sizeof(*new), "dstdhe");
+	new = xmalloc(sizeof(*new), "deny_http_access(): dstdhe");
 	if ( new ) {
 	    new->access = dstdomain_cache_result;
 	    new->when_created = global_sec_timer;
@@ -374,7 +372,6 @@ char		todaybit, dmask,yestdbit;
 	if ( sm < em ) reverse = FALSE;
 	   else	       reverse = TRUE;
 
-	my_log("Denytime check 0x%0x/0x%0x, %d-%d, %d\n", dmask,todaybit, sm, em, cm);
 	if ( !reverse ) {
 	    /* simple case of normal interval, like 09:00 - 18:00 */
 	    if ( TEST(todaybit, dmask) ) {
@@ -409,10 +406,10 @@ char		todaybit, dmask,yestdbit;
     }
     return(0);
 }
+
 char
 named_acl_type_by_name(char *type)
 {
-char	*res;
 
     if ( !strcasecmp(type, "urlregex") )
 	return(ACL_URLREGEX);
@@ -438,7 +435,9 @@ char	*res;
 	return(ACL_SRCDOM);
     if ( !strcasecmp(type, "srcdom_regex") )
 	return(ACL_SRCDOMREGEX);
-    return(-1);
+    if ( !strcasecmp(type, "time") )
+	return(ACL_TIME);
+    return((char)-1);
 }
 void
 free_named_acl(named_acl_t *acl)
@@ -480,8 +479,14 @@ case ACL_SRC_IP:
 	if ( acl_ip_data->sorted ) free(acl_ip_data->sorted);
 	}
 	break;
+case ACL_TIME:
+	if ( acl->data ) {
+	    free_denytimes(acl->data);
+	    acl->data = NULL;
+	}
+	break;
 default:
-	my_log("Try to free unknown named acl %s\n", acl->name);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "free_named_acl(): Try to free unknown named acl %s\n", acl->name);
     }
     if ( acl->data ) free(acl->data);
     free(acl);
@@ -518,7 +523,7 @@ int	must_free_data = FALSE;
 	    printf("Can't open file %s: %s\n", fn, strerror(errno));
 	    return(0);
 	}
-	data = malloc(new_data_sz);
+	data = malloc(new_data_sz+1);
 	if ( !data ) {
 	    close(fd);
 	    return(0);
@@ -530,6 +535,7 @@ int	must_free_data = FALSE;
 	    return(0);
 	}
 	close(fd);
+	*(data+new_data_sz)=0;
 	must_free_data = TRUE;
     }
     switch(acl->type) {
@@ -566,8 +572,77 @@ case ACL_PATHREGEX:
 	    acl->data = urd;
 	}	
 	return(0);
+case ACL_TIME:
+	{
+	/* dayset						*/
+	/* day[{,|:}day]... time:time				*/
+	char		timespec[20], *tb, *tokptr, *t;
+	char		dayspec[80];
+	unsigned char	res = 0;
+	struct denytime	dt, *result;
+	int		start_m, end_m;
+
+	printf("acl->data: `%s'\n", data);
+	bzero(&dt, sizeof(dt));
+	/* split on '\t '					*/
+	tb = (char*)strtok_r(data, " \t", &tokptr);
+	if ( !tb ) {
+	    printf("Wrong time acl: %s\n", data);
+	    if ( must_free_data ) free(data);
+	    return(0);
+	}
+	strncpy(dayspec, tb, sizeof(dayspec) - 2);
+	printf("dayspec: `%s'\n", dayspec);
+	tb = (char*)strtok_r(NULL, " \t", &tokptr);
+	if ( !tb ) {
+	    printf("Wrong time acl: %s\n", data);
+	    if ( must_free_data ) free(data);
+	    return(0);
+	}
+	strncpy(timespec, tb, sizeof(timespec) - 2);
+	printf("timespec: `%s'\n", timespec);
+	if ( sscanf(timespec, "%d:%d", &start_m, &end_m) != 2 ) {
+	    printf("Wrong time acl: %s\n", data);
+	    if ( must_free_data ) free(data);
+	}
+	dt.start_minute = 60*(start_m/100) + start_m%100;
+	dt.end_minute = 60*(end_m/100) + end_m%100;
+	/* now process days					*/
+	tb=dayspec;
+	while( ( t = (char*)strtok_r(tb, ",", &tokptr) ) ) {
+	    char 	  fday[4],tday[4];
+	    unsigned char d1, d2, i;
+	    tb = NULL;
+	    if ( sscanf(t,"%3s:%3s", (char*)&fday,(char*)&tday) == 2 ) {
+		printf("from: `%s' to `%s'\n", fday,tday);
+		d1=daybit(fday);
+		d2=daybit(tday);
+		if ( TEST(d1, 0x80) || TEST(d2, 0x80) || (d1>d2)) {
+		    printf("Wrong time acl: %s\n", data);
+		    if ( must_free_data ) free(data);
+		    return(0);
+		}
+		i = d1;
+		while(i<=d2) {
+		    res |= i;
+		    i <<= 1;
+		}
+	    } else {
+		printf("day: `%s'\n", t);
+		res |= daybit(t);
+	    }
+	}
+	dt.days = res;
+	result = malloc(sizeof(*result));
+	if ( result ) {
+	    memcpy(result, &dt, sizeof(dt));
+	    acl->data = result;
+	}
+	if ( must_free_data )  free(data);
+	}
+	return(0);
 case ACL_PORT:
-	printf("acl->data: '%s'\n", data);
+	printf("acl->data: `%s'\n", data);
 	/* range,range,... where range = port | [port:port]	*/
 	/* split on ',' */
 	p = data;
@@ -598,7 +673,7 @@ case ACL_PORT:
 	if ( must_free_data ) free(data);
 	return(0);
 case ACL_METHOD:
-	printf("acl->data: '%s'\n", data);
+	printf("acl->data: `%s'\n", data);
 	if ( data ) acl->data = strdup(data);
 	if ( must_free_data ) free(data);
 	return(0);
@@ -622,14 +697,13 @@ case ACL_DSTDOM:
 	struct	domain_list	*new, *next;
 	/* domain domain domain ...			*/
 	    acl->data = NULL;
-	    printf("acl->data: '%s'\n", data);
+	    printf("acl->data: `%s'\n", data);
 	    /* split on ' ' */
 	    p = data;
 	    while( (t = (char*)strtok_r(p, ", \n", &tokptr)) ) {
-		int	pf, pt;
 
 		p = NULL;
-		printf("token: %s\n", t);
+		printf("Token: %s\n", t);
 		new = calloc(1, sizeof(*new));
 		if ( new && (new->domain = malloc(strlen(t)+1))) {
 		    new->length = strlen(t);
@@ -721,8 +795,7 @@ case ACL_SRC_IP:
 	if ( must_free_data ) free(data);
 	return(0);
 default:
-	my_log("Unknown acl type %d in parse_named_acl_data\n", acl->type);
-	printf("Unknown acl type %d in parse_named_acl_data\n", acl->type);
+	my_xlog(LOG_SEVERE|LOG_PRINT, "parse_named_acl_data(): Unknown acl type %d in parse_named_acl_data\n", acl->type);
     }
     if ( must_free_data ) free(data);
     return(0);
@@ -745,6 +818,7 @@ case ACL_DSTDOMREGEX:
 	    return(FALSE);
 	return(TRUE);
 	break;
+
 case ACL_URLREGEXI:
 case ACL_URLREGEX:
 	/* compose url and check against regex */
@@ -792,10 +866,12 @@ case ACL_USERCHARSET:
 		ucsd->cs = lookup_charset_by_name(charsets, ucsd->name);
 	    }
 	    agent_cs = lookup_charset_by_Agent(charsets, agent);
-	    if ( !agent_cs ) return(FALSE);
-	    return( agent_cs == ucsd->cs );
+	    if ( !agent_cs || !agent_cs->Name) return(FALSE);
+	    if ( agent_cs == ucsd->cs ) return(TRUE);
+	    return( !strcmp(agent_cs->Name, ucsd->name) );
 	}
 	break;
+
 case ACL_SRC_IP:
 	{
 	struct acl_ip_data *acl_ip_data = (struct acl_ip_data *)acl->data;
@@ -815,12 +891,14 @@ case ACL_SRC_IP:
 	    }
 	}
 	break;
+
 case ACL_METHOD:
 	if ( !acl->data ||
 	     !rq->method ||
 	     strcasecmp((char*)acl->data, rq->method) ) return(FALSE);
 	return(TRUE);
 	break;
+
 case ACL_DSTDOM:
 	if ( acl->data && rq->url.host ) {
 	    struct domain_list	*best =
@@ -828,6 +906,7 @@ case ACL_DSTDOM:
 	    if ( best ) return(TRUE);
 	}
 	break;
+
 case ACL_PORT:
 	if ( !acl->data ||
 	     !rq->url.port ) return(FALSE);
@@ -842,6 +921,11 @@ case ACL_PORT:
 	    }
 	}
 	break;
+
+case ACL_TIME:
+	if ( acl->data && denytime_check((struct denytime*)acl->data) )
+		return(TRUE);
+
 default:
 	break;
     }
@@ -866,7 +950,6 @@ named_acl_t	*curr = named_acls;
 int
 url_match_named_acl(char *url, named_acl_t *acl)
 {
-int				length = 0;
 struct	urlregex_acl_data	*urd;
 struct	url			parsed_url;
 
@@ -890,6 +973,7 @@ case ACL_DSTDOMREGEX:
 	free_url(&parsed_url);
 	return(TRUE);
 	break;
+
 case ACL_URLREGEXI:
 case ACL_URLREGEX:
 	free_url(&parsed_url);
@@ -915,6 +999,7 @@ case ACL_PATHREGEX:
 	}
 	free_url(&parsed_url);
 	return(TRUE);
+
 case ACL_DSTDOM:
 	if ( acl->data && parsed_url.host ) {
 	    struct domain_list	*best =
@@ -926,6 +1011,7 @@ case ACL_DSTDOM:
 	}
 	free_url(&parsed_url);
 	break;
+
 case ACL_PORT:
 	if ( acl->data && parsed_url.port ) {
 	    struct range *range = (struct range*)acl->data;
@@ -941,12 +1027,14 @@ case ACL_PORT:
 	}
 	free_url(&parsed_url);
 	return(FALSE);
+
 default:
 	free_url(&parsed_url);
 	break;
     }
     return(FALSE);
 }
+
 int
 url_match_named_acl_by_index(char *url, int index)
 {
@@ -962,12 +1050,10 @@ named_acl_t	*curr = named_acls;
     return(FALSE);
 }
 
-
 void
 insert_named_acl_in_list(named_acl_t *acl)
 {
 named_acl_t	*curr = named_acls;
-int		n = 1;
     if ( !acl )
 	return;
     if ( !curr ) {
@@ -988,7 +1074,7 @@ named_acl_t	*curr = aclist, *next;
 
     while ( curr ) {
 	next = curr->next;
-	my_log("Release acl %s\n", &curr->name);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "free_named_acls(): Release acl %s\n", &curr->name);
 	free_named_acl(curr);
 	curr = next;
     }
@@ -1102,7 +1188,7 @@ acl_chk_list_hdr_t	*newhdr, *nexthdr;
     if ( !newhdr ) return;
 
     bzero(newhdr, sizeof(*newhdr));
-    verb_printf("PARSING ACL: %s\n", string);
+    verb_printf("parse_acl_access(): PARSING ACL: %s\n", string);
     t = string;
     while ( (p=(char*)strtok_r(t, "\t ", &tptr)) ) {
 	t = NULL;
@@ -1128,11 +1214,10 @@ acl_chk_list_hdr_t	*newhdr, *nexthdr;
 	    new->acl = acl;
 	    new->sign = sign;
 	} else {
-	    verb_printf("Unknown acl '%s'\n", p);
+	    verb_printf("parse_acl_access(): Unknown acl `%s'\n", p);
 	    goto error;
 	}
     }
-done:
     newhdr->aclbody = strdup(string);
     if ( !*list )
 	*list = newhdr;
@@ -1168,7 +1253,7 @@ char			*p;
 	    p++;
 	}
 	acl = acl_by_name(p);
-	if ( acl && (acl->type==ACL_SRC_IP) ) {
+	if ( acl ) {
 	    if ( !first ) {
 		new = malloc(sizeof(*new));
 		bzero(new, sizeof(*new));
@@ -1183,12 +1268,11 @@ char			*p;
 	    new->acl = acl;
 	    new->sign = sign;
 	} else {
-	    verb_printf("Unknown acl '%s' or bad type (only src_ip allowed)\n", p);
+	    verb_printf("parse_networks_acl(): Unknown acl `%s' or bad type (only src_ip allowed).\n", p);
 	    goto error;
 	}
 	string_list = string_list->next;
     }
-done:
     newhdr->aclbody = NULL;
     if ( !*list )
 	*list = newhdr;

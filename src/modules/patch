@@ -1,0 +1,103 @@
+*** custom_log.c.orig	Wed Mar 29 12:40:11 2000
+--- custom_log.c	Tue Apr 11 19:26:41 2000
+*************** typedef	struct	logfile_ {
+*** 44,49 ****
+--- 44,52 ----
+  	char			*format;
+  	FILE			*file;
+  	char			*path;
++ /* dp */
++ 	char			*buff;
++ 	int			cur_size;
+  	int			flags;
+  } logfile_t;
+  
+*************** process_log_record(logfile_t *curr, int 
+*** 291,297 ****
+  	    s++;
+  	    d++; *d = 0;
+  	}
+! 	fprintf(curr->file, "%s\n", res);
+      }
+      UNLOCK_CL;
+  }
+--- 294,313 ----
+  	    s++;
+  	    d++; *d = 0;
+  	}
+! /* dp */
+!          if ( curr->file && TEST(curr->flags, FLAG_BUFF) ) {
+!   	  if (( curr->cur_size + strlen(res) + 1 ) >= 64000) {
+! 	    fwrite(curr->buff,curr->cur_size,1,curr->file);
+! 	    fflush(curr->file);
+! 	    curr->cur_size = 0;
+! 	  }
+! 	    bcopy(res,curr->buff+curr->cur_size,strlen(res));
+! 	    curr->cur_size += strlen(res);
+! 	    bcopy("\n",curr->buff+curr->cur_size,1);
+! 	    curr->cur_size++;
+!          } else {
+! 	    fprintf(curr->file,"%s",res);
+! 	 }
+      }
+      UNLOCK_CL;
+  }
+*************** logfile_t	*curr = logfiles, *next;
+*** 305,310 ****
+--- 321,328 ----
+  	next = curr->next;
+  	if ( curr->format ) free(curr->format);
+  	if ( curr->path ) free(curr->path);
++ /* dp */
++ 	if ( curr->buff ) free(curr->buff);
+  	if ( curr->file ) fclose(curr->file);
+  	free (curr);
+  	curr = next;
+*************** logfile_t	*new = NULL;
+*** 322,327 ****
+--- 340,348 ----
+      new = (logfile_t*)calloc(1, sizeof(*new));
+      if ( new ) {
+  	new->path = strdup(path);
++ /* dp */
++ 	new->buff = calloc(64000,1);
++ 	new->cur_size = 0;
+  	new->next = logfiles;
+  	logfiles = new;
+      }
+*************** logfile_t	*curr;
+*** 339,345 ****
+  	if ( curr->path ) my_log("Reopen %s\n", curr->path);
+  	if ( curr->file ) fclose(curr->file);
+  	if ( curr->path ) curr->file = fopen(curr->path, "a");
+! 	if ( curr->file && !TEST(curr->flags, FLAG_BUFF) )
+  	    setbuf(curr->file, NULL);
+  	curr = curr->next;
+      }
+--- 360,367 ----
+  	if ( curr->path ) my_log("Reopen %s\n", curr->path);
+  	if ( curr->file ) fclose(curr->file);
+  	if ( curr->path ) curr->file = fopen(curr->path, "a");
+! /* dp */
+! 	if ( curr->file && TEST(curr->flags, FLAG_BUFF) )
+  	    setbuf(curr->file, NULL);
+  	curr = curr->next;
+      }
+*************** logfile_t *curr;
+*** 391,397 ****
+  	if ( curr->path ) {
+  	    curr->file = fopen(curr->path, "a");
+  	    if ( curr->file ) {
+! 		if ( !TEST(curr->flags, FLAG_BUFF) )
+  		    setbuf(curr->file, NULL);
+  	    } else
+  		my_log("custom_log:fopen(%s): %s\n",
+--- 413,420 ----
+  	if ( curr->path ) {
+  	    curr->file = fopen(curr->path, "a");
+  	    if ( curr->file ) {
+! /* dp */
+! 		if ( TEST(curr->flags, FLAG_BUFF) )
+  		    setbuf(curr->file, NULL);
+  	    } else
+  		my_log("custom_log:fopen(%s): %s\n",

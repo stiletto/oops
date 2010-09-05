@@ -10,7 +10,7 @@
 # string: any character
 # number: a nature number (N >= 0)
 # boolean: {yes|no}
-#	yes: option is enables
+#	yes: option is enabled
 #	no: option is disabled
 #
 # host: <string>
@@ -37,6 +37,8 @@
 #	refers to an ACL's name
 # ACL_list: {{[!]<ACL_name>} ...}
 #	'!' means negation
+#	request satisfy ACL_list if it satisfy EACH of list member
+#	(they are logically AND-ed)
 #
 # size: <number>m
 #	refers to something's size
@@ -47,8 +49,8 @@
 # hours: <number>
 #	represents some amount of time measured in hours
 # milisecs: <number>
-#	represents some amount of time measured in milisecundums (1/1000
-#	secundum)
+#	represents some amount of time measured in miliseconds (1/1000
+#	seconds)
 #
 # regex: <string>
 #	represents a regular expression
@@ -68,7 +70,7 @@
 
 #
 # Which nameservers to use for domain name resolving. You can use this
-# directive more than once but you must specify at least nameserver.
+# directive more than once.
 # While it is optional it is highly recomended to use this directive
 # for performance reason.
 #
@@ -81,7 +83,7 @@
 nameserver	127.0.0.1
 
 #
-# Which port oops binds on.
+# Which port oops binds to.
 #
 # Optional: ???
 #
@@ -373,8 +375,8 @@ maxresident	1m
 #acl	ADMINS		src_ip		127.0.0.1
 #acl	PURGE		method		PURGE
 
-# ???
-# Deny serve requests that came from <ACL_list>.
+#
+# Deny serve requests which satisfy <ACL_list>.
 #
 # Optional: yes
 #
@@ -474,7 +476,7 @@ stop_cache	cgi-bin
 # with networks_acl directive.
 # networks_acl always have higher preference (checked first) and
 # are checked in the order of appearance.
-# If host wil not fall in any networks_acl - we check in networks.
+# If host will not fall in any networks_acl - we check in networks.
 # networks are ordered by masklen - longest masks(most specific networks)
 # are checked first.
 
@@ -650,7 +652,7 @@ module redir
 }
 
 #
-# Module which handle requests of oopsctl - programm to control proxy server
+# Module which handle requests of oopsctl - program to control proxy server
 #
 module oopsctl
 {
@@ -662,10 +664,10 @@ module oopsctl
 }
 
 #
-# This module hanldle 'Vary' header in serever responce.
+# This module hanldle 'Vary' header in server responce.
 # In cooperation with 'force_http11' it can give you more hits for
 # documents served by HTTP/1.1 servers
-# It was written spaecial for better cooperation with Russian Apache.
+# It was written especially for better cooperation with Russian Apache.
 #module	vary
 #{
 #	user-agent	by_charset

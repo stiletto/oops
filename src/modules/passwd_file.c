@@ -26,6 +26,7 @@
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -72,8 +73,8 @@ Your browser proposed unsupported scheme\n\
 #define	WRLOCK_PWF_CONFIG	rwl_wrlock(&pwf_lock)
 #define	UNLOCK_PWF_CONFIG	rwl_unlock(&pwf_lock)
 
-static	void	reload_pwf(), reload_pwf_template();
-static	void	check_pwf_age(), check_pwf_template_age();
+static	void	reload_pwf(void), reload_pwf_template(void);
+static	void	check_pwf_age(void), check_pwf_template_age(void);
 static	int	pwf_auth(char*, char*);
 static	void	send_auth_req(int, struct request *);
 
@@ -84,7 +85,7 @@ pthread_mutex_t	crypt_lock;
 int
 mod_load()
 {
-    printf("passwd_file started\n");
+    printf("Passwd_file started\n");
     rwl_init(&pwf_lock);
 #if	!defined(SOLARIS)
     pthread_mutex_init(&crypt_lock, NULL);
@@ -122,7 +123,8 @@ mod_config_beg()
 int
 mod_config_end()
 {
-char	*sch;
+char	*sch="None";
+
     WRLOCK_PWF_CONFIG ;
     if ( scheme == Basic ) sch = "Basic";
     if ( scheme == Digest) sch = "Digest";
@@ -156,31 +158,31 @@ char	*p = config;
 
     WRLOCK_PWF_CONFIG ;
 
-    while( *p && isspace(*p) ) p++;
+    while( *p && IS_SPACE(*p) ) p++;
     if ( !strncasecmp(p, "file", 4) ) {
 	p += 4;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(pwf_name, p, sizeof(pwf_name) -1 );
     } else
     if ( !strncasecmp(p, "realm", 5) ) {
 	p += 5;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(realm, p, sizeof(realm) -1 );
     } else
     if ( !strncasecmp(p, "template", 8) ) {
 	p += 8;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	strncpy(pwf_template, p, sizeof(pwf_template) -1 );
     } else
     if ( !strncasecmp(p, "charset", 7) ) {
 	p += 7;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	sprintf(pwf_charset, "Content-Type: text/html; charset=%.20s\n", p);
 	pwf_charset_len = strlen(pwf_charset);
     } else
     if ( !strncasecmp(p, "scheme", 6) ) {
 	p += 6;
-	while (*p && isspace(*p) ) p++;
+	while (*p && IS_SPACE(*p) ) p++;
 	if ( !strcasecmp(p, "basic") )  scheme = Basic;
 	if ( !strcasecmp(p, "digest") ) scheme = Digest;
     }
@@ -193,10 +195,10 @@ int
 auth(int so, struct group *group, struct request* rq, int *flags) {
 char	*authorization = NULL;
 
-    my_log("Authenticate request\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): Authenticate request.\n");
 
     if ( !authreq ) {
-	my_log("Something wrong with passwd_file module\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): Something wrong with passwd_file module.\n");
 	return(MOD_CODE_OK);
     }
 
@@ -207,7 +209,7 @@ char	*authorization = NULL;
 
     RDLOCK_PWF_CONFIG ;
     if ( !pwds ) {
-	my_log("Passwd file was not loaded\n");
+	my_xlog(LOG_SEVERE, "auth(): Passwd file was not loaded.\n");
 	UNLOCK_PWF_CONFIG ;
 	return(MOD_CODE_OK);
     }
@@ -223,9 +225,9 @@ char	*authorization = NULL;
 	char *data;
 	if ( !strncasecmp(authorization, "Basic", 5 ) ) {
 	  int	 rc;
-	  char	*up, *u, *p;
+	  char	*up=NULL, *u, *p;
 	    data = authorization + 5;
-	    while ( *data && isspace(*data) ) data++;
+	    while ( *data && IS_SPACE(*data) ) data++;
 	    if ( *data ) up = base64_decode(data);
 	    if ( up ) {
 		/* up = username:password */
@@ -233,11 +235,15 @@ char	*authorization = NULL;
 		p = strchr(up, ':');
 		if ( p ) { *p=0; p++; }
 		rc = pwf_auth(u, p);
-		free(up);
-	        if ( rc ) /*failed*/
+	        if ( rc ) {
+		    /*failed*/
+		    free(up);
 		    goto au_f;
-		  else
+		  } else {
+		    IF_STRDUP(rq->proxy_user, u);
+		    free(up);
 		    goto au_ok;
+		  }
 	    } /* up != NULL */
 	} else {
 	    /* we do not support any schemes except Basic */
@@ -259,21 +265,21 @@ au_ok:
 }
 
 void
-check_pwf_age()
+check_pwf_age(void)
 {
     if ( global_sec_timer - pwf_check_time < 60 ) return; /* once per minute */
     reload_pwf();
 }
 
 void
-check_pwf_template_age()
+check_pwf_template_age(void)
 {
     if ( global_sec_timer - pwf_template_check_time < 60 ) return;
     reload_pwf_template();
 }
 
 void
-reload_pwf()
+reload_pwf(void)
 {
 struct	stat	sb;
 int		rc, size, fd;
@@ -286,7 +292,7 @@ int		rc, size, fd;
 	size = sb.st_size;
 	if ( size <= 0 ) return;
 	if ( pwds ) free(pwds); pwds = NULL;
-	pwds = xmalloc(size+2,""); /* for leading \n and closing 0 */
+	pwds = xmalloc(size+2,"reload_pwf(): pwds"); /* for leading \n and closing 0 */
 	if ( pwds ) {
 	    *pwds = '\n';
 	    fd = open(pwf_name, O_RDONLY);
@@ -305,8 +311,9 @@ int		rc, size, fd;
 	}
     }
 }
+
 void
-reload_pwf_template()
+reload_pwf_template(void)
 {
 struct	stat	sb;
 int		rc, size, fd;
@@ -318,7 +325,7 @@ int		rc, size, fd;
 	size = sb.st_size;
 	if ( size <= 0 ) return;
 	if ( template ) free(template); template = NULL;
-	template = xmalloc(size,"");
+	template = xmalloc(size,"reload_pwf_template(): 1");
 	if ( template ) {
 	    fd = open(pwf_template, O_RDONLY);
 	    if ( fd != -1 ) {
@@ -337,6 +344,7 @@ int		rc, size, fd;
 	}
     }
 }
+
 int
 pwf_auth(char* user, char *pass)
 {
@@ -346,8 +354,8 @@ int	off, rc=1;
 
     if ( !pwds )
 	return(1);
-    off = strlen(user)+3;
-    patt = xmalloc(off,"");
+    off = strlen(user) + 3;
+    patt = xmalloc(off, "pwf_auth(): 1");
     if ( !patt )
 	goto bad_auth;
     sprintf(patt,"\n%s:", user);
@@ -356,7 +364,7 @@ int	off, rc=1;
 	goto bad_auth;
     s = record+off-1;
     d = passwd;
-    while ( *s && !isspace(*s) && (d - passwd < sizeof(passwd)) ) {
+    while ( *s && !IS_SPACE(*s) && (d - passwd < sizeof(passwd)) ) {
 	*d++ = *s++;
     }
     *d = 0;
@@ -383,9 +391,9 @@ send_auth_req(int so, struct request *rq)
 {
 struct	output_object	*obj;
 struct	buff		*body;
-int			flags = 0, rc;
+int			rc;
 
-    obj = xmalloc(sizeof(*obj),"");
+    obj = xmalloc(sizeof(*obj),"send_auth_req(): obj");
     if ( !obj )
 	return;
 

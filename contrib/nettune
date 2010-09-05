@@ -1,10 +1,13 @@
 #!/sbin/sh
 ############################################################################
-# $Id: nettune,v 3.1 1999/03/15 21:17:33 chouanar Exp chouanar $
+# $Id: nettune,v 1.1.1.1 2000/04/06 14:07:42 igor Exp $
 #
 # Author: Jens-S. Vöckler <voeckler@rvs.uni-hannover.de>
 #
 # $Log: nettune,v $
+# Revision 1.1.1.1  2000/04/06 14:07:42  igor
+# Initial CVS import
+#
 # Revision 3.1  1999/03/15 21:17:33  chouanar
 # add minor correction for 2.7 + author change
 #

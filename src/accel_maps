@@ -22,6 +22,16 @@
 ##
 #	sleep_timeout           600
 
+##
+#	ip_lookup yes|no
+#	default - yes.
+#	if you have very large numbe of hosts in accel_map, then
+#	next problem arise when we get request to host, which is not in map:
+#	we try to find matching map by comparing ip addresses.
+#	If you have thousends of hosts, then initial resolving
+#	can take lot of time. So, uncomment and set 'no'
+##
+#	ip_lookup		yes
 
 ##
 #	refresh_pattern		ACL		min lmfactor max
@@ -48,11 +58,22 @@
 #	Map activates when request destination match regex
 ##
 #	map_regex		zipper\.paco\.net:8081/(.*) zipper.paco.odessa.ua/~igor/$1
+
 ##
 #	map			source destination ...
 #	Map activates when request destination match 'source'
 ##
 #	map			www.topping.com.ua:8081 ss5.paco.net:80 www.paco.net:8080
+
+##
+## Both map and map_regex have option /r, which change the way redirect
+## stored in cache: instead of use rewritten url as key in cache lookup
+## original url will used. This is usefull when you have lot of name-based
+## virtual hosts on single IP. For example:
+##
+## map/r	aaa.bbb.ccc 10.0.0.1:8080
+## map/r	xxx.yyy.zzz 10.0.0.1:8080
+## map_regex/r  www\.(.*)\.eee\.fff 10.0.0.1:8080/$1/
 
 ##
 #	map_acl		ACL regex destination ...

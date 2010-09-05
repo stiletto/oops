@@ -97,6 +97,25 @@ list_init(list_t *ptr)
 		  pthread_mutex_unlock(&ptr->lock) == 0);
 	return (0);
 }
+void*
+list_dequeue(list_t *ptr)
+{
+list_entry_t	*e;
+void		*res = NULL;
+
+	pthread_mutex_lock(&ptr->lock);
+	if ( ptr->count > 0 ) {
+	    ptr->count--;
+	    e = (list_entry_t*)ll_dequeue(&ptr->head);
+	    if ( e ) {
+		res = e->data;
+		free(e);
+	    }
+	}
+	pthread_mutex_unlock(&ptr->lock);
+	return(res);
+}
+
 int
 list_add(list_t *ptr, void *item)
 {
@@ -166,6 +185,7 @@ list_destroy(list_t *ptr)
 {
 	list_entry_t *e;
 
+	list_check(ptr);
 	while ((e = (list_entry_t *) ll_dequeue(&ptr->head)) != NULL)
 		free(e);
 	return (pthread_mutex_destroy(&ptr->lock));

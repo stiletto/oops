@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<unistd.h>
 #include	<errno.h>
 #include	<strings.h>
+#include	<ctype.h>
 #include	<sys/time.h>
 #include	<sys/types.h>
 
@@ -31,6 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        <sys/stat.h>
 #include        <sys/file.h>
 #include        <sys/time.h>
+#include        <sys/resource.h>
 
 #include        <netinet/in.h>
 
@@ -63,7 +65,10 @@ struct	pollarg	pollarg;
 	}
 	if ( IS_HUPED(&pollarg) ) return(0);
 	/* have somethng to read	*/
-	got = recv(so, p, to_read, 0);
+	got = recv(so, p, to_read,0);
+	if ( got == 0 ) {
+	    my_xlog(LOG_DBG|LOG_INFORM, "readt(): got: %d, tmo: %d, to_read: %d\n", got, tmo, to_read);
+	}
 	return(got);
 }
 
@@ -123,7 +128,7 @@ struct pollarg	pollarg;
 	}
 	if ( IS_HUPED(&pollarg) ) return(-1);
 	/* have somethng to write	*/
-	got = send(so, p, to_write, 0);
+	got = send(so, p, to_write,0);
 	if ( got > 0 ) {
 	    to_write -= got;
 	    sent += got;

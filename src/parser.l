@@ -1,11 +1,13 @@
 %a 10000
-%o 15000
-%p 5000
+%o 16000
+%p 7000
 %n 1000
 %e 2000
 %{
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <pthread.h>
 
@@ -25,7 +27,7 @@ int	parser_errors;
 %s	storagest modulest modulebody
 
 nl	\n
-number	[0-9]+
+number	[-]*[0-9]+
 numberk	{number}[Kk]
 numberm	{number}[Mm]
 numberg	{number}[Gg]
@@ -115,12 +117,24 @@ line		[^\n]+
 		return(MODULE);
 		}
 {network}	{
-		yylval.STRPTR=(char*)xmalloc(strlen(yytext)+1, "network");
+		yylval.STRPTR=(char*)malloc(strlen(yytext)+1);
 		strcpy(yylval.STRPTR, yytext);
 		return(NETWORK);
 		}
 {networks}	{
 		return(NETWORKS);
+		}
+<INITIAL>[Bb][Ll][Aa][Cc][Kk][Ll][Ii][Ss][Tt] {
+		return(BLACKLIST_T);
+		}
+<INITIAL>[Ss][Tt][Aa][Rr][Tt]_[Rr][Ee][Dd] {
+		return(START_RED_T);
+		}
+<INITIAL>[Rr][Ee][Ff][Uu][Ss][Ee]_[Aa][Tt] {
+		return(REFUSE_AT_T);
+		}
+<groupst>[Mm][Aa][Xx][Rr][Ee][Qq][Rr][Aa][Tt][Ee] {
+		return(MAXREQRATE_T);
 		}
 <groupst>[Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]_[Aa][Cc][Ll] {
 		return(NETWORKS_ACL_T);
@@ -145,6 +159,10 @@ line		[^\n]+
 		}
 <INITIAL>[Bb][Ii][Nn][Dd] {
 		return(BIND_T);
+		}
+<INITIAL>[Bb][Ii][Nn][Dd]_[Aa][Cc][Ll] {
+		BEGIN(aclst);
+		return(BIND_ACL_T);
 		}
 <INITIAL>{connect_from}	{
 		return(CONNECT_FROM);
@@ -239,6 +257,9 @@ line		[^\n]+
 <INITIAL>{hi_mark}	{
 		return(HI_MARK);
 		}
+<INITIAL>[Dd][Bb]_[Cc][Aa][Cc][Hh][Ee][_][Mm][Ee][Mm]	{
+		return(DB_CACHE_MEM);
+		}
 <INITIAL>[Ii][Nn][Ss][Ee][Rr][Tt]_[Xx]_[Ff][Oo][Rr][Ww][Aa][Rr][Dd][Ee][Dd]_[Ff][Oo][Rr] {
 		return(INSERT_X_FORWARDED_FOR_T);
 		}
@@ -257,9 +278,6 @@ line		[^\n]+
 <INITIAL>[Ff][Oo][Rr][Cc][Ee]_[Cc][Oo][Mm][Pp][Ll][Ee][Tt][Ii][Oo][Nn]	{
 		return(FORCE_COMPLETION_T);
 		}
-<INITIAL>[Ll][Oo][Gg][Ss]_[Bb][Uu][Ff][Ff][Ee][Rr][Ee][Dd]	{
-		return(LOGS_BUFFERED_T);
-		}
 <INITIAL>[Aa][Cc][Ll]_[Dd][Ee][Nn][Yy] {
 		BEGIN(aclst);
 		return(ACL_DENY_T);
@@ -267,6 +285,9 @@ line		[^\n]+
 <INITIAL>[Aa][Cc][Ll]_[Aa][Ll][Ll][Oo][Ww] {
 		BEGIN(aclst);
 		return(ACL_ALLOW_T);
+		}
+<INITIAL>[Dd][Oo][Nn][Tt]_[Cc][Aa][Cc][Hh][Ee]_[Ww][Ii][Tt][Hh][Oo][Uu][Tt]_[Ll][Aa][Ss][Tt]_[Mm][Oo][Dd][Ii][Ff][Ii][Ee][Dd] {
+		return(DONT_CACHE_WITHOUT_LAST_MODIFIED_T);
 		}
 <storagest>{number}	{
 		yylval.OFFSET = (off_t)ATOOFF(yytext);
@@ -326,7 +347,7 @@ line		[^\n]+
 		return('}');
 		}
 <modulebody>{line} {
-		yylval.STRPTR=(char*)xmalloc(strlen(yytext)+1, "string");
+		yylval.STRPTR=(char*)malloc(strlen(yytext)+1);
 		strcpy(yylval.STRPTR, yytext);
 		return(STRING);
 		}
@@ -360,7 +381,7 @@ line		[^\n]+
 		BEGIN(groupst);
 		return('}');
 		}
-<httpst>[Ii][Nn][Cc][Ll][Uu][Dd][Ee][:] {
+<httpst,peerst>[Ii][Nn][Cc][Ll][Uu][Dd][Ee][:] {
 		return(INCLUDE_T);
 		}
 <peerst,httpst,icpst,groupst>{allow}	{
@@ -385,7 +406,7 @@ line		[^\n]+
 		return(',');
 		}
 <aclst>{line}	{
-		yylval.STRPTR=(char*)xmalloc(strlen(yytext)+1, "string");
+		yylval.STRPTR=(char*)malloc(strlen(yytext)+1);
 		strcpy(yylval.STRPTR, yytext);
 		return(STRING);
 		}
@@ -395,7 +416,7 @@ line		[^\n]+
 		return(L_EOS);
 		}
 {string}	{
-		yylval.STRPTR=(char*)xmalloc(strlen(yytext)+1, "string");
+		yylval.STRPTR=(char*)malloc(strlen(yytext)+1);
 		strcpy(yylval.STRPTR, yytext);
 		return(STRING);
 		}
@@ -407,10 +428,10 @@ line		[^\n]+
 .		;
 %%
 
-yyerror()
+int
+yyerror(void)
 {
 	parser_errors++;
 	fprintf(stderr, "lex: error on \"%s\" at line %d\n", yytext, atline);
 	exit(1);
 }
-

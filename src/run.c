@@ -36,6 +36,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        <sys/stat.h>
 #include        <sys/file.h>
 #include        <sys/time.h>
+#include        <sys/resource.h>
 
 #include        <netinet/in.h>
 
@@ -46,11 +47,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"oops.h"
 #include	"dataq.h"
 
+static	int	startup = TRUE;
+
 struct		sockaddr_in	Me;
-pthread_t 	gc_thread = (pthread_t)NULL, rl_thread = (pthread_t)NULL;
-pthread_t 	dc_thread = (pthread_t)NULL;
-pthread_t 	dl_thread = (pthread_t)NULL;
-pthread_t	stat_thread = (pthread_t)NULL;
+pthread_t 	gc_thread, rl_thread;
+pthread_t 	dc_thread, stat_thread;
+pthread_t 	dl_thread;
 dataq_t		wq;
 
 int	wq_init = 0;
@@ -68,7 +70,9 @@ void	*run_client(void*);
 void	*run_module(int, void* (*f)(void*), int);
 void	cleanup(void);
 void	*worker(void*);
-void	add_workers();
+void	add_workers(void);
+int	blacklist_is_full(void);
+int	put_in_blacklist(int, void *(f)(void*), int);
 
 void
 huphandler(int arg)
@@ -93,25 +97,36 @@ killhandler(int arg)
 char			icp_buf[16384];
 
 void
-run()
+run(void)
 {
 int	r, res,rc;
 int	one = -1;
-int			cli_addr_len, descriptors;
-int			icp_sa_len;
+int	descriptors;
+#if	!defined(_AIX)
+int	icp_sa_len;
+int	cli_addr_len;
+#else
+size_t	cli_addr_len;
+size_t	icp_sa_len;
+#endif
 struct	sockaddr_in	cli_addr, icp_sa;
 struct	pollarg		*pollarg;
 
     huped = killed = logrotate = 0;
+    if ( (server_so != -1) && oops_user && (http_port < IPPORT_RESERVED) )
+	/* we skip socket reopens completely if we run	*
+	 * under some (unprivileged) user		*/
+	goto create_icp_so;
+
     if ( server_so != -1 )
     	close(server_so);
     server_so = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
-	my_log("Can't create server socket: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "run(): Can't create server socket: %s\n", strerror(errno));
 	my_sleep(5);
 	return;
     } else {
-	my_log("http_listen on descriptor %d\n", server_so);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): http_listen on descriptor %d\n", server_so);
     }
     /* bind */
     bzero(&Me, sizeof(Me));
@@ -120,43 +135,51 @@ struct	pollarg		*pollarg;
     Me.sin_port = htons(http_port);
     setsockopt(server_so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
     if ( bind(server_so, (struct sockaddr*)&Me, sizeof(Me)) == -1 ) {
-	my_log("Can't bind server: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "run(): Can't bind server: %s\n", strerror(errno));
 	my_sleep(5);
         close(server_so);server_so = -1;
 	return;
     }
 
     if ( listen(server_so, 128) ) {
-	my_log("server can't listen: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "run(): Server can't listen: %s\n", strerror(errno));
 	my_sleep(5);
 	close(server_so);server_so = -1;
 	return;
     }
+
+create_icp_so:
+    if ( (icp_so != -1) && oops_user && (icp_port < IPPORT_RESERVED) )
+	/* we skip socket reopens completely if we run	*
+	 * under some (unprivileged) user		*/
+	goto skip_socket_opens;
 
     /* create icp socket */
     if ( icp_so != -1 )
     	close(icp_so);
     icp_so = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if ( icp_so == -1 ) {
-	my_log("Can't create icp socket: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "run(): Can't create icp socket: %s\n", strerror(errno));
 	my_sleep(5);
 	close(server_so);server_so = -1;
 	return;
     } else {
-	my_log("icp_listen  on descriptor %d\n", icp_so);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): icp_listen on descriptor %d\n", icp_so);
     }
     bzero(&Me, sizeof(Me));
     if ( bind_addr )
 	str_to_sa(bind_addr, (struct sockaddr*)&Me);
     Me.sin_port = htons(icp_port);
     if ( bind(icp_so, (struct sockaddr*)&Me, sizeof(Me)) == -1 ) {
-	my_log("Can't bind icp: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "run(): Can't bind icp: %s\n", strerror(errno));
 	my_sleep(5);
         close(server_so);server_so = -1;
 	close(icp_so); icp_so = -1;
 	return;
     }
-    
+
+skip_socket_opens:
+    if ( oops_user ) set_user();
     pthread_attr_init(&p_attr);
     pthread_attr_setdetachstate(&p_attr, PTHREAD_CREATE_DETACHED);
 
@@ -167,28 +190,16 @@ struct	pollarg		*pollarg;
     sigaddset(&newset, SIGTERM);
     pthread_sigmask(SIG_BLOCK, &newset, &oset);
 
-    /* start garbage collector */
-    if ( !gc_thread )
-	while( (res = pthread_create(&gc_thread, &p_attr, garbage_collector, NULL)) ) {
-	    my_log("Hmm. Can't create garbage collector. Still trying\n");
-	    my_sleep(5);
-    }
-    /* strart log rotator */
-    if ( !rl_thread )
-	while( (res = pthread_create(&rl_thread, &p_attr, rotate_logs, NULL)) ) {
-	    my_log("Hmm. Can't create log rotator. Still trying\n");
-	    my_sleep(5);
-    }
-    /* strart disk cleaner */
-    if ( !dc_thread )
-	while( (res = pthread_create(&dc_thread, &p_attr, clean_disk, NULL)) ) {
-	    my_log("Hmm. Can't create clean disk thread. Still trying\n");
-	    my_sleep(5);
-    }
-    if ( !stat_thread )
-	while( (res = pthread_create(&stat_thread, &p_attr, statistics, NULL)) ) {
-	    my_log("Hmm. Can't create stat thread. Still trying\n");
-	    my_sleep(5);
+    if ( startup == TRUE ) {
+	startup = FALSE;
+	/* start statistics collector */
+	pthread_create(&stat_thread, &p_attr, statistics, NULL);
+	/* start garbage collector */
+	pthread_create(&gc_thread, &p_attr, garbage_collector, NULL);
+	/* strart log rotator */
+	pthread_create(&rl_thread, &p_attr, rotate_logs, NULL);
+	/* strart disk cleaner */
+	pthread_create(&dc_thread, &p_attr, clean_disk, NULL);
     }
     if ( (use_workers > 0) && (current_workers < use_workers) ) {
 	/* start workers */
@@ -216,9 +227,9 @@ struct	pollarg		*pollarg;
 	    k++;
 	    list = list->next;
 	}
-	pollarg = xmalloc((2+k)*sizeof(struct pollarg),"");
+	pollarg = xmalloc((2+k)*sizeof(struct pollarg),"run(): 1");
     } else
-	pollarg = xmalloc(2*sizeof(struct pollarg),"");
+	pollarg = xmalloc(2*sizeof(struct pollarg),"run(): 2");
 
 wait_clients:
     pollarg[0].request = pollarg[1].request = 0;
@@ -226,12 +237,12 @@ wait_clients:
 	pollarg[0].fd = server_so;
 	pollarg[0].request = FD_POLL_RD;
     } else
-	my_log("server so = %d\n", server_so);
+	my_xlog(LOG_SEVERE, "run(): Server so = %d\n", server_so);
     if ( icp_so >= 0 ) {
 	pollarg[1].fd = icp_so;
 	pollarg[1].request = FD_POLL_RD;
     } else
-	my_log("icp so = %d\n", icp_so);
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): icp so = %d\n", icp_so);
     if ( listen_so_list ) {
 	struct	listen_so_list	*list = listen_so_list;
 	int			k=2;
@@ -249,9 +260,9 @@ wait_clients:
 #else
     r = poll_descriptors(descriptors, &pollarg[0], -1);
 #endif
-    if ( r == -1 || huped || killed ) {
+    if ( r == -1 || huped || killed || logrotate ) {
 	if ( huped ) {
-	    my_log("reconfigure request\n");
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): Reconfigure request.\n");
 	    huped = 0;
 	    pthread_sigmask(SIG_SETMASK, &oset, NULL);
 	    pthread_attr_destroy(&p_attr);
@@ -263,32 +274,79 @@ wait_clients:
 	    exit(1);
 	}
 	if ( logrotate ) {
-	    my_log("Rotate\n");
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): Rotate.\n");
 	    rotate_log_file();
 	    rotate_accesslog_file();
+#ifdef	MODULES
+	    mod_reopen_logs();
+#endif
 	    logrotate = 0;
 	}
-	my_log("failed to select: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "run(): Failed to select: %s\n", strerror(errno));
 	goto wait_clients;
     }
     if ( IS_READABLE(&pollarg[1]) ) {
+	struct	sockaddr_in	my_icp_sa;
+#if	!defined(_AIX)
+	int			my_icp_sa_len = sizeof(my_icp_sa);
+#else
+	size_t			my_icp_sa_len = sizeof(my_icp_sa);
+#endif
+
 	/* icp request */
+	bzero(&my_icp_sa, sizeof(my_icp_sa));
+	getsockname(icp_so, (struct sockaddr*)&my_icp_sa, &my_icp_sa_len);
+
 	icp_sa_len = sizeof(icp_sa);
 	rc = recvfrom(icp_so, icp_buf, sizeof(icp_buf), 0, (struct sockaddr*)&icp_sa, &icp_sa_len);
 	if ( rc < 0 ) {
-	    my_log("icp:recv_from: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "run(): icp: recv_from: %s\n", strerror(errno));
 	} else {
-	    process_icp_msg(icp_so, icp_buf, rc, &icp_sa);
+	    process_icp_msg(icp_so, icp_buf, rc, &icp_sa, &my_icp_sa);
 	}
 	r--; /* one descriptor processed */
     }
     if ( IS_READABLE(&pollarg[0]) ) {
 	cli_addr_len = sizeof(cli_addr);
-	r = accept(server_so, (struct sockaddr*)&cli_addr, &cli_addr_len);
-	if ( r >= 0 ) {
-	    work_t  *work = xmalloc(sizeof(*work),"");
+	rc = accept(server_so, (struct sockaddr*)&cli_addr, &cli_addr_len);
+	if ( rc >= 0 ) {
+	    work_t  *work;
+	    if ( refuse_at ) {
+		int	drop;
+		LOCK_STATISTICS(oops_stat) ;
+		drop = (oops_stat.clients >= refuse_at);
+		UNLOCK_STATISTICS(oops_stat) ;
+		if ( drop ) {
+		    /* we will close any connection	*/
+		    close(rc);
+		    goto acc_pf;
+		}
+	    }
+	    if ( start_red ) {
+		int	drop;
+		LOCK_STATISTICS(oops_stat) ;
+		drop = (oops_stat.clients >= start_red);
+		UNLOCK_STATISTICS(oops_stat) ;
+		if ( drop && (rc % 2) ) {
+		    /* will kill any odd sockets 	*/
+		    close(rc);
+		    goto acc_pf;
+		}
+	    }
+	    if ( max_rate_per_socket 
+	         && (one_second_proxy_requests > max_rate_per_socket) ) {
+		/* if blacklist is full just close socket	*/
+		if ( !blacklist_is_full() ) {
+		    put_in_blacklist(rc, run_client, -1);
+		} else {
+		    /* just close and go forward		*/
+		    close(rc);
+		    goto acc_pf;
+		}
+	    }
+	    work = xmalloc(sizeof(*work),"run(): 3");
 	    if ( work ) {
-		work->so = r;
+		work->so = rc;
 		work->f  = run_client;
 		work->flags = WORK_NORMAL;
 		work->accepted_so = -1 ; /* this is http_port socket */
@@ -298,7 +356,7 @@ wait_clients:
 		    dataq_enqueue(&wq, (void*)work);
 		    add_workers();
 		} else { /* failed to create worker */
-		    close(r);
+		    close(rc);
 		}
 	    } else {
 		pthread_t 	cli_thread;
@@ -306,23 +364,65 @@ wait_clients:
 		/* well, process with this client */
 		res = pthread_create(&cli_thread, &p_attr, run_client, (void*)work);
 		if ( res ) {
-		    my_log("Can't pthread_create\n");
-		    close(r);
+		    my_xlog(LOG_SEVERE, "run(): Can't pthread_create().\n");
+		    close(rc);
 		}
 		pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
 	    }
 	}
+    acc_pf:
 	r--; /* one descriptor processed */
     }
     if ( r && listen_so_list ) {
 	struct	listen_so_list	*list = listen_so_list;
 	struct	sockaddr	cli_addr;
-	int			k=2, rc, cli_addr_len = sizeof(cli_addr);
+	int                     k=2, rc;
+#if	!defined(_AIX)
+	int                     cli_addr_len = sizeof(cli_addr);
+#else
+	size_t                  cli_addr_len = sizeof(cli_addr);
+#endif
 	while(list) {
 	    if (IS_READABLE(&pollarg[k]) ) {
-		/* accept it */
+		/* accept it 							*/
 		rc = accept(pollarg[k].fd, &cli_addr, &cli_addr_len);
 		if ( rc < 0 ) goto acc_f;
+		if ( refuse_at ) {
+		    int	drop;
+		    LOCK_STATISTICS(oops_stat) ;
+		    drop = (oops_stat.clients >= refuse_at);
+		    UNLOCK_STATISTICS(oops_stat) ;
+		    if ( drop ) {
+			/* we will close any connection	*/
+			close(rc);
+			goto acc_pf;
+		    }
+		}
+		if ( start_red ) {
+		    int	drop;
+		    LOCK_STATISTICS(oops_stat) ;
+		    drop = (oops_stat.clients >= start_red);
+		    UNLOCK_STATISTICS(oops_stat) ;
+		    if ( drop && (rc % 2) ) {
+			/* will kill any odd sockets 	*/
+			close(rc);
+			goto acc_pf;
+		    }
+		}
+		/* if we reach limit put this connect to blacklist		*/
+		if (     max_rate_per_socket
+		     && (list->requests >= max_rate_per_socket) ) {
+		    /* if blacklist is full just close socket	*/
+		    if ( !blacklist_is_full() ) {
+			put_in_blacklist(rc, list->process_call, pollarg[k].fd);
+		    } else {
+			/* just close and go forward		*/
+			close(rc);
+			goto acc_f;
+		    }
+		}
+		/* update number of requests received during last second 	*/
+		list->requests++;
 		if ( list->process_call ) {
 		    run_module(rc, list->process_call, pollarg[k].fd);
 		} else {
@@ -342,7 +442,7 @@ run_module(int so, void *(f)(void*), int accepted_so)
 {
 pthread_t 		cli_thread;
 int			res;
-work_t  *work = xmalloc(sizeof(*work),"");
+work_t  *work = xmalloc(sizeof(*work),"run_module(): 1");
 
     if ( work ) {
 	work->so = so;
@@ -362,33 +462,31 @@ work_t  *work = xmalloc(sizeof(*work),"");
 	/* well, process with this client */
 	res = pthread_create(&cli_thread, &p_attr, f, (void*)work);
 	if ( res ) {
-	    my_log("Can't pthread_create\n");
+	    my_xlog(LOG_SEVERE, "run_module(): Can't pthread_create().\n");
 	    close(so);
-	    return(NULL);
 	}
 	pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
     }
     return(NULL);
 }
 
-FILE	*logf;
 void
 cleanup(void)
 {
 struct storage_st	*storage;
 
-    my_log("Clean up and exit\n");
-    my_log("Flushing mem_cache\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Clean up and exit.\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Flushing mem_cache.\n");
     lo_mark_val = 0;
     /*flush_mem_cache(1);*/
-    my_log("Locking config\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking config.\n");
     kill_request = 1;
     WRLOCK_CONFIG ;
-    my_log("Locking config...Done\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking config...Done.\n");
     if ( dbp ) {
-	my_log("Locking DB\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking DB.\n");
 	WRLOCK_DB ;
-	my_log("Locking DB...Done\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking DB...Done.\n");
 	dbp->sync(dbp, 0);
 	dbp->close(dbp, 0);
     }
@@ -400,22 +498,23 @@ struct storage_st	*storage;
 #endif
     if ( (storage = storages) ) {
 	while (storage) {
-	    my_log("Locking %s\n", storage->path);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking %s\n", storage->path);
 	    WRLOCK_STORAGE(storage);
 	    if ( TEST(storage->flags, ST_READY) ) {
 		flush_super(storage);
 		flush_map(storage);
 		close(storage->fd);
 	    }
-	    my_log("Storage %s closed\n", storage->path);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Storage %s closed.\n", storage->path);
 	    storage=storage->next;
 	}
     }
     if ( logf )
 	fclose(logf);
 }
+
 void
-add_workers()
+add_workers(void)
 {
     if ( (clients_number >= current_workers) &&
 	(current_workers < max_workers) ) {
@@ -424,6 +523,18 @@ add_workers()
 	pthread_create(&thread, NULL, worker, NULL);
 	pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
 	current_workers++;
-	printf("Current_workers now: %d\n", current_workers);
+	printf("add_workers(): Current_workers now: %d\n", current_workers);
     }
+}
+
+int
+blacklist_is_full(void)
+{
+    return(TRUE);
+}
+
+int
+put_in_blacklist(int so, void *(f)(void*), int accepted_so)
+{
+    return(0);
 }

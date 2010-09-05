@@ -111,7 +111,7 @@ struct	peer	*peer;
 
     len = strlen(rq->url.proto) + strlen(rq->url.host) +
           strlen(rq->url.path) + 16 /* for port and other parts */;
-    buf = xmalloc(ROUND(len+sizeof(struct icp_hdr),CHUNK_SIZE),"icp_rq");
+    buf = xmalloc(ROUND(len+sizeof(struct icp_hdr),CHUNK_SIZE),"send_icp_requests(): icp_rq");
     if ( ! buf )
 	return(-1);
     if ( rq->url.port != 80 )
@@ -136,7 +136,7 @@ struct	peer	*peer;
 	    struct	sockaddr_in	sa;
 
 	    /* need addr update */
-	    my_log("Need address update\n");
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_icp_requests(): Need address update.\n");
 	    pthread_mutex_lock(&icp_resolver_lock);
 	    bzero((void*)&sa, sizeof(sa));
 	    rr = str_to_sa(peer->name,(struct sockaddr*)&sa);
@@ -161,14 +161,14 @@ struct	peer	*peer;
 	    peer = peer->next;
 	    continue;
 	}
-	my_log("sending to: %s\n", peer->name);
+	my_xlog(LOG_DBG|LOG_INFORM, "send_icp_requests(): Sending to: %s\n", peer->name);
 	rr = sendto(icp_so, buf, len, 0, (struct sockaddr*)&peer->addr, sizeof(struct sockaddr_in));
 	if ( rr != -1 ) {
 	    if ( !TEST(peer->state, PEER_DOWN) ) 
 		succ++;
 	    peer->last_sent = global_sec_timer;
 	} else {
-	    my_log("Sendto: %s\n", strerror(errno));
+	    my_xlog(LOG_SEVERE, "send_icp_requests(): Sendto: %s\n", strerror(errno));
 	}
 	/* as is just statistics, let it only approximate */
 	peer->rq_sent++;
@@ -195,7 +195,7 @@ icp_request_destroy(struct icp_queue_elem *icpr)
 }
 
 void
-process_icp_msg(int so, char *buf, int len, struct sockaddr_in *sa)
+process_icp_msg(int so, char *buf, int len, struct sockaddr_in *sa, struct sockaddr_in *my_sa)
 {
 struct	icp_hdr		*icp_hdr = (struct icp_hdr*)buf;
 int			*intp;
@@ -213,7 +213,7 @@ struct	request		request;
 		break;
 	case ICP_OP_QUERY:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_QUERY wrong len.\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
@@ -223,7 +223,7 @@ struct	request		request;
 		/* extract url 			*/
 		urlp =	buf + sizeof(struct icp_hdr) + 4;
 		if ( !memchr(urlp, 0, len-4-sizeof(struct icp_hdr)) ) {
-		    my_log("Wrong url\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_QUERY wrong url.\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
@@ -233,14 +233,14 @@ struct	request		request;
 		UNLOCK_STATISTICS(oops_stat);
 		bzero(&request, sizeof(request));
 		memcpy(&request.client_sa, sa, sizeof(*sa));
-		my_log("ICP_OP_QUERY: %s\n", urlp);
+		my_xlog(LOG_DBG, "process_icp_msg(): ICP_OP_QUERY: %s\n", urlp);
 		if ( parse_url(urlp, NULL, &request.url, -1) ) {
-		    my_log("Wrong url\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_QUERY wrong url.\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
 		RDLOCK_CONFIG;
-		denied = deny_http_access(so, &request);
+		denied = deny_http_access(so, &request, NULL);
 		if ( denied ) {
 		    UNLOCK_CONFIG ;
 		    send_icp_op(so, sa, ICP_OP_DENIED, htonl(icp_rq_n), urlp);
@@ -253,9 +253,9 @@ struct	request		request;
 		    peer->rq_recvd++;
 		}
 		UNLOCK_CONFIG ;
-		res = locate_in_mem(&request.url, 0, NULL, NULL);
+		res = locate_in_mem(&request.url, READY_ONLY, NULL, NULL);
 		if ( res ) {
-		    my_log("ICP_MEM_HIT\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_MEM_HIT.\n");
 		    icp_opcode = ICP_OP_HIT;
 		    icp_opt=0;
 		    send_icp_op(so, sa, ICP_OP_HIT, htonl(icp_rq_n), urlp);
@@ -272,12 +272,12 @@ struct	request		request;
 		    UNLOCK_CONFIG;
 		    if ( rc >= 0 )xfree(tmp_ref);
 		    if ( !rc ) {
-			my_log("ICP_STOR_HIT\n");
+			my_xlog(LOG_DBG, "process_icp_msg(): ICP_STOR_HIT.\n");
 			send_icp_op(so, sa, ICP_OP_HIT, htonl(icp_rq_n), urlp);
 			if ( peer )
 			    peer->hits_sent++;
 		    } else {
-			my_log("ICP_MISS\n");
+			my_xlog(LOG_DBG, "process_icp_msg(): ICP_MISS.\n");
 			send_icp_op(so, sa, ICP_OP_MISS, htonl(icp_rq_n), urlp);
 		    }
 		}
@@ -285,7 +285,7 @@ struct	request		request;
 		break;
 	case ICP_OP_HIT:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_HIT wrong len.\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
@@ -293,7 +293,7 @@ struct	request		request;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_HIT msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -303,7 +303,7 @@ struct	request		request;
 		icp_lookup.sa  = *sa;
 		icp_lookup.sa.sin_port = htons(peer->http_port);
 		icp_lookup.type= peer->type;
-		my_log("ICP_PEER_HIT from %s\n", peer->name);
+		my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_PEER_HIT from %s\n", peer->name);
 		UNLOCK_CONFIG;
 		icp_lookup.rq_n= icp_rq_n;
 		/* looking up queue elem with the same rq_n	*/
@@ -311,7 +311,7 @@ struct	request		request;
 		break;
 	case ICP_OP_MISS:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_MISS wrong len.\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
@@ -319,7 +319,7 @@ struct	request		request;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_MISS msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -328,7 +328,7 @@ struct	request		request;
 		icp_lookup.sa  = *sa;
 		icp_lookup.sa.sin_port = htons(peer->http_port);
 		icp_lookup.type= peer->type;
-		my_log("ICP_PEER_MISS from %s\n", peer->name);
+		my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_PEER_MISS from %s\n", peer->name);
 		UNLOCK_CONFIG;
 		icp_lookup.rq_n= icp_rq_n;
 		/* looking up queue elem with the same rq_n	*/
@@ -336,14 +336,14 @@ struct	request		request;
 		break;
 	case ICP_OP_ERR:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_ERR wrong len.\n");
 		    return;
 		}
 		RDLOCK_CONFIG;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_ERR msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -352,14 +352,14 @@ struct	request		request;
 		break;
 	case ICP_OP_SECHO:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_SECHO wrong len.\n");
 		    return;
 		}
 		RDLOCK_CONFIG;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_SECHO msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -368,14 +368,14 @@ struct	request		request;
 		break;
 	case ICP_OP_DECHO:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_DECHO wrong len.\n");
 		    return;
 		}
 		RDLOCK_CONFIG;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_DECHO msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -384,14 +384,14 @@ struct	request		request;
 		break;
 	case ICP_OP_MISS_NOFETCH:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_MISS_NOFETCH wrong len.\n");
 		    return;
 		}
 		RDLOCK_CONFIG;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_MISS_NOFETCH msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -400,14 +400,14 @@ struct	request		request;
 		break;
 	case ICP_OP_DENIED:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_DENIED wrong len.\n");
 		    return;
 		}
 		RDLOCK_CONFIG;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_DENIED msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -416,14 +416,14 @@ struct	request		request;
 		break;
 	case ICP_OP_HIT_OBJ:
 		if ( len != ntohs(icp_msg_len) ) {
-		    my_log("Wrong len\n");
+		    my_xlog(LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_HIT_OBJ wrong len.\n");
 		    return;
 		}
 		RDLOCK_CONFIG;
 		peer = peer_by_addr(sa);
 		if ( !peer ) {
 		    UNLOCK_CONFIG;
-		    my_log("Msg from unknown peer\n");
+		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_icp_msg(): ICP_OP_HIT_OBJ msg from unknown peer.\n");
 		    break;
 		}
 		/* here update peer statistics			*/
@@ -457,7 +457,7 @@ int	len = strlen(urlp)+1 + sizeof(struct icp_hdr);
 struct	icp_hdr	*icp_hdr;
 int	r;
 
-    buf = xmalloc(ROUND(len, CHUNK_SIZE), "ICP_OP");
+    buf = xmalloc(ROUND(len, CHUNK_SIZE), "send_icp_op(): ICP_OP");
     if ( !buf )
 	return;
     icp_hdr = (struct icp_hdr *)buf;
@@ -469,7 +469,7 @@ int	r;
     strncpy(buf+sizeof(*icp_hdr), urlp, strlen(urlp));
     r = sendto(so, buf, len, 0, (struct sockaddr*)sa, sizeof(struct sockaddr_in));
     if ( r == -1 ) {
-	my_log("Failed to send OP_HIT: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_icp_op_err(): Failed to send OP_HIT: %s\n", strerror(errno));
     }
     xfree(buf);
 }
@@ -513,10 +513,10 @@ int				rq_n;
 
     if ( !qe || !icp_lookup ) return(0);
     rq_n = icp_lookup->rq_n;
-    my_log("miss called\n");
+    my_xlog(LOG_DBG, "process_miss(): miss called.\n");
     pthread_mutex_lock(&qe->icpr_mutex);
     if ( rq_n == qe->rq_n ) {
-	my_log("icp_req still here\n");
+	my_xlog(LOG_DBG|LOG_INFORM, "send_icp_op_err(): icp_req still here.\n");
 	if ( (icp_lookup->type == PEER_PARENT) && !qe->status) {
 	    qe->type    = icp_lookup->type;
 	    /* store address of first parent 	*/
@@ -548,10 +548,10 @@ int				rq_n;
 
     if ( !qe || !icp_lookup ) return(0);
     rq_n = icp_lookup->rq_n;
-    my_log("hit called\n");
+    my_xlog(LOG_DBG, "process_hit(): hit called.\n");
     pthread_mutex_lock(&qe->icpr_mutex);
     if ( rq_n == qe->rq_n ) {
-	my_log("icp_req still here\n");
+	my_xlog(LOG_DBG|LOG_INFORM, "process_hit(): icp_req still here.\n");
 	qe->requests_sent--;
 	if ( qe->waitors) {
 	    qe->type    = icp_lookup->type;

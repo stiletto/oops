@@ -35,6 +35,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        <sys/stat.h>
 #include        <sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include        <netinet/in.h>
 
@@ -104,11 +105,12 @@ struct group 	 *group;
 struct peer	 *peer;
 struct oops_stat temp_stat;
 int		 counter = 0;
-int		 hits, reqs;
+int		 hits=0, reqs=0;
 int		 purge = PURGE_INTERVAL;
 
     arg = arg;
-    start_time = time(NULL);
+    bzero(&oops_stat, sizeof(oops_stat));
+    start_time = oops_stat.timestamp0 = oops_stat.timestamp = time(NULL);
 
     while(1) {
 	global_sec_timer = time(NULL);
@@ -121,6 +123,8 @@ int		 purge = PURGE_INTERVAL;
 	    oops_stat.hits1 = oops_stat.hits0;
 	    oops_stat.requests_http0 = 0;
 	    oops_stat.hits0 = 0;
+	    oops_stat.timestamp0 = oops_stat.timestamp;
+	    oops_stat.timestamp = global_sec_timer;
 
 	    oops_stat.requests_icp1 = oops_stat.requests_icp0;
 	    oops_stat.requests_icp0 = 0;
@@ -132,15 +136,19 @@ int		 purge = PURGE_INTERVAL;
 		oops_stat.hits0_max = oops_stat.hits1;
 	    if ( oops_stat.clients > oops_stat.clients_max )
 		oops_stat.clients_max = oops_stat.clients;
+#if	HAVE_GETRUSAGE
+	    memcpy(&oops_stat.rusage0, &oops_stat.rusage, sizeof(oops_stat.rusage));
+	    getrusage(RUSAGE_SELF, &oops_stat.rusage);
+#endif
 	    UNLOCK_STATISTICS(oops_stat);
 	    reqs = temp_stat.requests_http0;
 	    hits = temp_stat.hits0;
-	    my_log("Statistics: clients      : %d\n", temp_stat.clients);
-	    my_log("Statistics: http_requests: %d\n", temp_stat.requests_http);
-	    my_log("Statistics: icp_requests : %d\n", temp_stat.requests_icp);
-	    my_log("Statistics: req_rate     : %d/s\n", temp_stat.requests_http0/60);
-	    if ( reqs ) my_log("Statistics: hits_rate    : %d%%\n", (hits*100)/reqs);
-		  else  my_log("Statistics: hits_rate    : 0%%\n");
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): clients      : %d\n", temp_stat.clients);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): http_requests: %d\n", temp_stat.requests_http);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): icp_requests : %d\n", temp_stat.requests_icp);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): req_rate     : %d/s\n", temp_stat.requests_http0/60);
+	    if ( reqs ) my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): hits_rate    : %d%%\n", (hits*100)/reqs);
+		  else  my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): hits_rate    : 0%%\n");
 	    counter = 0;
 	}
 
@@ -158,7 +166,7 @@ int		 purge = PURGE_INTERVAL;
 	group = groups ;
 	if ( group ) {
 	    while ( group ) {
-		/*my_log("transfer : %d bytes/sec\n", MID(bytes));*/
+		my_xlog(LOG_DBG, "statistics(): transfer : %d bytes/sec\n", MID(bytes));
 		pthread_mutex_lock(&group->group_mutex);
 		group->cs_total.bytes += group->cs0.bytes;
 		group->cs_total.requests += group->cs0.requests;
@@ -188,17 +196,15 @@ int		 purge = PURGE_INTERVAL;
 	  FILE *statl = fopen(statisticslog, "w");
 
 	    if ( statl ) {
-		fprintf(statl,"clients      : %d\n", temp_stat.clients);
-		fprintf(statl,"uptime       : %d sec. (%d day(s))\n",
-			(unsigned int)global_sec_timer-start_time,
-			(unsigned int)(global_sec_timer-start_time)/86400);
-		fprintf(statl,"http_requests: %d\n", temp_stat.requests_http);
-		fprintf(statl,"http_hits    : %d\n", temp_stat.hits);
-		fprintf(statl,"icp_requests : %d\n", temp_stat.requests_icp);
-		fprintf(statl,"req_rate     : %d/s\n", temp_stat.requests_http0/60);
+		fprintf(statl,"clients      : %d\n", (int)temp_stat.clients);
+		fprintf(statl,"uptime       : %d sec.\n", (unsigned)(global_sec_timer-start_time));
+		fprintf(statl,"http_requests: %d\n", (unsigned)temp_stat.requests_http);
+		fprintf(statl,"http_hits    : %d\n", (unsigned)temp_stat.hits);
+		fprintf(statl,"icp_requests : %d\n", (unsigned)temp_stat.requests_icp);
+		fprintf(statl,"req_rate     : %d/s\n", (unsigned)(temp_stat.requests_http0/60));
 		if ( reqs ) fprintf(statl,"hits_rate    : %d%%\n", (hits*100)/reqs);
 		      else  fprintf(statl,"hits_rate    : 0%%\n");
-		fprintf(statl,"free_space   : %d%%\n", temp_stat.storages_free);
+		fprintf(statl,"free_space   : %u%%\n", (unsigned)temp_stat.storages_free);
 		fclose(statl);
 	    }
 	}
@@ -236,6 +242,7 @@ purge_old_dstd(void *a1, void *a2, void *a3)
 struct dstdomain_cache_entry *dstd_entry = (struct dstdomain_cache_entry *)a1;
 char			     *key = (char*)a3;
 
+    if ( !dstd_entry ) return;
     if ( global_sec_timer - dstd_entry->when_created > DSTD_CACHE_TTL ) {
 	add_to_string_list(&purged_entries, key);
     }

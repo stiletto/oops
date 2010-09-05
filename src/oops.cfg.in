@@ -17,7 +17,11 @@ icp_port	3130
 ##
 ## Change euid to that user
 ##
-#userid		nobody
+## WARNING: if you use 'userid, then you 'reconfigure will not be able to
+##	    open new sockets on reserved (< 1024) ports and will not be able
+##	    to return to original userid.
+##
+@OOPSUSER_DEF@
 
 ##
 ## Change root directory. If don't know exactly what are you doing -
@@ -26,24 +30,17 @@ icp_port	3130
 
 ##
 #  Logfile - just debug output
-#  When used in form 'filename {N S}'
+#  When used in form 'filename [{N S}] [[un]buffered]'
 #  will be rotated automatically (up to N files up to S bytes in size)
 ##
 logfile		/dev/tty
-#logfile	@prefix@/oops/logs/oops.log { 3 1m }
+#logfile	@prefix@/oops/logs/oops.log { 3 1m } unbuffered
 
 ##
 #  Accesslog - the same as for squid. Re rotating - see note for logfile
 ##
 accesslog	/dev/tty
 #accesslog	@prefix@/oops/logs/access.log
-
-##
-#  By default logfile and access_log are not buffered,
-#  uncomment next line to make them buffered
-##
-#logs_buffered
-
 
 ##
 #  Pidfile. for kill -1 `cat oops.pid` and for locking.
@@ -70,7 +67,6 @@ statistics	@prefix@/oops/logs/statfile
 #  that cachable data from network came faster then we can save on disk)
 #  drop objects (without attempt to save on disk).
 ##
-
 mem_max		16m
 
 ##
@@ -78,8 +74,32 @@ mem_max		16m
 #  When total amount become larger then this limit - start
 #  swaping cachable objects to disk
 ##
-
 lo_mark		8m
+
+##
+#  This parameter specifies internal cache size of BerkeleyDB.
+#  Increase this parameter for best performance (if you have a lot of memory).
+#  For example:  db_cache_mem	64m
+#  Default and minimum value:	4m
+#
+#  This memory pool is not part of memory pool, specified by mem_max parameter.
+#  WARNING: the amount of RAM used by oops will be increased by the value of
+#  this parameter.
+##
+#db_cache_mem	4m
+
+##
+# start random early drop when number of clients reach some level.
+# this can protect you against attacks and against situation when
+# oops cant handle too much connections. By default - 0 (or no limits).
+##
+#start_red	0
+
+##
+# refuse any connection when number of already connected clients reach some
+# level. By default - 0 (or no limits).
+##
+#refuse_at	0
 
 ##
 #  if document contain no Expires: then expire after (in days)
@@ -102,6 +122,12 @@ max-expire-value        30
 ##
 last-modified-factor	5
 
+##
+# If you want not cache replies without Last-Modified:
+# uncomment next line.
+##
+#dont_cache_without_last_modified
+
 #  run expire every ( in hours )
 ##
 default-expire-interval 1
@@ -118,13 +144,11 @@ icp_timeout	1000
 #  disk-ok-free to 0. Oops will start cleanup if it have less then 256
 #  free blocks(1M), and stop when it reach 512 bree blocks(2M).
 ##
-
 disk-low-free	3
 
 ##
 #  stop disk cache cleanup when free space will be (in %%)
 ##
-
 disk-ok-free	5
 
 ##
@@ -135,12 +159,12 @@ force_http11
 
 ##
 #  Always check document freshness, even it is not stale or expired
-#  This force Oops behave like squid - first chech cached doc, then send
+#  This force Oops behave like squid - first check cached doc, then send
 ##
 #always_check_freshness
 
 ##
-#  If user-requestor aborted connection ti proxy, but there was received more
+#  If user-requestor aborted connection to proxy, but there was received more
 #  then some percent ot the document - then continue.
 #  default value - 75%
 ##
@@ -162,6 +186,7 @@ insert_via		yes
 
 ##
 #	ACLs - currently: urlregex, urlpath, usercharset
+#		port, dstdom, dstdom_regex, src_ip, time
 #		each acl can be loaded from file.
 ##
 #acl	CACHEABLECGI	urlregex	http://www\.topping\.com\.ua/cgi-bin/pingstat\.cgi\?072199131826
@@ -172,14 +197,21 @@ insert_via		yes
 #acl	WINUSER		usercharset	windows-1251
 #acl	DOSUSER		usercharset	ibm866
 #acl	UNIXUSER	usercharset	koi8-r
+#acl	RUS		dstdom		ru su
+#acl	UKR		dstdom		ua
 #acl	BADPORTS	port		[0:79],110,138,139,513,[6000:6010]
 #acl	BADDOMAIN	dstdom		baddomain1.com baddomain2.com
 #acl	BADDOMREGEX	dstdom_regex	baddomain\.((com)|(org))
 #acl	LOCAL_NETWORKS	src_ip		include:@prefix@/oops/acl_local_networks
 #acl	BADNETWORKS	src_ip		192.168.10/24
+#acl	WORKTIME	time		Mon,Tue:Fri 0900:1800
 acl	ADMINS		src_ip		127.0.0.1
 acl	PURGE		method		PURGE
 
+##
+#	acl_deny [!]ACL [!]ACL ...
+#	deny access for combined acl
+##
 acl_deny PURGE !ADMINS
 
 ##
@@ -189,18 +221,24 @@ stop_cache	?
 stop_cache	cgi-bin
 
 ##
-# Stop cache using ACL
+#	stop_cache_acl [!]ACL [!]ACL ...
+#	Stop cache using ACL
 ##
 #stop_cache_acl	WWWPACO
 
 ##
 #	refresh_pattern ACLNAME min percent max
 ##
-
 #refresh_pattern	CACHEABLECGI	20 50% 200
 #refresh_pattern	WWWPACO		0 0% 0
 
-
+##
+#	bind_acl {hostname|ip} [!]ACL [!]ACL ...
+#	bind to given address when connecting to server
+#	if request match ACLNAME
+##
+#bind_acl	outname1 RUS
+#bind_acl	outname2 UKR
 
 ##
 # line 'parent ....' will force all connections (except to destinations
@@ -245,9 +283,9 @@ group	paco	{
 #       networks are ordered by masklen - longest masks(most specific networks)
 #	are checked first.
 ##
-	networks	195.114.128/19 127/8 195.5.40.93/32;
-#	networks_acl	LOCAL_NETWORKS !BAD_NETWORKS
-	badports	[0:79],110,138,139,513,[6000:6010];
+	networks	195.114.128/19 127/8 195.5.40.93/32 ;
+#	networks_acl	LOCAL_NETWORKS !BAD_NETWORKS ;
+	badports	[0:79],110,138,139,513,[6000:6010] ;
 	miss		allow;
 ##
 # denytime - when deny access to proxy server for this group
@@ -260,7 +298,8 @@ group	paco	{
 #	auth_mods	passwd_file;
 
 ##
-# URL-Redirector (porno, ad. filtering) modules for this group (separate by space)
+# URL-Redirector (porno, ad. filtering) modules for this group (separate by
+# space)
 ##
 #	redir_mods	redir;
 
@@ -269,6 +308,12 @@ group	paco	{
 # limit whole group to 8Kbytes per sec
 ##
 #	bandwidth	8k;
+
+##
+# limit request rate from this group (requests per second). This is crude,
+# and must be used as last resort
+##
+#	maxreqrate	100;
 
 ##
 # icp acl ...
@@ -329,14 +374,14 @@ storage {
 	path @prefix@/oops/storages/oops_storage ;
 #	Size of the storage. Can be in bytes or 'auto'. Auto is
 #	usefull for pre-created storages or disk slices.
-#	NOTE: 'size auto' wont work for Linux on disk slices.
+#	NOTE: 'size auto' won't work for Linux on disk slices.
 #	To use large ( > 2G ) files run configure with --enable-large-files
 
 	size 20m ;
 
-#	You have to use 'offset' in the case yor raw device (or slice).
+#	You have to use 'offset' in the case your raw device (or slice)
 #	require that. For example if you use entire disk as storage
-#	under Soalris/Sparc - you have to skip first block
+#	under AIX and Soalris/Sparc - you have to skip first block
 #	which contain disk label (that is storage will start from
 #	next 512 sector.
 #	offset	512;
@@ -441,6 +486,13 @@ module	vary {
 # myport [{hostname|ip_addr}:]port ...
 #	myport			80
 ##
+# allow access to proxy through accel module.
+# Deny will stop proxy through accel completely, regardless
+# of any other access rules
+##
+#	proxy_requests		deny
+#
+##
 #	File with maps and other config directives
 #	Checked once per minute. No need to restart oops if maps changed
 ##
@@ -456,4 +508,31 @@ module	vary {
 # myport can have next form:
 # myport [{hostname|ip_addr}:]port ...
 #	myport			3128
+#}
+
+##
+## %h -			remote ip address
+## %A -			local ip address
+## %l -			remote logname from identd (not suported now)
+## %u -			remote user (from auth)
+## %{format}t -		time with optional {format} (for strftime)
+## %t -			time with standard format %d/%b/%Y:%T %Z
+## %r -			request line
+## %s -			status code
+## %b -			bytes received
+## %{header}i -		value of header in request
+## %m -			HIT/MISS
+## %k -			hierarchy (DIRECT/NONE/...)
+##
+## directive buffered can be followed by size of the buffer,
+## like 'buffered 32000'
+##
+#module customlog {
+#	path	/usr/local/oops/logs/access_custom1
+#	format	"%h %l %u %t \"%r\" %>s %b"
+#  squid httpd mode log emulation
+#	format	"%h %u %l %t \"%r\" %s %b %m:%k"
+#	buffered
+#	path	/usr/local/oops/logs/access_custom2
+#	format	"%h->%A %l %u [%t] \"%r\" %s %b \"%{User-Agent}i\""
 #}

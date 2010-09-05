@@ -49,64 +49,376 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	<db.h>
 
+#define		OOPS_MAIN
 #include	"oops.h"
+#undef		OOPS_MAIN
+
 #include	"version.h"
 
 char	*configfile = "oops.cfg";
-FILE	*logf = NULL, *accesslogf = NULL;
 int	readconfig(char*);
-void	my_log(char*, ...);
 int	cidr_net_cmp(const void *, const void *);
 int	operation;
 char	hostname[64];
 struct	sockaddr_in	Me;
 int	run_daemon = 0;
 int	pid_d = -1;
-int	check_config_only;
 struct	obj_hash_entry	hash_table[HASH_SIZE];
-int	skip_check=0, checked=0;
-void	print_networks(struct cidr_net **, int, int), print_acls(), free_acl(struct acls *);
-void	free_dom_list(struct domain_list *);
+int	checked=0;
+void	print_acls(void), free_acl(struct acls *);
 void	print_dom_list(struct domain_list *);
 void	free_peers(struct peer *);
-void	free_denytimes(struct denytime *);
 void	free_dstd_ce(void*);
-int	close_listen_so_list(struct listen_so_list *list);
+void	free_bind_acl_list(bind_acl_t*);
+int	close_listen_so_list(void);
 extern	int	str_to_sa(char*, struct sockaddr *);
-void	open_db();
-void	set_user();
+void	open_db(void);
 
-size_t	db_cachesize = 4*1024*1024;	/* 4M */
 static	int	my_bt_compare(const DBT*,const DBT*);
+pthread_attr_t	p_attr;
+pthread_t	stat_thread = (pthread_t)NULL;
+
+time_t			start_time;
+struct			mem_obj	*youngest_obj, *oldest_obj;
+rwl_t			config_lock;
+rwl_t			log_lock;
+rwl_t			db_lock;
+char    		logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
+char    		accesslog[MAXPATHLEN];
+char    		statisticslog[MAXPATHLEN];
+char			dbhome[MAXPATHLEN];
+DB			*dbp;
+char			dbname[MAXPATHLEN];
+int			reserved_fd[RESERVED_FD];
+int			accesslog_num, accesslog_size;
+int			log_num, log_size;
+int			maxresident;
+int			icp_so;
+int			server_so;
+int			peer_down_interval;
+char    		icons_path[MAXPATHLEN];
+char    		icons_port[64];
+char    		icons_host[MAXPATHLEN];
+char    		mem_max[MAXPATHLEN];
+char    		lo_mark[MAXPATHLEN];
+char    		hi_mark[MAXPATHLEN];
+u_short 		internal_http_port;
+char    		connect_from[64];
+char			parent_host[64];
+int			parent_port;
+int			always_check_freshness;
+int			force_http11;
+int			force_completion;
+refresh_pattern_t	*global_refresh_pattern;
+int			max_rate_per_socket;
+int			one_second_proxy_requests;
+struct	domain_list 	*local_domains;
+struct	cidr_net	*local_networks;
+struct	cidr_net	**local_networks_sorted;
+int			local_networks_sorted_counter;
+struct	sockaddr_in	connect_from_sa, *connect_from_sa_p;
+struct	sockaddr_in	ns_sa[MAXNS];
+int			ns_configured;
+u_short 		http_port;
+u_short			icp_port;
+char			*bind_addr;
+struct			string_list	*stop_cache;
+struct			storage_st	*storages, *next_alloc_storage;
+void			*startup_sbrk;
+int			default_expire_value;
+int			max_expire_value;
+int			ftp_expire_value;
+int			default_expire_interval;
+int			last_modified_factor;
+int			disk_low_free, disk_hi_free;
+int			kill_request, reconfig_request;
+time_t			global_sec_timer;
+int			dns_ttl;
+int			icp_timeout;
+int			accesslog_buffered;
+int			logfile_buffered;
+int			verbose_startup;
+int			verbosity_level;
+int			check_config_only;
+int			skip_check;
+pthread_mutex_t		obj_chain;
+pthread_mutex_t		malloc_mutex;
+pthread_mutex_t		clients_lock;
+pthread_mutex_t		accesslog_lock;
+pthread_mutex_t		icp_resolver_lock;
+pthread_mutex_t		dns_cache_lock;
+pthread_mutex_t		st_check_in_progr_lock;
+pthread_mutex_t		mktime_lock;
+
+DB_ENV			*dbenv;
+#if	DB_VERSION_MAJOR<3
+DB_INFO			dbinfo;
+#endif
+int			use_workers;
+int			current_workers;
+int			max_workers;
+int			total_alloc;
+int			clients_number;
+int			total_objects;
+char			*version;
+char			*db_ver;
+pid_t			my_pid;
+int			st_check_in_progr;
+struct	oops_stat	oops_stat;
+struct	peer		*peers;
+struct	group		*groups;
+struct	cidr_net	**sorted_networks_ptr;
+struct	listen_so_list	*listen_so_list;
+int			sorted_networks_cnt;
+int		mem_max_val, lo_mark_val, hi_mark_val;
+size_t		db_cache_mem_val;
+u_short		internal_http_port;
+struct	obj_hash_entry	hash_table[HASH_SIZE];
+struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
+list_t		icp_requests_list;
+list_t		blacklist;
+char		domain_name[MAXHOSTNAMELEN+1];
+char		host_name[MAXHOSTNAMELEN+1];
+char		*oops_user;
+char		*oops_chroot;
+int             insert_via;
+int             insert_x_forwarded_for;
+int		dont_cache_without_last_modified;
+named_acl_t	*named_acls;
+struct charset	*charsets;
+acl_chk_list_hdr_t	*acl_allow;
+acl_chk_list_hdr_t	*acl_deny;
+acl_chk_list_hdr_t	*stop_cache_acl;
+bind_acl_t		*bind_acl_list;
+FILE		*logf, *accesslogf;
+int		blacklist_len;
+int		start_red;
+int		refuse_at;
+filebuff_t	logbuff;
+filebuff_t	accesslogbuff;
+
+struct cidr_net**
+sort_n(struct cidr_net *nets, int *counter)
+{
+struct cidr_net *next;
+struct cidr_net	**res;
+int		i;
+
+    *counter = 0;
+    next = nets;
+    while(next) {
+	next=next->next;
+	(*counter)++;
+    }
+    if ( *counter ) {
+	/* allocate array */
+	res = (struct cidr_net **)malloc(*counter * sizeof(struct cidr_net*));
+	if ( !res ) {
+	    *counter = 0;
+	    return(NULL);
+	}
+	/* build list */
+	next = nets; i = 0;
+	while(next) {
+	    res[i] = next;
+	    i++;
+	    next=next->next;
+	}
+	/* well, sort them */
+	qsort(res, *counter, sizeof(struct cidr_net*), cidr_net_cmp);
+        return(res);
+    }
+    return(NULL);
+}
+
+void
+free_net_list(struct cidr_net *nets)
+{
+struct	cidr_net *next_net;
+
+    while(nets) {
+	next_net = nets->next;
+	free(nets);
+	nets = next_net;
+    }
+}
+void
+free_dom_list(struct domain_list *list)
+{
+struct	domain_list	*next;
+
+    while(list) {
+	next = list->next;
+	if ( list->domain ) {
+	    free(list->domain);
+	}
+	free(list);
+	list = next;
+    }
+}
+
+void
+free_stop_cache(void)
+{
+struct	string_list	*curr, *next;
+
+    curr = stop_cache;
+    while (curr ) {
+	next = curr->next;
+	if ( curr->string ) free(curr->string);
+	free(curr);
+	curr = next;
+    }
+    stop_cache = NULL;
+}
+
+void
+free_storages(struct storage_st *current)
+{
+struct storage_st *next=NULL;
+
+    while (current) {
+	next = current->next;
+	free_storage( current ) ;
+	current=next;
+    }
+}
+
+void
+free_denytimes(struct denytime *dt)
+{
+struct	denytime *next;
+
+    while(dt) {
+	next = dt->next;
+	free(dt);
+	dt = next;
+    }
+}
+
+void
+free_groups(struct group *groups)
+{
+struct	group		*next;
+struct	cidr_net	*nets, *next_net;
+
+    while(groups) {
+	next=groups->next;
+
+	pthread_mutex_destroy(&groups->group_mutex);
+	if (groups->name ) free(groups->name);
+	nets = groups->nets;
+	while(nets) {
+	    next_net = nets->next;
+	    free(nets);
+	    nets = next_net;
+	}
+	if ( groups->srcdomains ) free_dom_list(groups->srcdomains);
+	if ( groups->denytimes ) free_denytimes(groups->denytimes);
+	if ( groups->badports ) free(groups->badports);
+	if ( groups->auth_mods ) leave_l_string_list(groups->auth_mods);
+	if ( groups->redir_mods ) leave_l_string_list(groups->redir_mods);
+	if ( groups->networks_acl ) free_acl_access(groups->networks_acl);
+	free_acl(groups->http);
+	free_acl(groups->icp);
+	if ( groups->dstdomain_cache )
+	    hash_destroy(groups->dstdomain_cache, free_dstd_ce);
+	free(groups);
+	groups = next;
+    }
+    if ( sorted_networks_ptr ) {
+	free(sorted_networks_ptr);
+	sorted_networks_ptr = NULL;
+    }
+}
+void
+sort_networks(void)
+{
+struct	group		*g = groups;
+struct	cidr_net	*n;
+int			i;
+
+    /* 1. count networks */
+    sorted_networks_cnt = 0;
+    while( g ) {
+	n = g->nets;
+	while(n) {
+	    n->group = g ;
+	    n=n->next;
+	    sorted_networks_cnt++;
+	}
+	g = g->next;
+    }
+    if ( sorted_networks_cnt ) {
+	sorted_networks_ptr = xmalloc(sorted_networks_cnt * sizeof(struct cidr_net*),"sort_networks(): 1");
+	if ( !sorted_networks_ptr ) {
+	    my_xlog(LOG_SEVERE, "sort_networks(): No mem for sorted_networks.\n");
+	    sorted_networks_cnt = 0;
+	    return;
+	}
+    } else
+	return;
+    /* 2. build list */
+    i = 0;
+    g = groups;
+    while( g ) {
+	n = g->nets;
+	while(n) {
+	    sorted_networks_ptr[i] = n ;
+	    i++;
+	    n=n->next;
+	}
+	g = g->next;
+    }
+    /* sort list */
+    verb_printf("sort_networks(): Sorting networks.\n");
+    qsort(sorted_networks_ptr, sorted_networks_cnt, sizeof(struct cidr_net*),
+    	 cidr_net_cmp);
+}
+
+void
+print_networks(struct cidr_net **n, int i, int print_name)
+{
+int k=0;
+    if ( !n || !i ) return;
+    while( k < i) {
+	verb_printf("print_networks(): Net %08x/%-2d[%s]\n", (*n)->network, (*n)->masklen, print_name?(*n)->group->name:"");
+	k++; n++;
+    }
+}
 
 int
 usage(void)
 {
-    printf("usage: addrd [-{C|c} config_filename] [-{Z|z}] [-V] [-w num] [-W num]\n");
-    printf("-C|c filename	- path to config file\n");
-    printf("-z|Z		- format storages\n");
-    printf("-V		- show version info\n");
-    printf("-v		- verbose startup\n");
-    printf("-x[shfad]	- log level(s-storages,h-http,f-ftp,a-all,d-dns)\n");
-    printf("-w number	- use thread pool. number define initial size of the pool.\n");
-    printf("-W number	- limit thread pool size to number\n");
+    printf("usage:  oops [-{C|c} config_filename] [-v] [-V] [-w num] [-W num]\n");
+    printf("             [-x acdfhinsACDFHINS] [-{Z|z}]\n");
+    printf("-C|c filename - path to config file.\n");
+    printf("-v            - verbose startup.\n");
+    printf("-V            - show version info.\n");
+    printf("-w number     - use thread pool. number define initial size of the pool.\n");
+    printf("-W number     - limit thread pool size to number.\n");
+    printf("-x[acdfhins]  - log level (a-all, c-notice, d-debug, f-ftp, h-http,\n");
+    printf("                           i-information, n-dns, s-storages).\n");
+    printf("-x[ACDFHINS]  - negative log level.\n");
+    printf("-z|Z          - format storages.\n");
     return(0);
 }
 
 int
 main(int argc, char **argv)
 {
-char	c,*vlvls;
-int	i, rc;
+char	*vlvls;
+int	c, i;
 int	format_storages = 0;
 
+    logf = NULL;
+    accesslogf = NULL;
     use_workers = 0;
     max_workers = 0;
     current_workers = 0;
     check_config_only = FALSE;
     verbose_startup = FALSE;
-    verbosity_level = 0;
-    my_pid = getpid();
+    verbosity_level = LOG_SEVERE | LOG_PRINT | LOG_NOTICE;
     /* set stdout unbuffered					*/
     setbuf(stdout, NULL);
     /* stderr by default is unbuffered, but this wont hurt 	*/
@@ -129,20 +441,60 @@ int	format_storages = 0;
 		vlvls = optarg;
 		while ( *vlvls ) {
 		    switch( *vlvls ) {
-			case 's':
-				verbosity_level |= LOG_STOR;
+			case 'a':
+				verbosity_level = -1;
 				break;
+			case 'A':
+				verbosity_level = LOG_SEVERE | LOG_PRINT;
+				break;
+
+			case 'c':
+				verbosity_level |= LOG_NOTICE;
+				break;
+			case 'C':
+				verbosity_level &= ~ LOG_NOTICE;
+				break;
+
+			case 'd':
+				verbosity_level |= LOG_DBG;
+				break;
+			case 'D':
+				verbosity_level &= ~ LOG_DBG;
+				break;
+
 			case 'f':
 				verbosity_level |= LOG_FTP;
 				break;
+			case 'F':
+				verbosity_level &= ~ LOG_FTP;
+				break;
+
 			case 'h':
 				verbosity_level |= LOG_HTTP;
 				break;
-			case 'd':
+			case 'H':
+				verbosity_level &= ~ LOG_HTTP;
+				break;
+
+			case 'i':
+				verbosity_level |= LOG_INFORM;
+				break;
+			case 'I':
+				verbosity_level &= ~ LOG_INFORM;
+				break;
+
+			case 'n':
 				verbosity_level |= LOG_DNS;
 				break;
-			case 'a':
-				verbosity_level = -1;
+			case 'N':
+				verbosity_level &= ~ LOG_DNS;
+				break;
+
+			case 's':
+				verbosity_level |= LOG_STOR;
+				break;
+			case 'S':
+				verbosity_level &= ~ LOG_STOR;
 				break;
 		    }
 		    vlvls++;
@@ -188,8 +540,15 @@ int	format_storages = 0;
 	}
     }
 
+#if     __FreeBSD__ >= 4
+    siginterrupt(SIGTERM, 1);
+    siginterrupt(SIGINT, 1);
+    siginterrupt(SIGWINCH, 1);
+#endif
+        
     setlocale(LC_ALL, "");
-    if ( run_daemon ) daemon(0,0);
+    if ( run_daemon ) daemon(TRUE,TRUE);
+    my_pid = getpid();
 
     signal(SIGPIPE, SIG_IGN);
 
@@ -206,6 +565,8 @@ int	format_storages = 0;
 #endif
     }
 #endif
+    if ( (max_workers  > 0) && (use_workers <= 0) )
+	use_workers = MAX(1, max_workers/2);
     if ( (use_workers > 0) && (max_workers <= 0) ) {
 	max_workers = 250;
     }
@@ -224,9 +585,9 @@ int	format_storages = 0;
 	if ( np > 1 ) {
 	    verb_printf("Set concurrency to %d\n", np*2);
 	    if ( !thr_setconcurrency(np*2) )
-		verb_printf("Done\n");
+		verb_printf("Done.\n");
 	    else
-		verb_printf("Failed\n");
+		verb_printf("Failed.\n");
 	}
     }
 #endif
@@ -240,7 +601,6 @@ int	format_storages = 0;
     clients_number = 0;
     peers = NULL;
     peer_down_interval = 10 ;			/* default 10 sec. */
-    tcpports = NULL;
     local_domains = NULL;
     local_networks	= NULL;
     local_networks_sorted = NULL;
@@ -259,6 +619,8 @@ int	format_storages = 0;
     rwl_init(&log_lock);
     rwl_init(&db_lock);
     list_init(&icp_requests_list);
+    list_init(&blacklist);
+    skip_check = 0;
     kill_request = 0;
     global_sec_timer = time(NULL);
     bzero(&oops_stat, sizeof(oops_stat));
@@ -270,6 +632,10 @@ int	format_storages = 0;
     stop_cache_acl = NULL;
     oops_user = NULL;
     oops_chroot = NULL;
+    bind_acl_list = NULL;
+    one_second_proxy_requests = 0;
+    bzero(&logbuff, sizeof(logbuff)); logbuff.fd = -1;
+    bzero(&accesslogbuff, sizeof(accesslogbuff));  accesslogbuff.fd = -1;
 #ifdef	MODULES
     if ( !check_config_only )
 	load_modules();
@@ -306,6 +672,11 @@ run:
     http_port		= 3128;
     icp_port		= 3130;
     internal_http_port	= 3129;
+    max_rate_per_socket = 0;
+    blacklist_len	= 0;
+    start_red		= 0;
+    refuse_at		= 0;
+
     if ( bind_addr ) {
 	free(bind_addr);
 	bind_addr = NULL;
@@ -324,17 +695,11 @@ run:
     maxresident		= DEFAULT_MAXRESIDENT;
     dns_ttl		= DEFAULT_DNS_TTL;
     icp_timeout		= DEFAULT_ICP_TIMEOUT;
-    logs_buffered	= FALSE;
+    accesslog_buffered	= FALSE;
+    logfile_buffered	= FALSE;
     insert_x_forwarded_for = TRUE;
     insert_via		= TRUE;
-    if ( oops_user ) {
-	free(oops_user);
-	oops_user = NULL;
-    }
-    if ( oops_chroot ) {
-	free(oops_chroot);
-	oops_chroot = NULL;
-    }
+    dont_cache_without_last_modified = FALSE;
     if ( stop_cache )
 	free_stop_cache();
 
@@ -367,12 +732,14 @@ run:
 	peers = NULL;
     }
 
-    if ( listen_so_list ) {
-	close_listen_so_list(listen_so_list);
-	listen_so_list = NULL;
+    if ( oops_user ) {
+	free(oops_user);
+	oops_user = NULL;
     }
-
-    if ( tcpports ) free_tcp_ports_in_use();
+    if ( oops_chroot ) {
+	free(oops_chroot);
+	oops_chroot = NULL;
+    }
 
     if ( named_acls ) {
 	free_named_acls(named_acls);
@@ -395,6 +762,11 @@ run:
 	stop_cache_acl = NULL;
     }
 
+    if ( bind_acl_list ) {
+	free_bind_acl_list(bind_acl_list);
+	bind_acl_list = NULL;
+    }
+
     /* release reserved fd's	*/
     for(i=0;i<RESERVED_FD;i++)
 	if ( reserved_fd[i] >= 0 ) {
@@ -404,21 +776,27 @@ run:
     /* go read config */
     if ( readconfig(configfile) ) exit(1);
     if ( check_config_only ) exit(0);
+
+    if ( listen_so_list ) {
+	close_listen_so_list();
+	/* we set listen_so_list = NULL; in close_listen_so_list() if need */
+    }
+
     if ( oops_chroot ) {
 	int rc = chroot(oops_chroot);
 
 	if ( rc == -1 )
 	    verb_printf("Can't chroot(): %s\n", strerror(errno));
     }
-    if ( oops_user ) set_user();
 
+    if ( oops_user ) set_euser(oops_user);
     if ( logfile[0] != 0 ) {
         rwl_wrlock(&log_lock);
 	if ( logf )
 	    fclose(logf);
 	logf = fopen(logfile, "a");
 	if ( !logf ) verb_printf("%s: %s\n", logfile, strerror(errno));
-	if ( logf && !logs_buffered )
+	if ( logf && !logfile_buffered )
 	    setbuf(logf, NULL);
 	rwl_unlock(&log_lock);
     }
@@ -427,14 +805,40 @@ run:
 	    fclose(accesslogf);
 	accesslogf = fopen(accesslog, "a");
 	if ( !accesslogf ) verb_printf("%s: %s\n", accesslog, strerror(errno));
-	if ( accesslogf && !logs_buffered )
+	if ( accesslogf && !accesslog_buffered )
 	    setbuf(accesslogf, NULL);
     }
-
-    /* reserve them again	*/
-    for(i=0;i<RESERVED_FD;i++) {
-	reserved_fd[i] = open("/dev/null", O_RDONLY);
+    if ( format_storages ) {
+	do_format_storages();
+	exit(0);
     }
+
+    if ( pidfile[0] != 0 ) {
+	char	pid[11];
+	flock_t	fl;
+
+	if ( pid_d != -1 )
+	    close(pid_d);
+	pid_d = open(pidfile, O_RDWR|O_CREAT|O_NONBLOCK, S_IRUSR|S_IWUSR|S_IRGRP);
+	if ( pid_d == -1 ) {
+	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't create pid file: %s\n", strerror(errno));
+	    do_exit(1);
+	}
+	bzero(&fl, sizeof(fl));
+	fl.l_type=F_WRLCK;
+	fl.l_whence=fl.l_len=0;
+	if ( fcntl(pid_d, F_SETLK, &fl) < 0 ) {
+	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't lock pid file: %s\n", strerror(errno));
+	    do_exit(1);
+	}
+	sprintf(pid, "%-10d", (int)getpid());
+	write(pid_d, pid, strlen(pid));
+    }
+    next_alloc_storage = NULL;
+    open_db();
+    prepare_storages();
+
+    if ( oops_user ) set_euser(NULL);	/* back to saved uid */
 
     init_domain_name();
     sort_networks();
@@ -447,66 +851,48 @@ run:
     }
     if ( local_domains ) {
 	verb_printf("Local domains:\n");
-	print_dom_list(local_domains );
+	print_dom_list(local_domains);
     }
     if ( !mem_max_val ) {
 	mem_max_val = 20 * 1024 * 1024;
 	lo_mark_val = 15 * 1024 * 1024;
 	hi_mark_val = 17 * 1024 * 1024;
     }
-    next_alloc_storage = NULL;
+    if ( !db_cache_mem_val )
+	db_cache_mem_val = 4 * 1024 * 1024;	/* 4M */
     reconfig_request = 0;
-    open_db();
-    prepare_storages();
     UNLOCK_CONFIG;
+
+#ifdef	MODULES
+    run_modules();
+#endif
+    /* reserve them again	*/
+    for(i=0;i<RESERVED_FD;i++) {
+	reserved_fd[i] = open("/dev/null", O_RDONLY);
+    }
+
     if ( disk_hi_free >= 100          ) disk_hi_free  = DEFAULT_HI_FREE;
     if ( disk_low_free > disk_hi_free ) disk_low_free = disk_hi_free;
     if ( connect_from[0] != 0 ) {
 	connect_from_sa_p = &connect_from_sa;
 	if ( str_to_sa(connect_from, (struct sockaddr*)connect_from_sa_p) ) {
-	    my_log("WARNING: can't resolve %s, binding disabled\n",
+	    my_xlog(LOG_SEVERE, "main(): WARNING: can't resolve %s, binding disabled.\n",
 	    	connect_from);
 	    connect_from_sa_p = NULL;
 	} else
-	    my_log("Binding to %s enabled\n", connect_from);
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): Binding to %s enabled.\n", connect_from);
     } else
 	connect_from_sa_p = NULL;
 
-    if ( format_storages ) {
-	do_format_storages();
-	exit(0);
-    }
-
     report_limits();
-    my_log( "oops %s Started\n", VERSION);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): oops %s Started.\n", VERSION);
     version = VERSION;
 #ifdef	DB_VERSION_STRING
-    my_log("DB engine by %s\n", DB_VERSION_STRING);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): DB engine by %s\n", DB_VERSION_STRING);
     db_ver = DB_VERSION_STRING;
 #else
     db_ver = "Unknown";
 #endif
-    if ( pidfile[0] != 0 ) {
-	char	pid[11];
-	flock_t	fl;
-
-	if ( pid_d != -1 )
-	    close(pid_d);
-	pid_d = open(pidfile, O_RDWR|O_CREAT|O_NONBLOCK, S_IRUSR|S_IWUSR|S_IRGRP);
-	if ( pid_d == -1 ) {
-	    my_log("Fatal: Can't create pid file: %s\n", strerror(errno));
-	    do_exit(1);
-	}
-	bzero(&fl, sizeof(fl));
-	fl.l_type=F_WRLCK;
-	fl.l_whence=fl.l_len=0;
-	if ( fcntl(pid_d, F_SETLK, &fl) < 0 ) {
-	    my_log("Fatal: Can't lock pid file: %s\n", strerror(errno));
-	    do_exit(1);
-	}
-	sprintf(pid, "%-10d", (int)getpid());
-	write(pid_d, pid, strlen(pid));
-    }
     bzero(&Me, sizeof(Me));
     Me.sin_family = AF_INET;
     /* this is all we need to start server */
@@ -529,7 +915,7 @@ run:
     }
 #if	DB_VERSION_MAJOR<3
     if ( dbhome[0] && db_appexit(dbenv) ) {
-	my_log("db_appexit failed");
+	my_xlog(LOG_SEVERE, "main(): db_appexit failed.\n");
     }
     if ( dbenv ) free(dbenv);
 #else
@@ -540,57 +926,11 @@ run:
     goto run;
 }
 
-void
-free_groups(struct group *groups)
-{
-struct	group		*next;
-struct	cidr_net	*nets, *next_net;
 
-    while(groups) {
-	next=groups->next;
-
-	pthread_mutex_destroy(&groups->group_mutex);
-	if (groups->name ) free(groups->name);
-	nets = groups->nets;
-	while(nets) {
-	    next_net = nets->next;
-	    free(nets);
-	    nets = next_net;
-	}
-	if ( groups->srcdomains ) free_dom_list(groups->srcdomains);
-	if ( groups->denytimes ) free_denytimes(groups->denytimes);
-	if ( groups->badports ) free(groups->badports);
-	if ( groups->auth_mods ) leave_l_string_list(groups->auth_mods);
-	if ( groups->redir_mods ) leave_l_string_list(groups->redir_mods);
-	if ( groups->networks_acl ) free_acl_access(groups->networks_acl);
-	free_acl(groups->http);
-	free_acl(groups->icp);
-	if ( groups->dstdomain_cache )
-	    hash_destroy(groups->dstdomain_cache, free_dstd_ce);
-	free(groups);
-	groups = next;
-    }
-    if ( sorted_networks_ptr ) {
-	free(sorted_networks_ptr);
-	sorted_networks_ptr = NULL;
-    }
-}
 void
 free_dstd_ce(void *a)
 {
     free(a);
-}
-
-void
-free_denytimes(struct denytime *dt)
-{
-struct	denytime *next;
-
-    while(dt) {
-	next = dt->next;
-	free(dt);
-	dt = next;
-    }
 }
 
 void
@@ -607,7 +947,7 @@ struct	domain_list	*dom_list;
 			free_dom_list(dom_list);
 			break;
 		default:
-			verb_printf("Unknown ACL type\n");
+			verb_printf("free_acl(): Unknown ACL type\n");
 			break;
 		}
 		free(acl);
@@ -653,7 +993,7 @@ struct	domain_list	*dom_list;
 			print_dom_list(dom_list);
 			break;
 		default:
-			verb_printf("Unknown ACL type\n");
+			verb_printf("Unknown ACL type.\n");
 			break;
 		}
 		acl = next_acl;
@@ -688,108 +1028,6 @@ struct	domain_list	*next;
 	list = next;
     }
 }
-void
-free_net_list(struct cidr_net *nets)
-{
-struct	cidr_net *next_net;
-
-    while(nets) {
-	next_net = nets->next;
-	free(nets);
-	nets = next_net;
-    }
-}
-void
-free_dom_list(struct domain_list *list)
-{
-struct	domain_list	*next;
-
-    while(list) {
-	next = list->next;
-	if ( list->domain ) {
-	    free(list->domain);
-	}
-	free(list);
-	list = next;
-    }
-}
-void
-sort_networks()
-{
-struct	group		*g = groups;
-struct	cidr_net	*n;
-int			i;
-
-    /* 1. count networks */
-    sorted_networks_cnt = 0;
-    while( g ) {
-	n = g->nets;
-	while(n) {
-	    n->group = g ;
-	    n=n->next;
-	    sorted_networks_cnt++;
-	}
-	g = g->next;
-    }
-    if ( sorted_networks_cnt ) {
-	sorted_networks_ptr = malloc(sorted_networks_cnt * sizeof(struct cidr_net*));
-	if ( !sorted_networks_ptr ) {
-	    my_log("No mem for sorted_networks\n");
-	    sorted_networks_cnt = 0;
-	    return;
-	}
-    } else
-	return;
-    /* 2. build list */
-    i = 0;
-    g = groups;
-    while( g ) {
-	n = g->nets;
-	while(n) {
-	    sorted_networks_ptr[i] = n ;
-	    i++;
-	    n=n->next;
-	}
-	g = g->next;
-    }
-    /* sort list */
-    verb_printf("Sorting networks\n");
-    qsort(sorted_networks_ptr, sorted_networks_cnt, sizeof(struct cidr_net*),
-    	 cidr_net_cmp);
-}
-struct cidr_net**
-sort_n(struct cidr_net *nets, int *counter)
-{
-struct cidr_net *next;
-struct cidr_net	**res;
-int		i;
-
-    *counter = 0;
-    next = nets;
-    while(next) {
-	next=next->next;
-	(*counter)++;
-    }
-    if ( *counter ) {
-	/* allocate array */
-	res = (struct cidr_net **)malloc(*counter * sizeof(struct cidr_net*));
-	if ( !res ) {
-	    *counter = 0;
-	    return(NULL);
-	}
-	/* build list */
-	next = nets; i = 0;
-	while(next) {
-	    res[i] = next;
-	    i++;
-	    next=next->next;
-	}
-	/* well, sort them */
-	qsort(res, *counter, sizeof(struct cidr_net*), cidr_net_cmp);
-        return(res);
-    }
-    return(NULL);
-}
 
 int
 cidr_net_cmp(const void *a1, const void *a2)
@@ -800,43 +1038,18 @@ struct cidr_net	*n1, *n2;
     n2 = *((struct cidr_net**)a2);
     return(n2->masklen - n1->masklen);
 }
-void
-print_networks(struct cidr_net **n, int i, int print_name)
-{
-int k=0;
-    if ( !n || !i ) return;
-    while( k < i) {
-	verb_printf("Net %08x/%-2d[%s]\n", (*n)->network, (*n)->masklen, print_name?(*n)->group->name:"");
-	k++; n++;
-    }
-}
 
 void
 add_to_stop_cache(char *string)
 {
 struct	string_list	*new;
 
-    new = xmalloc(sizeof(*new), "for news top_cache");
+    new = xmalloc(sizeof(*new), "add_to_stop_cache(): 1");
     if ( new ) {
 	new->string = string;
 	new->next = stop_cache;
 	stop_cache = new;
     }
-}
-
-void
-free_stop_cache()
-{
-struct	string_list	*curr, *next;
-
-    curr = stop_cache;
-    while (curr ) {
-	next = curr->next;
-	if ( curr->string ) free(curr->string);
-	free(curr);
-	curr = next;
-    }
-    stop_cache = NULL;
 }
 
 void
@@ -849,18 +1062,6 @@ struct storage_st * next = NULL;
 	current=next;
     }
 }
-void
-free_storages(struct storage_st *current)
-{
-struct storage_st *next=NULL;
-
-    while (current) {
-	next = current->next;
-	free_storage( current ) ;
-	current=next;
-    }
-}
-
 void
 free_peers(struct peer *peer)
 {
@@ -883,26 +1084,55 @@ my_bt_compare(const DBT* a, const DBT* b)
 }
 
 int
-close_listen_so_list(struct listen_so_list *list)
+close_listen_so_list(void)
 {
-struct listen_so_list *next;
+struct listen_so_list *list = listen_so_list, *next, *new, *new_curr=NULL;
 
+    if ( !oops_user ) goto just_free;
+
+    new = NULL;
+    while ( list ) {
+	next = list->next;
+	/* we will close any non-privileged socket */
+	if ( list->port && (list->port < IPPORT_RESERVED) ) {
+	    if ( !new ) {
+		new = new_curr = list;
+		list->next = NULL;
+	    } else {
+		new_curr->next = list;
+		new_curr = list;
+		list->next = NULL;
+	    }
+	} else {
+	    if ( list->so != -1 ) close(list->so);
+	    xfree(list);
+	}
+	list = next;
+    }
+    listen_so_list = new;
+    return(0);
+
+just_free:
     while(list) {
 	next = list->next;
 	if ( list->so != -1 ) close(list->so);
 	xfree(list);
 	list = next;
     }
+    listen_so_list = NULL;
     return(0);
 }
+
 int
-add_socket_to_listen_list(int so, int flags, void* (*f)(void*))
+add_socket_to_listen_list(int so, u_short port, struct in_addr *addr, void* (*f)(void*))
 {
-struct	listen_so_list *new = xmalloc(sizeof(*new),""), *next;
+struct	listen_so_list *new = xmalloc(sizeof(*new),"add_socket_to_listen_list(): 1"), *next;
 
     if ( !new ) return(1);
+    bzero(new, sizeof(*new));
     new->so = so;
-    new->flags = flags;
+    new->port = port;
+    if ( addr ) new->addr.s_addr = addr->s_addr;
     new->process_call = f;
     new->next = NULL;
     if ( !listen_so_list ) {
@@ -916,8 +1146,9 @@ struct	listen_so_list *new = xmalloc(sizeof(*new),""), *next;
     }
     return(0);
 }
+
 void
-open_db()
+open_db(void)
 {
 int	rc;
 
@@ -925,13 +1156,13 @@ int	rc;
 #if	DB_VERSION_MAJOR<3
     dbenv = calloc(sizeof(*dbenv),1);
     bzero(&dbinfo,sizeof(dbinfo));
-    dbinfo.db_cachesize = db_cachesize;
+    dbinfo.db_cachesize = db_cache_mem_val;
     dbinfo.db_pagesize = OOPS_DB_PAGE_SIZE;
     dbinfo.bt_compare = my_bt_compare;
     if ( !dbhome[0] || !dbname[0] ) return;
     if (db_appinit(dbhome, NULL, dbenv, 
     		DB_CREATE|DB_THREAD) ) {
-		my_log("db_appinit(%s) failed: %s\n", dbhome, strerror(errno));
+		my_xlog(LOG_SEVERE, "open_db(): db_appinit(%s) failed: %s\n", dbhome, strerror(errno));
     }
     if ( (rc = db_open(dbname, DB_BTREE,
     		DB_CREATE|DB_THREAD,
@@ -939,7 +1170,7 @@ int	rc;
     		dbenv,
     		&dbinfo,
     		&dbp)) ) {
-	my_log("db_open: %s\n", strerror(rc));
+	my_xlog(LOG_SEVERE, "open_db(): db_open(): %s\n", strerror(rc));
 	dbp = NULL;
     }
 #else
@@ -948,12 +1179,12 @@ int	rc;
 	return;
     dbenv->set_errfile(dbenv, stderr);
     dbenv->set_errpfx(dbenv, "oops");
-    dbenv->set_cachesize(dbenv, 0, db_cachesize, 0);
+    dbenv->set_cachesize(dbenv, 0, db_cache_mem_val, 0);
     rc = dbenv->open(dbenv, dbhome, NULL,
 	DB_CREATE|DB_THREAD|DB_INIT_MPOOL,
 	0);
     if ( rc ) {
-	my_log("Can't open dbenv.\n");
+	my_xlog(LOG_SEVERE, "open_db(): Can't open dbenv.\n");
 	dbenv->close(dbenv, 0); dbenv = NULL;
 	return;
     }
@@ -967,15 +1198,16 @@ int	rc;
     dbp->set_pagesize(dbp, OOPS_DB_PAGE_SIZE);
     rc = dbp->open(dbp, dbname, NULL, DB_BTREE, DB_CREATE, 0);
     if ( rc ) {
-	my_log("dbp->open(%s): %s\n", dbname, db_strerror(rc));
+	my_xlog(LOG_SEVERE, "open_db(): dbp->open(%s): %s\n", dbname, db_strerror(rc));
 	dbenv->close(dbenv, 0); dbenv = NULL;
 	dbp = NULL;
 	return;
     }
 #endif
 }
+
 void
-set_user()
+set_user(void)
 {
 int		rc;
 struct passwd	*pwd = NULL;
@@ -983,10 +1215,24 @@ struct passwd	*pwd = NULL;
     if ( (pwd = getpwnam(oops_user)) ) {
 	rc = setgid(pwd->pw_gid);
 	if ( rc == -1 )
-	    printf("set_user: Can't setgid(): %s\n", strerror(errno));
+	    printf("set_user(): Can't setgid(): %s\n", strerror(errno));
 	rc = setuid(pwd->pw_uid);
 	if ( rc == -1 )
-	    printf("set_user: Can't setuid(): %s\n", strerror(errno));
+	    printf("set_user(): Can't setuid(): %s\n", strerror(errno));
     } else
-	printf("set_user: Can't getpwnam('%s')\n", oops_user);
+	printf("set_user(): Can't getpwnam() `%s'.\n", oops_user);
+}
+
+void
+free_bind_acl_list(bind_acl_t* list)
+{
+bind_acl_t	*next;
+
+    while(list) {
+	next = list->next;
+	if ( list->name ) free(list->name);
+	if ( list->acl_list ) free_acl_access(list->acl_list);
+	free(list);
+	list = next;
+    }
 }

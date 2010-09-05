@@ -34,6 +34,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<sys/resource.h>
 #include	<fcntl.h>
 
+#if     defined(_AIX)
+#include        <time.h>
+#endif
+
 #include	<netinet/in.h>
 
 #include	<arpa/inet.h>
@@ -54,12 +58,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 time_t		last_expire = 0;
 
-void		check_expire();
-void		sync_storages();
+void		check_expire(void);
+void		sync_storages(void);
 int		forced_cleanup = 0;
 
 long
-count_total_free()
+count_total_free(void)
 {
 struct storage_st *storage;
 long		  res = 0;
@@ -72,7 +76,7 @@ long		  res = 0;
     return(res);
 }
 long
-count_total_blks()
+count_total_blks(void)
 {
 struct storage_st *storage;
 long		  res = 0;
@@ -143,7 +147,7 @@ time_t			now;
 	    continue;
 	}
 	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
-	    my_xlog(LOG_STOR, "Need disk clean up: free: %d/total: %d\n", total_free, total_blks);
+	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n", total_free, total_blks);
 	    /* 1. create db cursor */
 	    rc = dbp->cursor(dbp, NULL, &dbcp
 #if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)   
@@ -151,7 +155,7 @@ time_t			now;
 #endif
 	    					);
 	    if ( rc ) {
-		my_log("cursor: %s\n", strerror(rc));
+		my_xlog(LOG_SEVERE, "clean_disk(): cursor: %s\n", strerror(rc));
 		goto err;
 	    }
 	    WRLOCK_DB ;
@@ -161,7 +165,7 @@ time_t			now;
 		key.flags = data.flags = DB_DBT_MALLOC;
 		rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT);
 		if ( rc > 0 ) {
-		    my_log("c_get: %s\n", strerror(rc));
+		    my_xlog(LOG_SEVERE, "clean_disk(): c_get: %s\n", strerror(rc));
 		    UNLOCK_DB;
 		    goto done;
 	        }
@@ -180,7 +184,7 @@ time_t			now;
 		    UNLOCK_STORAGE(storage) ;
 		    total_free+=disk_ref->blk;
 		} else {
-		    my_log("WARNING: Failed to find storage in clean_disk\n");
+		    my_xlog(LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk\n");
 		}
 		free(key.data);
 		free(data.data);
@@ -194,7 +198,7 @@ time_t			now;
 	    UNLOCK_DB ;
 	    forced_cleanup = FALSE;
 	} else {
-	    my_xlog(LOG_STOR, "Skip cleanup: %d out of %d (%d%%) free\n", total_free, total_blks,(total_free*100)/total_blks);
+	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Skip cleanup: %d out of %d (%d%%) free\n", total_free, total_blks,(total_free*100)/total_blks);
 	}
 done:
 err:
@@ -207,7 +211,7 @@ err:
 
 
 void
-check_expire()
+check_expire(void)
 {
 time_t			started, now = time(NULL);
 DBC			*dbcp = NULL ;
@@ -241,12 +245,12 @@ run:
 	if ( rc ) {
 	    UNLOCK_DB ;
 	    UNLOCK_CONFIG ;
-	    my_log("EXPIRE Finished: %d expires, %d seconds, %d total\n",
+	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	    	expired_cnt, global_sec_timer-started, total_cnt);
 	    return ;
 	}
     }
-    my_log("EXPIRE started, %d total, %d expired\n", total_cnt, expired_cnt);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE started, %d total, %d expired\n", total_cnt, expired_cnt);
     now = global_sec_timer;
     get_counter = 0 ;
     while ( 1 ) {
@@ -289,16 +293,15 @@ run:
     }
 done:
     UNLOCK_DB ;
-nodb:
     if ( dbcp )
 	dbcp->c_close(dbcp);
     UNLOCK_CONFIG ;
-    my_log("EXPIRE Finished: %d expires, %d seconds, %d total\n",
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	expired_cnt, global_sec_timer-started, total_cnt);
 }
 
 void
-sync_storages()
+sync_storages(void)
 {
 struct	storage_st *storage = storages;
 

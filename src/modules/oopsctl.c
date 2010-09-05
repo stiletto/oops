@@ -106,7 +106,7 @@ char 			cmdarg[1024];
 	child = fork();
 	switch(child) {
 	case(-1):
-		printf("Can't start child: %s\n", strerror(errno));
+		printf("oopsctl: Can't start child: %s\n", strerror(errno));
 		exit(1);
 	case(0):
 		i = 4;
@@ -116,7 +116,7 @@ char 			cmdarg[1024];
 		 printf ("\n");
 		}
 		execv(cmdpath, command+1);
-		printf("Can't execute: %s\n", strerror(errno));
+		printf("oopsctl: Can't execute: %s\n", strerror(errno));
 	default:
 		exit(0);
 	}
@@ -128,7 +128,7 @@ char 			cmdarg[1024];
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
 	execv(cmdpath, command+1);
-	printf("Can't execute: %s\n", strerror(errno));
+	printf("oopsctl: Can't execute: %s\n", strerror(errno));
     }
     if ( !strcasecmp(*command, "reconfigure") ) {
 	char	cmdpath[1024], cmdarg[1024];
@@ -143,11 +143,11 @@ char 			cmdarg[1024];
 	child = fork();
 	switch (child) {
 	case -1:
-		printf("Can't start child: %s\n", strerror(errno));
+		printf("oopsctl: Can't start child: %s\n", strerror(errno));
 		exit(1);
 	case 0:
 		execv(cmdpath, command+1);
-		printf("Can't execute: %s\n", strerror(errno));
+		printf("oopsctl: Can't execute: %s\n", strerror(errno));
 	default:
 		/* wait for child */
 		waitpid((pid_t)-1, &stat, 0);
@@ -155,7 +155,7 @@ char 			cmdarg[1024];
 		    *(1+command) = NULL;
 		    goto srv_conn;
 		}
-		printf("Check config failed: exitcode: %d\n", WEXITSTATUS(stat));
+		printf("oopsctl: Check config failed: exitcode: %d\n", WEXITSTATUS(stat));
 		exit(1);
 	}
     }
@@ -170,14 +170,14 @@ srv_conn:
      /* connecting to server */
      oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
      if ( oopsctl_so == -1 ) {
-	printf("oopsctl:socket: %s\n", strerror(errno));
+	printf("oopsctl: socket(): %s\n", strerror(errno));
 	exit(1);
      }
      bzero(&sun_addr, sizeof(sun_addr));
      sun_addr.sun_family = AF_UNIX;
      strncpy(sun_addr.sun_path, path, sizeof(sun_addr.sun_path)-1);
      if ( connect(oopsctl_so, (struct sockaddr*)&sun_addr, sizeof(sun_addr)) ) {
- 	printf("oopsctl:connect: %s\n", strerror(errno));
+ 	printf("oopsctl: connect(): %s\n", strerror(errno));
 	exit(1);
      }
      write(oopsctl_so, *command, strlen(*command));
@@ -186,6 +186,6 @@ srv_conn:
      while ( (alen = read(oopsctl_so, answer, sizeof(answer))) > 0 ) {
  	write(1, answer, alen);
      }
-    } else printf("Unknown command %s\n", *command);
+    } else printf("oopsctl: Unknown command %s\n", *command);
     exit(0);
 }

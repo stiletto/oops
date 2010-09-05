@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+
+#if	!defined(NDEBUG)
 static int
 hash_check(hash_t *ptr)									/* call while lock is held! */
 {
@@ -20,6 +22,7 @@ hash_check(hash_t *ptr)									/* call while lock is held! */
 		while (tmp) {
 			int waiters = ll_check(&tmp->waiters);
 			assert(waiters == tmp->num_waiters);
+			waiters = 0;
 			count1++;
 			tmp = tmp->next_entry;
 		}
@@ -40,6 +43,8 @@ hash_check(hash_t *ptr)									/* call while lock is held! */
 	assert(count2 == count1);
 	return (1);
 }
+#endif
+
 static unsigned
 hash_string(char *s)
 {
@@ -231,7 +236,7 @@ hash_release(hash_t *tbl, void **data)
 	op_wait = (tbl->operator_wait_count && tbl->lock_status == 0);
 	if (tmp->num_waiters) {
 		sleeper = (hash_waiter_t *) ll_peek(&tmp->waiters);
-		sleeper->wakeup = 0xdeadbeef;
+		sleeper->wakeup = (int)0xdeadbeef;
 	}
 	assert(hash_check(tbl));
 	pthread_mutex_unlock(&tbl->lock);
@@ -320,7 +325,6 @@ hash_operate(hash_t *tbl,
 {
 	hash_entry_t *tmp;
 	int c = 0;
-	int sleepers;
 
 	pthread_mutex_lock(&tbl->lock);
 	while (tbl->lock_status != 0) {
@@ -347,7 +351,6 @@ hash_destroy(hash_t *tbl, void (*ptr)(void*) )
 {
 	hash_entry_t *tmp, *next;
 	int c = 0;
-	int sleepers;
 
 	pthread_mutex_lock(&tbl->lock);
 	while (tbl->lock_status != 0) {

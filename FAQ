@@ -25,7 +25,7 @@ Q2. I compiled it successfully, ran it and I saw the following in oops.log:
     > >>>>[0x400]db_open: Invalid argument                              
     > [0x400]oops 1.2d Started                                      
     > [0x400]DB engine by Sleepycat Software: DB 2.4.14: (6/2/98)   
-    At this time nothing is being written in the disk cashe. Why is it so? What have I  
+    At this time nothing is being written in the disk cache. Why is it so? What have I  
     got to do?
 A2. The problem lies in the fact that OOPS was compiled with the old version of
     DB library. You've got to install the new version, run configure and
@@ -37,7 +37,7 @@ Q3. I formatted storages which in their sum should occupy 1Gb, but the free spac
 A3. Yes, it should. At formatting the following operations take place:
     1) a storage file is created, if it wasn't made before
     2) 'super-block' and bitmap are created and get stored in the beginning of the file
-    3) seek on the last file byte of the storage is made and one byte is being recorded
+    3) seek on the last file byte of the storage is made and one byte is being written
        That is - the storage formatted this way represents a "hole"
        in file system, which will be filled in according to documents' saving. 
        

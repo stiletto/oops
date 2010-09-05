@@ -36,6 +36,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        <sys/stat.h>
 #include        <sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include        <netinet/in.h>
 
@@ -54,8 +55,11 @@ char			*ce = "HTTP/1.0 200 Connection established\r\n\r\n";
 int			celen = sizeof("HTTP/1.0 200 Connection established\r\n\r\n");
 struct	url		*url = &rq->url;
 struct	pollarg		pollarg[2];
+int			received = 0, delta_tv;
+struct	timeval		start_tv, stop_tv;
 
-    my_log("CONNECTING %s:%d\n", rq->url.host, rq->url.port);
+    my_xlog(LOG_DBG, "send_ssl(): Connecting %s:%d\n", rq->url.host, rq->url.port);
+    gettimeofday(&start_tv, NULL);
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	say_bad_request(so, "Can't create socket", strerror(errno), ERR_INTERNAL, rq);
@@ -66,16 +70,16 @@ struct	pollarg		pollarg[2];
 	goto done;
     }
     server_sa.sin_port = htons(url->port);
-    my_log("Connecting %s:%d\n", url->host, url->port);
+    my_xlog(LOG_DBG, "send_ssl(): Connecting %s:%d\n", url->host, url->port);
     r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
     if ( r == -1 ) {
 	say_bad_request(so, "Can't connect", strerror(errno), ERR_TRANSFER, rq);
 	goto done;
     }
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_ssl(): fcntl: %s\n", strerror(errno));
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_log("fcntl: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "send_ssl(): fcntl: %s\n", strerror(errno));
 
     r = writet(so, ce, celen, READ_ANSW_TIMEOUT);
     if ( r < 0 ) goto done;
@@ -89,7 +93,7 @@ struct	pollarg		pollarg[2];
 	if ( r <= 0) {
 	    goto done;
 	}
-	if ( IS_HUPED(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
+	if ( IS_HUPED(&pollarg[0]) || IS_HUPED(&pollarg[1]) )
 	    goto done;
 	if ( IS_READABLE(&pollarg[0]) ) {
 	    char b[1024];
@@ -97,6 +101,7 @@ struct	pollarg		pollarg[2];
 	    r = read(server_so, b, sizeof(b));
 	    if ( r < 0 && errno == EAGAIN )
 		goto sel_again;
+	    received += r;
 	    if ( r <= 0 )
 		goto done;
 	    r = writet(so, b, r, READ_ANSW_TIMEOUT);
@@ -115,6 +120,15 @@ struct	pollarg		pollarg[2];
 	}
     }
 done:
+    gettimeofday(&stop_tv, NULL);
+    delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
+	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
     if ( server_so != -1 ) close(server_so);
+    rq->tag = strdup("TCP_MISS");
+    rq->code = 555;
+    rq->received = received;
+    rq->hierarchy = strdup("DIRECT");
+    rq->source = strdup(rq->url.host);
+    log_access(delta_tv, rq, NULL);
     return;
 }

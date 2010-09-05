@@ -34,6 +34,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<sys/resource.h>
 #include	<sys/time.h>
 #include	<fcntl.h>
+#if	defined(_AIX)
+#include	<sys/ioctl.h>
+#include	<sys/devinfo.h>
+#include	<sys/lvdd.h>
+#endif
+#if	defined(BSDOS) || defined(FREEBSD)
+#include	<sys/disklabel.h>
+#include	<sys/ioctl.h>
+#include	<sys/stat.h>
+#endif
+#if	defined(LINUX)
+#include	<sys/ioctl.h>
+#include	<linux/fs.h>
+#endif
 
 #include	<netinet/in.h>
 
@@ -49,8 +63,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define		ST_PREAD(a,b,c,d)	pread(a,b,c,d+storage->i_off)
 #define		ST_PWRITE(a,b,c,d)	pwrite(a,b,c,d+storage->i_off)
 
-#define		ROUNDPG(x)		(((x)/STORAGE_PAGE_SIZE + \
-					 ((x)%STORAGE_PAGE_SIZE?1:0))*STORAGE_PAGE_SIZE)
+#define		ROUNDPG(x)		(((x)/STORAGE_PAGE_SIZE + ((x)%STORAGE_PAGE_SIZE?1:0))*STORAGE_PAGE_SIZE)
 #define		BLKSIZE			STORAGE_PAGE_SIZE
 #define		MAGIC			(0x0bdcdada)
 
@@ -127,7 +140,7 @@ uint32_t	mask, mask2, *pvalue;
 }
 
 int
-test_bit(char *map, int from)
+test_map_bit(char *map, int from)
 {
 int		cur_bit = from;
 int		cur_word ;
@@ -224,93 +237,6 @@ int		free_bits = 0;
     return(free_bits);
 }
 
-void
-do_format_storages()
-{
-struct storage_st *storage = storages;
-off_t		size;
-uint32_t	blk_num;
-int		fd = 0;
-char		c;
-struct	superb	super;
-struct	timeval	tv;
-int		map_words, map_bits;
-char		*map_ptr;
-
-    while(storage) {
-	if ( storage->size == -1 ) {
-	    /* autodetect */
-	    fd = open(storage->path, O_CREAT|O_RDWR, 0644);
-	    if ( fd >= 0 ) {
-		size = lseek(fd, 0, SEEK_END);
-		size -= storage->i_off;
-		close(fd);
-	    } else {
-		my_log("Can't open file: %s\n", strerror(errno));
-		goto try_next;
-	    }
-	} else
-	    size = ROUNDPG((storage->size)-(storage->i_off));
-	blk_num = size/STORAGE_PAGE_SIZE;
-	if ( blk_num < 2 ) {
-	    my_log("Storage size(%d bytes) is too small, skip it\n", storage->size);
-	    goto try_next;
-	}
-#if	defined(WITH_LARGE_FILES)
-	my_log("Formatting storage %s for %lld bytes\n", storage->path, (long long)size);
-#else
-	my_log("Formatting storage %s for %d bytes\n", storage->path, size);
-#endif
-	gettimeofday(&tv, NULL);
-	fd = open(storage->path, O_CREAT|O_RDWR, 0644);
-	if ( fd == -1 ) {
-	    my_log("open(%s): %s\n", storage->path, strerror(errno));
-	    goto try_next;
-	}
-	if ( ST_LSEEK(fd, size-1, SEEK_SET) == -1 ) {
-	    my_log("seek(%s, %u): %s\n", storage->path, size-1, strerror(errno));
-	    goto try_next;
-	}
-	c = 0;
-	write(fd, &c, 1);
-	/* prepare super */
-	super.magic = htonl(MAGIC);
-	super.id = tv.tv_usec;
-	super.blks_total = blk_num;	/* total blocks, including super */
-	super.blks_free =  blk_num-1;	/* all free except super	 */
-	super.blk_siz   =  BLKSIZE;
-	super.free_last  = blk_num;
-	map_words = blk_num/32 + (blk_num%32?1:0);
-	super.blks_free -= ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE;
-
-	if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
-	    my_log("seek(%s, %u): %s\n", storage->path, 0, strerror(errno));
-	    goto try_next;
-	}
-	if ( write(fd, &super, sizeof(super)) != sizeof(super) ) {
-	    my_log("write super for %s: %s\n", storage->path, strerror(errno));
-	    goto try_next;
-	}
-	/* how much 32-bit word we need for map? */
-	map_bits  = blk_num;
-	map_ptr = xmalloc(map_words*4,"map");
-	if ( !map_ptr ) {
-	    printf("Can't create map\n");
-	    goto try_next;
-	}
-	bzero(map_ptr, map_words*4);
-	set_bits(map_ptr, 0, ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE+1);
-	ST_LSEEK(fd, STORAGE_PAGE_SIZE, SEEK_SET);
-	write(fd, map_ptr, map_words*4);
-try_next:
-	printf("\n");
-	if ( fd ) {
-	    close(fd);
-	    fd = 0;
-	}
-	storage=storage->next;
-    }
-}
 
 int
 db_things_init()
@@ -332,32 +258,36 @@ char		*map_ptr=NULL;
 	return;
     WRLOCK_STORAGE(storage);
     if ( !storage->path ) {
-	my_log("No path for storage\n");
+	my_xlog(LOG_SEVERE, "init_storage(): No path for storage.\n");
 	goto error;
     }
+#if	defined(_AIX) && defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+    fd = open(storage->path, O_RDWR|O_LARGEFILE);
+#else
     fd = open(storage->path, O_RDWR);
+#endif
     if ( fd == -1 ) {
-	my_log("Can't open storage: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "init_storage(): Can't open storage: %s\n", strerror(errno));
 	goto error;
     }
     storage->fd = fd;
     /* read super */
     if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
-	my_log("seek(%s, %u): %s\n", storage->path, 0, strerror(errno));
+	my_xlog(LOG_SEVERE, "init_storage(): seek(%s, %u): %s\n", storage->path, 0, strerror(errno));
 	goto error;
     }
     if ( read(fd, &storage->super, sizeof(storage->super)) != 
 	sizeof(storage->super) ) {
-	my_log("Can't read super: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "init_storage(): Can't read super: %s\n", strerror(errno));
 	goto error;
     }
     if ( storage->super.magic != htonl(MAGIC) ) {
-	my_log("Wrong magic\n");
+	my_xlog(LOG_SEVERE, "init_storage(): Wrong magic.\n");
 	goto error;
     }
     blk_num = storage->super.blks_total;
     map_words = blk_num/32 + (blk_num%32?1:0);
-    map_ptr = xmalloc(map_words*4,"map");
+    map_ptr = xmalloc(map_words*4, "init_storage(): map_ptr");
     if ( !map_ptr ) {
 	goto error;
     }
@@ -365,15 +295,15 @@ char		*map_ptr=NULL;
     if ( read(fd, map_ptr, map_words*4) != map_words*4 )
 	goto error;
     storage->map = map_ptr;
-
+    storage->size = (off_t)STORAGE_PAGE_SIZE*blk_num;
     /* ready */
 
-    my_log("Storage %s ready\n", storage->path);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_storage(): Storage %s ready.\n", storage->path);
     storage->flags = ST_READY;
     UNLOCK_STORAGE(storage);
     return;
 error:
-    my_log("Storage %s unusable\n", storage->path);
+    my_xlog(LOG_SEVERE, "init_storage(): Storage %s unusable.\n", storage->path);
     if ( fd != -1 ) close(fd);
     storage->fd = -1;
     if ( map_ptr ) xfree(map_ptr);
@@ -420,14 +350,14 @@ char		*allocated = NULL;
     if ( storage->super.blks_free < n )
 	goto error;
     allocated =
-	xmalloc(sizeof(struct disk_ref)+n*sizeof(uint32_t),"rqfb");
+	xmalloc(sizeof(struct disk_ref)+n*sizeof(uint32_t),"request_free_blks(): rqfb");
     if ( !allocated ) goto error;
     p = po = (uint32_t*)(allocated+sizeof(struct disk_ref));
     current = 0;
     while ( n ) {
 	current = find_free_bit(storage->map, current+1, storage->super.blks_total) ;
 	if ( !current ) {
-	    my_log("Severe error on block %u", n);
+	    my_xlog(LOG_SEVERE, "request_free_blks(): Severe error on block %u", n);
 	    goto error;
 	}
 	n--;
@@ -437,11 +367,11 @@ char		*allocated = NULL;
     /* mark blocks as busy */
     for (i=0;i<o;i++,po++) {
 	if ( !*po ) {
-	    my_log("Try to set 0 bit\n");
+	    my_xlog(LOG_SEVERE, "request_free_blks(): Try to set 0 bit.\n");
 	    do_exit(1);
 	}
-	if ( test_bit(storage->map, *po) ) {
-	    my_log("Trying to set busy bit %d\n", *po);
+	if ( test_map_bit(storage->map, *po) ) {
+	    my_xlog(LOG_SEVERE, "request_free_blks(): Trying to set busy bit %d\n", *po);
 	    do_exit(1);
 	}
 	set_bits(storage->map, *po, 1);
@@ -465,7 +395,7 @@ int	 released;
     if ( !(storage->flags & ST_READY) )
 	goto error;
     if ( !disk_ref ) {
-	my_log("Fatal: zero disk_ref\n");
+	my_xlog(LOG_SEVERE, "release_blks(): Fatal: zero disk_ref.\n");
 	do_exit(1);
     }
 
@@ -473,17 +403,17 @@ int	 released;
     released = disk_ref->blk ;
 
     if ( !released ) {
-	my_log("Fatal: why to release 0 blks\n");
+	my_xlog(LOG_SEVERE, "release_blks(): Fatal: why to release 0 blks.\n");
 	do_exit(1);
     }
     storage->super.blks_free += released;
     while( released ) {
 	if ( !*next_blk ) {
-	    my_log("Fatal: attempt to release 0 blk\n");
+	    my_xlog(LOG_SEVERE, "release_blks(): Fatal: attempt to release 0 blk.\n");
 	    do_exit(1);
 	}
-	if ( TEST(storage->flags, ST_CHECKED) && !test_bit(storage->map, *next_blk) ) {
-	    my_log("Trying to free free bit\n");
+	if ( TEST(storage->flags, ST_CHECKED) && !test_map_bit(storage->map, *next_blk) ) {
+	    my_xlog(LOG_SEVERE, "release_blks(): Trying to free free bit.\n");
 	    do_exit(1);
 	}
 	clr_bits(storage->map, *next_blk, 1);
@@ -492,7 +422,7 @@ int	 released;
     }
     return(0);
 error:
-    fprintf(stderr, "Failed to release blks\n");
+    fprintf(stderr, "release_blks(): Failed to release blks.\n");
     return -1;
 }
 
@@ -546,7 +476,7 @@ struct	disk_ref	*disk_ref;
 	return 0;
 
     needed_blocks = ROUND(obj_size, BLKSIZE)/BLKSIZE;
-    my_xlog(LOG_STOR, "Allocate %u disk blocks for object\n", needed_blocks);
+    my_xlog(LOG_STOR|LOG_DBG, "move_obj_to_storage(): Allocate %u disk blocks for object.\n", needed_blocks);
 
     storage = ostorage = next_alloc_storage;
     if ( !ostorage ) storage = storages;
@@ -662,7 +592,7 @@ char			http_p;
 	return(-1);
     urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
     urll+= 3 + 1; /* :// + \0 */
-    url_str = xmalloc(ROUND(urll, CHUNK_SIZE), "url_str");
+    url_str = xmalloc(ROUND(urll, CHUNK_SIZE), "locate_url_on_disk(): url_str");
     if ( !url_str )
 	return(-1);
     http_p = !strcmp(url->proto, "http");
@@ -678,7 +608,7 @@ char			http_p;
     rc = dbp->get(dbp, NULL, &key, &data, 0);
     switch ( rc ) {
 	case EAGAIN:
-		my_log("Deadlock in db->get(%s)\n", key.data);
+		my_xlog(LOG_SEVERE, "locate_url_on_disk(): Deadlock in db->get(%s).\n", key.data);
 		xfree(url_str);
 		return(-1);
 	case 0:
@@ -691,15 +621,16 @@ char			http_p;
 		}
 		return(0);
 	case DB_NOTFOUND:
-		my_log("%s not found\n", key.data);
+		my_xlog(LOG_DBG, "locate_url_on_disk(): %s not found.\n", key.data);
 		xfree(url_str);
 		return(-1);
 	default:
-		my_log("Unknown answer from db->get(%s): %d\n", key.data, rc);
+		my_xlog(LOG_SEVERE, "locate_url_on_disk(): Unknown answer from db->get(%s): %d\n", key.data, rc);
 		xfree(url_str);
 		return(-1);
     }
 }
+
 int
 load_obj_from_disk(struct mem_obj *obj, struct disk_ref *disk_ref)
 {
@@ -724,7 +655,11 @@ char			answer[BLKSIZE+1];
     if ( !storage )
 	goto err;
     /* storage can be not locked as we use separate fd */
+#if    defined(_AIX) && defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+    fd = open(storage->path, O_RDONLY|O_LARGEFILE);
+#else
     fd = open(storage->path, O_RDONLY);
+#endif
     if ( fd == -1 )
 	goto err;
 
@@ -792,7 +727,7 @@ struct storage_st	*storage;
     storage = locate_storage_by_id(disk_ref->id);
     if ( !storage ) goto done;
 
-    my_xlog(LOG_STOR, "cleaning %s from storage %s\n", url_str, storage->path);
+    my_xlog(LOG_STOR|LOG_DBG, "erase_from_disk(): Cleaning %s from storage %s\n", url_str, storage->path);
     /* remove it from db */
     bzero(&key,  sizeof(key));
     key.data = url_str;
@@ -804,10 +739,10 @@ struct storage_st	*storage;
 		/*dbp->sync(dbp, 0);*/
 		break;
 	case DB_NOTFOUND:
-		my_log("erase_obj_from_storage: record '%s' not found\n", url_str);
+		my_xlog(LOG_SEVERE, "erase_from_disk(): Record `%s' not found.\n", url_str);
 		return(-1);
 	default:
-		my_log("erase_obj_from_storage: %s\n", strerror(errno));
+		my_xlog(LOG_SEVERE, "erase_from_disk(): Error: %s\n", strerror(errno));
 		return(-1);
     }
     WRLOCK_STORAGE(storage);
@@ -843,52 +778,57 @@ struct  memb    *map = NULL;
     tstorage = *storage;
     if ( !tstorage.path )
 	return;
+
+#if	defined(_AIX) && defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+    tstorage.fd = open(tstorage.path, O_RDWR|O_LARGEFILE);
+#else
     tstorage.fd = open(tstorage.path, O_RDWR);
+#endif
     if ( tstorage.fd == -1 )
 	return;
     fd = tstorage.fd;
     if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
-	my_log("seek(%s, %u): %s\n", tstorage.path, 0, strerror(errno));
+	my_xlog(LOG_SEVERE, "check_storage(): seek(%s, %u): %s\n", tstorage.path, 0, strerror(errno));
 	close(fd);
 	return;
     }
     if ( read(fd, &tstorage.super, sizeof(tstorage.super)) != 
 	sizeof(tstorage.super) ) {
-	my_log("Can't read super: %s\n", strerror(errno));
+	my_xlog(LOG_SEVERE, "check_storage(): Can't read super: %s\n", strerror(errno));
 	close(fd);
 	return;
     }
     if ( tstorage.super.magic != htonl(MAGIC) ) {
-	my_log("Wrong magic\n");
+	my_xlog(LOG_SEVERE, "check_storage(): Wrong magic.\n");
 	close(fd);
 	return;
     }
     SET(tstorage.flags, ST_READY);
-    my_log("Checking storage %s\n", tstorage.path);
-    my_log("Super: %d total\n", tstorage.super.blks_total);
-    my_log("       %d free \n", tstorage.super.blks_free );
-    my_log("       %d blk size\n", tstorage.super.blk_siz);
-    my_log("       %x - magic\n", ntohl(tstorage.super.magic));
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Checking storage %s\n", tstorage.path);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Super: %d total\n", tstorage.super.blks_total);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage():        %d free\n", tstorage.super.blks_free );
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage():        %d blk size\n", tstorage.super.blk_siz);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage():        %x - magic\n", ntohl(tstorage.super.magic));
     blk_num   =	tstorage.super.blks_total;
     map_words = blk_num/32 + (blk_num%32?1:0);
-
-    my_log("Read map\n");
+    tstorage.size = tstorage.super.blks_total*(off_t)STORAGE_PAGE_SIZE;
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Read map.\n");
     bitmap = calloc(map_words*4, 1);
     if ( !bitmap ) {
-	my_log("Can't allocate memory for map\n");
+	my_xlog(LOG_SEVERE, "check_storage(): Can't allocate memory for map.\n");
 	goto abor;
     }
     ST_LSEEK(fd, BLKSIZE, SEEK_SET);
     if ( read(fd, bitmap, map_words*4) != map_words*4 ) {
-	my_log("Can't read map\n");
+	my_xlog(LOG_SEVERE, "check_storage(): Can't read map.\n");
 	goto abor;
     }
     tstorage.map = bitmap;
     /*in_map_free = calc_free_bits(bitmap, 0, blk_num);*/
-    my_log("Done\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Done.\n");
     map = calloc(blk_num, sizeof(struct memb));
     if ( !map ) {
-	my_log("Can't allocate memory for map\n");
+	my_xlog(LOG_SEVERE, "check_storage(): Can't allocate memory for map.\n");
 	goto abor;
     }
     rc = dbp->cursor(dbp, NULL, &dbcp
@@ -897,7 +837,7 @@ struct  memb    *map = NULL;
 #endif
     					);
     if ( rc ) {
-	my_log("Cant create cursor for checking\n");
+	my_xlog(LOG_SEVERE, "check_storage(): Can't create cursor for checking.\n");
 	dbp->close(dbp, 0);
 	dbp = NULL;
 	goto abor;
@@ -914,11 +854,11 @@ do_scan:
 		disk_ref = data.data;
 		break;
 	case DB_NOTFOUND:
-		my_log("Done with it\n");
+		my_xlog(LOG_SEVERE, "check_storage(): Done with it.\n");
 		dbcp->c_close(dbcp);
 		goto fix_unrefs;
 	default:
-		my_log("Can't find url: %d\n", rc);
+		my_xlog(LOG_SEVERE, "check_storage(): Can't find url: %d\n", rc);
 		dbp->close(dbp, 0);
 		dbp = NULL;
 		goto abor;
@@ -934,7 +874,7 @@ do_scan:
     blks = 0;
 s:  map[*n].refs++;
     if ( map[*n].refs > 1 ) {
-	my_log("Crossref\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Crossref.\n");
 	/* 1. free all blocks for this obj until this */
 	while ( *start_blk < blk_num) {
 		clr_bits(bitmap, *start_blk, 1);
@@ -952,11 +892,11 @@ s:  map[*n].refs++;
 	dbp->sync(dbp, 0);
 	flush_super(&tstorage);
 	flush_map(&tstorage);
-	my_log("Resolved\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Resolved.\n");
 	goto do_scan;
     }
-    if ( !test_bit(bitmap, *n) ) {
-	my_log("Error: Free block in object %d\n", obj_n);
+    if ( !test_map_bit(bitmap, *n) ) {
+	my_xlog(LOG_SEVERE, "check_storage(): Error: Free block in object %d\n", obj_n);
 	while (*start_blk < blk_num ) {
 	    /* fix in mem  */
 	    map[*start_blk].refs--;
@@ -966,7 +906,7 @@ s:  map[*n].refs++;
 	release_blks(disk_ref->blk, &tstorage, disk_ref);
 	dbcp->c_del(dbcp, 0);
 	dbp->sync(dbp, 0);
-	my_log("Resolved\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Resolved.\n");
 	goto do_scan;
     }
     blks++;
@@ -978,13 +918,13 @@ s:  map[*n].refs++;
 /*
     s = malloc(key.size+1);
     if ( !s ) {
-	my_log("No memory\n");
+	my_xlog(LOG_SEVERE, "check_storage(): No memory.\n");
 	dbp->close(dbp, 0);
 	do_exit(1);
     }
     strncpy(s, key.data, key.size);
     s[key.size] = 0;
-    fprintf(stderr, "%s: %d blocks\n", s, blks);
+    fprintf(stderr, "check_storage(): %s: %d blocks.\n", s, blks);
     free(s);
 */
     free(key.data);
@@ -999,11 +939,12 @@ fix_unrefs:
     }
     in_map_free--; /* super */
     in_map_free -= ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE;
-    my_log("Found %d free blocks in map, %d in superblock\n", in_map_free, tstorage.super.blks_free);
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Found %d free blocks in map, %d in superblock\n",
+	    in_map_free, tstorage.super.blks_free);
     if ( in_map_free != tstorage.super.blks_free ) {
 	int map_blks = ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE;
 	int busy_b = 0;
-	my_log("Fixing free map\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Fixing free map.\n");
 	tstorage.super.blks_free = in_map_free;
 	bzero(bitmap, map_words*4);
 	set_bits(bitmap, 0, 1+map_blks);
@@ -1017,7 +958,7 @@ fix_unrefs:
 	flush_super(&tstorage);
 	flush_map(&tstorage);
     } else {
-	my_log("Free list ok.\n");
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Free list ok.\n");
     }
     SET(storage->flags, ST_CHECKED);
 abor:
@@ -1058,12 +999,13 @@ prep_storages(void *arg)
 	}
     }
     init_storages(storages);
-    my_log("Storages checked\n");
+    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "prep_storages(): Storages checked.\n");
     UNLOCK_CONFIG;
     return(0);
 }
+
 void
-prepare_storages()
+prepare_storages(void)
 {
 pthread_t	pid;
 pthread_attr_t	attr;
@@ -1074,4 +1016,185 @@ pthread_attr_t	attr;
 #endif
     pthread_create(&pid, &attr, &prep_storages, NULL);
     pthread_attr_destroy(&attr);
+}
+
+void
+do_format_storages()
+{
+struct storage_st *storage = storages;
+off_t		size;
+uint32_t	blk_num;
+int		fd = 0;
+char		c;
+struct	superb	super;
+struct	timeval	tv;
+int		map_words, map_bits;
+char		*map_ptr;
+
+    while(storage) {
+	if ( storage->size == -1 ) {
+	    /* autodetect */
+#if	defined(_AIX) && defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+	    fd = open(storage->path, O_CREAT|O_RDWR|O_LARGEFILE, 0644);
+#else
+	    fd = open(storage->path, O_CREAT|O_RDWR, 0644);
+#endif
+	    if ( fd >= 0 ) {
+		size = lseek(fd, 0, SEEK_END);
+		size -= storage->i_off;
+#if	defined(_AIX)
+		if ( size <= 0) {
+		    struct	devinfo	dinfo;
+		    int		rc;
+		    if ( (rc = ioctl(fd, IOCINFO, &dinfo)) == 0) {
+			if ( dinfo.devsubtype == 'p' ) {
+			    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): The %s is a physical volume\n",
+				    storage->path);
+			    size = (off_t)dinfo.un.scdk.numblks * (off_t)dinfo.un.scdk.blksize;
+			    if ( storage->i_off < (off_t)512 ) {
+				storage->i_off = (off_t)512;
+#if	defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+				my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): Setting `offset' value to %lld for %s storage\n",
+#else
+				my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): Setting `offset' value to %ld for %s storage\n",
+#endif
+					storage->i_off, storage->path);
+			    }
+			    size -= storage->i_off;
+			}
+			if ( dinfo.devsubtype == 'l' ) {
+			    struct	lv_info	lvinfo;
+			    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): The %s is a logical volume\n",
+				    storage->path);
+			    if ( (rc = ioctl(fd, LV_INFO, &lvinfo)) == 0) {
+				size = (off_t)lvinfo.num_blocks * (off_t)512;
+				if ( storage->i_off < (off_t)512 ) {
+				    storage->i_off = (off_t)512;
+#if	defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+				    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): Setting `offset' value to %lld for %s storage\n",
+#else
+				    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): Setting `offset' value to %ld for %s storage\n",
+#endif
+					    storage->i_off, storage->path);
+				}
+				size -= storage->i_off;
+			    } else
+				my_xlog(LOG_SEVERE, "do_format_storages(): Ioctl LV_INFO error for %s: %s\n",
+					storage->path, strerror(errno));
+			}
+		    } else
+			my_xlog(LOG_SEVERE, "do_format_storages(): Ioctl IOCINFO error for %s: %s\n",
+				storage->path, strerror(errno));
+		}
+#elif	defined(LINUX)
+		if ( size <= 0) {
+		    off_t	numblks;
+		    int		rc;
+		    if ( (rc = ioctl(fd, BLKGETSIZE, &numblks)) == 0) {
+			size = numblks * (off_t)512;
+			size -= storage->i_off;
+		    } else
+			my_xlog(LOG_SEVERE, "do_format_storages(): Ioctl BLKGETSIZE error for %s: %s\n",
+				storage->path, strerror(errno));
+		}
+#elif	defined(BSDOS) || defined(FREEBSD)
+		if ( size <= 0) {
+		    struct	disklabel	dl;
+		    struct	stat		st;
+		    int		pn, rc;
+		    if ( fstat( fd, &st) == -1 ) {
+			my_xlog(LOG_SEVERE, "do_format_storages(): Fstat failed for %s: %s\n",
+				storage->path, strerror(errno));
+			goto end_of_bsd;
+		    }
+		    if ( !S_ISCHR(st.st_mode) ) {
+			my_xlog(LOG_SEVERE, "do_format_storages(): Not char special device for %s\n",
+				storage->path);
+			goto end_of_bsd;
+		    }
+		    if ( (rc = ioctl(fd, DIOCGDINFO, &dl)) == -1) {
+			my_xlog(LOG_SEVERE, "do_format_storages(): Ioctl DIOCGDINFO error for %s: %s",
+				storage->path, strerror(errno));
+			goto end_of_bsd;
+		    }
+		    if ( dl.d_magic != DISKMAGIC || dl.d_npartitions > MAXPARTITIONS ) {
+			my_xlog(LOG_SEVERE, "do_format_storages(): Bad disklabel for %s\n", storage->path);
+			goto end_of_bsd;
+		    }
+		    pn = st.st_rdev & 0x7;
+		    size = (off_t)dl.d_partitions[pn].p_size * (off_t)dl.d_secsize;
+		    size -= storage->i_off;
+		end_of_bsd:;
+		}
+#endif
+		close(fd);
+	    } else {
+		my_xlog(LOG_SEVERE, "do_format_storages(): Can't open file: %s\n", strerror(errno));
+		goto try_next;
+	    }
+	} else
+	    size = ROUNDPG((storage->size)-(storage->i_off));
+	blk_num = size/STORAGE_PAGE_SIZE;
+	if ( blk_num < 2 ) {
+	    my_xlog(LOG_SEVERE, "do_format_storages(): Storage size(%d bytes) is too small, skip it\n", storage->size);
+	    goto try_next;
+	}
+#if	defined(WITH_LARGE_FILES)
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): Formatting storage %s for %lld bytes\n", storage->path, (long long)size);
+#else
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "do_format_storages(): Formatting storage %s for %d bytes\n", storage->path, size);
+#endif
+	gettimeofday(&tv, NULL);
+#if	defined(_AIX) && defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+	fd = open(storage->path, O_CREAT|O_RDWR|O_LARGEFILE, 0644);
+#else
+	fd = open(storage->path, O_CREAT|O_RDWR, 0644);
+#endif
+	if ( fd == -1 ) {
+	    my_xlog(LOG_SEVERE, "do_format_storages(): open(%s): %s\n", storage->path, strerror(errno));
+	    goto try_next;
+	}
+	if ( ST_LSEEK(fd, size-1, SEEK_SET) == -1 ) {
+	    my_xlog(LOG_SEVERE, "do_format_storages(): seek(%s, %u): %s\n", storage->path, size-1, strerror(errno));
+	    goto try_next;
+	}
+	c = 0;
+	write(fd, &c, 1);
+	/* prepare super */
+	super.magic = htonl(MAGIC);
+	super.id = tv.tv_usec;
+	super.blks_total = blk_num;	/* total blocks, including super */
+	super.blks_free =  blk_num-1;	/* all free except super	 */
+	super.blk_siz   =  BLKSIZE;
+	super.free_last  = blk_num;
+	map_words = blk_num/32 + (blk_num%32?1:0);
+	super.blks_free -= ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE;
+
+	if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
+	    my_xlog(LOG_SEVERE, "do_format_storages(): seek(%s, %u): %s\n", storage->path, 0, strerror(errno));
+	    goto try_next;
+	}
+	if ( write(fd, &super, sizeof(super)) != sizeof(super) ) {
+	    my_xlog(LOG_SEVERE, "do_format_storages(): write super for %s: %s\n", storage->path, strerror(errno));
+	    goto try_next;
+	}
+	/* how much 32-bit word we need for map? */
+	map_bits  = blk_num;
+	map_ptr = xmalloc(map_words*4,"do_format_storages(): map_ptr");
+	if ( !map_ptr ) {
+	    printf("do_format_storages(): Can't create map\n");
+	    goto try_next;
+	}
+	bzero(map_ptr, map_words*4);
+	set_bits(map_ptr, 0, ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE+1);
+	ST_LSEEK(fd, STORAGE_PAGE_SIZE, SEEK_SET);
+	write(fd, map_ptr, map_words*4);
+try_next:
+	printf("\n");
+	if ( fd ) {
+	    close(fd);
+	    fd = 0;
+	}
+	storage=storage->next;
+    }
 }

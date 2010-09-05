@@ -43,6 +43,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<sys/stat.h>
 #include	<sys/file.h>
 #include	<sys/time.h>
+#include	<sys/resource.h>
 
 #include	<netinet/in.h>
 
@@ -275,8 +276,20 @@ struct pre_body_module	*mod = pre_body_first;
     return(rc);
 }
 
+
+void
+run_modules(void)
+{
+struct	general_module	*mod = global_mod_chain;
+
+    while (mod) {
+	if (mod->mod_run) (mod->mod_run)();
+	mod = mod->next_global;
+    }
+}
+
 int
-load_modules()
+load_modules(void)
 {
 void			*modh;
 char			*mod_type, *mod_info, **paths, *module_path;
@@ -308,7 +321,7 @@ load_mods:
     global_mod_chain = NULL;
     bzero(&globbuf, sizeof(globbuf));
     if ( glob(glob_mask, 0, NULL, &globbuf) ) {
-	printf("can't glob on %s\n", modules_path);
+	printf("Can't glob on %s\n", modules_path);
 	return(1);
     }
     for( gc = globbuf.gl_pathc, paths=globbuf.gl_pathv; gc;gc--,paths++) {
@@ -323,7 +336,7 @@ load_mods:
 	      case MODULE_LOG:
 		printf("(Logger)\n");
 		/* allocate module structure */
-		log_module = (struct log_module*)xmalloc(sizeof(*log_module), "for log_module");
+		log_module = (struct log_module*)xmalloc(sizeof(*log_module), "load_modules(): for log_module");
 		if ( !log_module ) {
 		    dlclose(modh);
 		}
@@ -334,6 +347,8 @@ load_mods:
 		log_module->general.config = (mod_load_t*)dlsym(modh, "mod_config");
 		log_module->general.config_beg = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		log_module->general.config_end = (mod_load_t*)dlsym(modh, "mod_config_end");
+		log_module->mod_log = (mod_load_t*)dlsym(modh, "mod_log");
+		MOD_RUN(log_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		nptr = (char*)dlsym(modh, "module_name");
 		*MOD_NAME(log_module) = 0;
 		if ( nptr )
@@ -345,13 +360,14 @@ load_mods:
 		if ( log_module->general.load )
 			(*log_module->general.load)();
 		log_module->general.type = MODULE_LOG;
+		log_module->mod_reopen = (mod_load_t*)dlsym(modh, "mod_reopen");
 		insert_module((struct general_module*)log_module,
 			      (struct general_module**)&log_first);
 		break;
 	      case MODULE_ERR:
 		printf("(Error handling)\n");
 		/* allocate module structure */
-		err_module = (struct err_module*)xmalloc(sizeof(*err_module), "for err_module");
+		err_module = (struct err_module*)xmalloc(sizeof(*err_module), "load_modules(): for err_module");
 		if ( !err_module ) {
 		    dlclose(modh);
 		}
@@ -362,6 +378,7 @@ load_mods:
 		MOD_CONFIG(err_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(err_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(err_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(err_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(err_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -381,7 +398,7 @@ load_mods:
 	      case MODULE_AUTH:
 		printf("(Auth module)\n");
 		/* allocate module structure */
-		auth_module = (struct auth_module*)xmalloc(sizeof(*auth_module), "for auth_module");
+		auth_module = (struct auth_module*)xmalloc(sizeof(*auth_module), "load_modules(): for auth_module");
 		if ( !auth_module ) {
 		    dlclose(modh);
 		}
@@ -392,6 +409,7 @@ load_mods:
 		MOD_CONFIG(auth_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(auth_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(auth_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(auth_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(auth_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -411,7 +429,7 @@ load_mods:
 	      case MODULE_REDIR:
 		printf("(Redirect module)\n");
 		/* allocate module structure */
-		redir_module = (struct redir_module*)xmalloc(sizeof(*redir_module), "for redir_module");
+		redir_module = (struct redir_module*)xmalloc(sizeof(*redir_module), "load_modules(): for redir_module");
 		if ( !redir_module ) {
 		    dlclose(modh);
 		}
@@ -422,6 +440,7 @@ load_mods:
 		MOD_CONFIG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(redir_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(redir_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -443,7 +462,7 @@ load_mods:
 	      case MODULE_OUTPUT:
 		printf("(Output module)\n");
 		/* allocate module structure */
-		output_module = (struct output_module*)xmalloc(sizeof(*output_module), "for output_module");
+		output_module = (struct output_module*)xmalloc(sizeof(*output_module), "load_modules(): for output_module");
 		if ( !output_module ) {
 		    dlclose(modh);
 		}
@@ -454,6 +473,7 @@ load_mods:
 		MOD_CONFIG(output_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(output_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(output_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(output_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(output_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -475,7 +495,7 @@ load_mods:
 	      case MODULE_LISTENER:
 		printf("(Listener module)\n");
 		/* allocate module structure */
-		listener_module = (struct listener_module*)xmalloc(sizeof(*listener_module), "for listener_module");
+		listener_module = (struct listener_module*)xmalloc(sizeof(*listener_module), "load_modules(): for listener_module");
 		if ( !listener_module ) {
 		    dlclose(modh);
 		}
@@ -486,6 +506,7 @@ load_mods:
 		MOD_CONFIG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(listener_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(listener_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -505,7 +526,7 @@ load_mods:
 	      case MODULE_HEADERS:
 		printf("(Headers match module)\n");
 		/* allocate module structure */
-		headers_module = (struct headers_module*)xmalloc(sizeof(*headers_module), "");
+		headers_module = (struct headers_module*)xmalloc(sizeof(*headers_module), "load_modules(): for header_module");
 		if ( !headers_module ) {
 		    dlclose(modh);
 		}
@@ -516,6 +537,7 @@ load_mods:
 		MOD_CONFIG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(headers_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(headers_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -534,7 +556,7 @@ load_mods:
 	      case MODULE_PRE_BODY:
 		printf("(Pre-body)\n");
 		/* allocate module structure */
-		pre_body_module = (struct pre_body_module*)xmalloc(sizeof(*pre_body_module), "");
+		pre_body_module = (struct pre_body_module*)xmalloc(sizeof(*pre_body_module), "load_modules(): for pre_body_module");
 		if ( !pre_body_module ) {
 		    dlclose(modh);
 		}
@@ -545,6 +567,7 @@ load_mods:
 		MOD_CONFIG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config");
 		MOD_CONFIG_BEG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_run");
 		*MOD_NAME(pre_body_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -569,7 +592,6 @@ load_mods:
 	    printf("loading %s: %s\n", module_path, dlerror()); 
 	}
     }
-done:
     globfree(&globbuf);
     /* we will need lang */
     lang_mod = (struct output_module*)module_by_name("lang");
@@ -630,14 +652,15 @@ struct		sockaddr_in	sin_addr;
 
     if ( !ports || !string ) return(0);
     while( string && *string && (nres < number) ) {
-	while ( *string && !isdigit(*string) ) string++;
-	if ( !*string ) break;
 	p = string;
+	while ( *p && IS_SPACE(*p) ) p++;
+	if ( !*p ) return(nres);
 	d = buf;
-	while ( *p && !isspace(*p) ) {
+	while ( *p && !IS_SPACE(*p) ) {
 	    *d++ = *p++;
 	}
 	*d = 0;
+	string = p;
 	if ( ( t = (char*)strchr(buf, ':') ) ) {
 	    *t = 0;
 	    port = atoi(t+1);
@@ -654,7 +677,7 @@ struct		sockaddr_in	sin_addr;
 	    pptr->so = -1;	/* this is sign to use server_so */
 	    pptr++;
 	} else
-	if ( (so = tcp_port_in_use(port)) ) {
+	if ( (so = tcp_port_in_use(port, &sin_addr.sin_addr)) ) {
 	    nres++;
 	    bzero(pptr, sizeof(*pptr));
 	    pptr->port = port;
@@ -665,7 +688,7 @@ struct		sockaddr_in	sin_addr;
 	    setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
 	    sin_addr.sin_family = AF_INET;
 	    sin_addr.sin_port   = htons(port);
-#if	!defined(LINUX) && !defined(SOLARIS)
+#if	!defined(LINUX) && !defined(SOLARIS) && !defined(OSF)
 	    sin_addr.sin_len	= sizeof(sin_addr);
 #endif
 	    rc = bind(so, (struct sockaddr*)&sin_addr, sizeof(sin_addr));
@@ -674,16 +697,14 @@ struct		sockaddr_in	sin_addr;
 		pptr->port = port;
 		pptr->in_addr = sin_addr.sin_addr;
 		pptr->so = so;
-		pptr++;
-		add_socket_to_listen_list(so, 0, NULL);
-		add_to_tcp_port_in_use(port, so);
+		add_socket_to_listen_list(so, port, &pptr->in_addr, NULL);
 		listen(so, 128);
+		pptr++;
 	    } else {
 		printf("parse_myports:bind: %s\n", strerror(errno));
 	    }
 	    printf("port = %d\n", port);
 	}
-	string = p;
     }
     return(nres);
 }
@@ -697,4 +718,27 @@ Compare_Agents(char *agent1, char *agent2)
     return(lang_mod->compare_u_agents(agent1, agent2));
 }
 
+int
+check_log_mods(int elapsed, struct request *rq, struct mem_obj *obj)
+{
+struct	log_module	*mod = log_first;
+
+    while( mod ) {
+	if ( mod->mod_log ) (mod->mod_log)(elapsed, rq, obj);
+	mod = (struct log_module*)((struct general_module*)mod)->next;
+    }
+    return(0);
+}
+
+int
+mod_reopen_logs(void)
+{
+struct	log_module	*mod = log_first;
+
+    while( mod ) {
+	if ( mod->mod_reopen ) (mod->mod_reopen)();
+	mod = (struct log_module*)((struct general_module*)mod)->next;
+    }
+    return(0);
+}
 #endif
