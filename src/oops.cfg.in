@@ -8,8 +8,9 @@
 #  nameservers. Use your own, not our.
 ## 
 
-nameserver 195.114.128.50
-nameserver 193.219.193.130
+nameserver 127.0.0.1
+#nameserver 195.114.128.50
+#nameserver 193.219.193.130
 
 ##
 #  Ports and address to use for HTTP and ICP

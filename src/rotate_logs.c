@@ -32,7 +32,7 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
     if ( !num ) {
 	/* if no number of logs configured just reopen file */
 	close(fb->fd);
-	fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT);
+	fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT, 0660);
 	return;
 
     }

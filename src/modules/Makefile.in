@@ -1,7 +1,7 @@
 CC = @CC@
 CXX = @CXX@
 LIBS = @LIBS@
-CFLAGS = @CFLAGS@ @DEFS@
+CFLAGS = @CFLAGS@ -fPIC @DEFS@
 LDFLAGS = @LDFLAGS@
 LD = @LD@
 SOFLAGS = @SOFLAGS@
@@ -104,11 +104,11 @@ oopsctl: oopsctl.c ../modules.h ../config.h  ../oops.h
 
 passwd_pgsql.so: passwd_sql.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -D__PGSQL -c passwd_sql.c -o passwd_pgsql.o
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o passwd_pgsql.so passwd_pgsql.o $(PGSQL_LIB)
+	${LD} $(SOFLAGS) $(LDFLAGS) -o passwd_pgsql.so passwd_pgsql.o $(LIBS) $(PGSQL_LIB)
 
 passwd_mysql.so: passwd_sql.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -D__MYSQL -c passwd_sql.c -o passwd_mysql.o
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o passwd_mysql.so passwd_mysql.o $(MYSQL_LIB)
+	${LD} $(SOFLAGS) $(LDFLAGS) -o passwd_mysql.so passwd_mysql.o $(LIBS) $(MYSQL_LIB)
 
 passwd_pgsql.o: passwd_sql.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -D__PGSQL -c passwd_sql.c -o passwd_pgsql.o
