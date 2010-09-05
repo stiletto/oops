@@ -29,20 +29,22 @@ char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
-int		redir(int, struct group*, struct request*, int*);
-int		redir_connect(int*, struct request*, int*);
-int		redir_rewrite_header(char **, struct request*, int*);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+int		redir(int, struct group*, struct request*, int*, int);
+int		redir_connect(int*, struct request*, int*, int);
+int		redir_rewrite_header(char **, struct request*, int*, int);
+#define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_REDIR ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
 static	int	mod_load();
 static	int	mod_unload();
-static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
-static	int	redir(int, struct group*, struct request*, int*);
-static	int	redir_connect(int*, struct request*, int*);
-static	int	redir_rewrite_header(char **, struct request*, int*);
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+static	int	redir(int, struct group*, struct request*, int*, int);
+static	int	redir_connect(int*, struct request*, int*, int);
+static	int	redir_rewrite_header(char **, struct request*, int*, int);
+#define		MODULE_STATIC	static
 #endif
 
 struct	redir_module	accel = {
@@ -94,6 +96,7 @@ char	*mapnames[7] = {
 static	myport_t	myports[NMYPORTS];	/* my ports		*/
 static	int		nmyports;		/* actual number	*/
 static	char		*myports_string = NULL;
+static	char		*access_string	= NULL;
 
 static	refresh_pattern_t	*refr_patts;
 
@@ -168,6 +171,51 @@ static	char		map_file[MAXPATHLEN];
 static	time_t		map_file_mtime = 0, map_file_check_time = 0;
 static	int		deny_proxy_requests;
 static	int		ip_lookup;
+
+
+
+/* can be in the form aaa.bbb.ccc.ddd:port
+   or port
+*/
+
+int
+parse_access(char *string, myport_t *ports, int number)
+{
+char		buf[20], *p, *d, *t;
+u_short		port;
+myport_t	*pptr=ports;
+int		nres=0, rc, one=-1, so;
+struct		sockaddr_in	sin_addr;
+
+    if ( !ports || !string ) return(0);
+    while( string && *string && (nres < number) ) {
+	p = string;
+	while ( *p && IS_SPACE(*p) ) p++;
+	if ( !*p ) return(nres);
+	d = buf;
+	while ( *p && !IS_SPACE(*p) ) {
+	    *d++ = *p++;
+	}
+	*d = 0;
+	string = p;
+	if ( (t = (char*)strchr(buf, ':')) != 0 ) {
+	    *t = 0;
+	    port = atoi(t+1);
+	    bzero(&sin_addr, sizeof(sin_addr));
+	    str_to_sa(buf, (struct sockaddr*)&sin_addr);
+	} else {
+	    port = atoi(buf);
+	    bzero(&sin_addr, sizeof(sin_addr));
+	}
+	nres++;
+	pptr->port = port;
+	pptr->in_addr = sin_addr.sin_addr;
+	pptr++;
+    }
+    return(nres);
+}
+
+
 
 unsigned
 hash_function(char *s)
@@ -257,6 +305,7 @@ mod_load()
     map_hash_table = NULL;
     other_maps_chain = NULL;
     myports_string = NULL;
+    access_string  = NULL;
     deny_proxy_requests = 1;
     ip_lookup = TRUE;
     return(MOD_CODE_OK);
@@ -268,7 +317,7 @@ mod_unload()
     return(MOD_CODE_OK);
 }
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     WRLOCK_ACCEL_CONFIG ;
     nmyports = 0;
@@ -302,11 +351,16 @@ mod_config_beg()
     map_file_check_time = 0;
     if ( myports_string ) free(myports_string);
     myports_string = NULL;
+    if ( access_string ) free(access_string);
+    access_string = NULL;
+    
     deny_proxy_requests = 1;
     ip_lookup = TRUE;
     UNLOCK_ACCEL_CONFIG ;
     return(MOD_CODE_OK);
 }
+
+MODULE_STATIC
 int
 mod_run()
 {
@@ -316,11 +370,18 @@ mod_run()
 	verb_printf("%s will use %d ports\n", module_name, nmyports);
     }
     UNLOCK_ACCEL_CONFIG ;
+
+    if ( access_string != NULL ){     
+	nmyports = parse_access(access_string, &myports[0], NMYPORTS);
+	verb_printf("%s will use %d ports for access\n", module_name, nmyports);
+	
+    }
+
     return(MOD_CODE_OK);
 }
 
 int
-mod_config_end()
+mod_config_end(int i)
 {
     if ( use_host_hash > 0 ) {
 	map_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
@@ -331,7 +392,7 @@ mod_config_end()
 }
 
 int
-mod_config(char *config)
+mod_config(char *config, int i)
 {
 char		*p = config;
 
@@ -344,6 +405,12 @@ char		*p = config;
 	myports_string = strdup(p);
 	/*nmyports = parse_myports(p, &myports, NMYPORTS);*/
 	verb_printf("%s will use %d ports\n", module_name, nmyports);
+    } else
+    if ( !strncasecmp(p, "access", 6) ) {
+	p += 6;
+	while (*p && IS_SPACE(*p) ) p++;
+	access_string = strdup(p);
+	verb_printf("%s will use %d ports for access\n", module_name, nmyports);
     } else
     if ( !strncasecmp(p, "rewrite_host", 12) ) {
 	p += 12; while (*p && IS_SPACE(*p) ) p++;
@@ -373,7 +440,7 @@ char		*p = config;
     if ( !strncasecmp(p, "ip_lookup", 9) ) {
 	p += 9;
 	while (*p && IS_SPACE(*p) ) p++;
-	ip_lookup = strncasecmp(p, "no", 4);
+	ip_lookup = strncasecmp(p, "no", 2);
     } else
     if ( !strncasecmp(p, "sleep_timeout", 13) ) {
 	p += 13;
@@ -383,6 +450,8 @@ char		*p = config;
     if ( !strncasecmp(p, "file", 4) )
 	parse_map_file(p);
     UNLOCK_ACCEL_CONFIG ;
+
+
     return(MOD_CODE_OK);
 }
 
@@ -444,7 +513,7 @@ struct	to_host	*host, *next_host;
 }
 
 int
-redir_rewrite_header(char **hdr, struct request *rq, int *flags)
+redir_rewrite_header(char **hdr, struct request *rq, int *flags, int instance)
 {
 struct	map		*map;
 struct	url		url, new_url;
@@ -467,7 +536,7 @@ rewrite_location_t	*rl;
     bzero(&url, sizeof(url));
     bzero(&new_url, sizeof(new_url));
 
-    my_xlog(LOG_HTTP|LOG_DBG, "redir_rewrite_header(): called for `%s'.\n", *hdr);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_rewrite_header(): called for `%s'.\n", *hdr);
 
     src = build_src(rq);
     INIT_PMATCH(pmatch);
@@ -537,7 +606,7 @@ done:
 */
 
 int
-redir_connect(int *resulting_so, struct request *rq, int *flags)
+redir_connect(int *resulting_so, struct request *rq, int *flags, int instance)
 {
 struct	map		*map;
 struct	to_host		*host;
@@ -602,7 +671,7 @@ struct	url		tmp_url;
 		use_name = host->name;
 		use_port = host->port;
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Connecting to %s:%d\n", use_name, use_port);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Connecting to %s:%d\n", use_name, use_port);
 	    rc = str_to_sa(use_name, (struct sockaddr*)&server_sa);
 	    server_sa.sin_port = htons(use_port);
 	    if ( rc ) /* have no name */
@@ -626,7 +695,7 @@ struct	url		tmp_url;
 		    *resulting_so = so;
 		    goto done;
 		}
-		my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Connect failed.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Connect failed.\n");
 	    }
 	    if ( so != -1 ) {
 		close(so);
@@ -637,7 +706,7 @@ struct	url		tmp_url;
 	    host->failed = TRUE;
 	    host->last_failed = global_sec_timer;
 	} else {
-	    my_xlog(LOG_HTTP|LOG_DBG, "redir_connect(): Host %s failed %d ago. Sleep_timeout=%d\n",
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Host %s failed %d ago. Sleep_timeout=%d\n",
 		host->name?host->name:"???", 
 		global_sec_timer-host->last_failed,
 		sleep_timeout);
@@ -664,7 +733,7 @@ done:
 }
 
 int
-redir(int so, struct group *group, struct request *rq, int *flags)
+redir(int so, struct group *group, struct request *rq, int *flags, int instance)
 {
 struct	map		*map;
 regmatch_t		pmatch[MAXMATCH];
@@ -674,7 +743,7 @@ struct	av		*host_av;
     check_map_file_age();
 
     RDLOCK_ACCEL_CONFIG ;
-    my_xlog(LOG_DBG|LOG_INFORM, "redir(): accel called.\n");
+    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "redir(): accel called.\n");
     if ( !rq ) goto done;
 
     src = build_src(rq);
@@ -708,7 +777,7 @@ struct	av		*host_av;
     }
     goto done;
 map_found:
-    if ( map->config_line ) my_xlog(LOG_HTTP|LOG_DBG, "redir(): request matched to %s map `%s'.\n",
+    if ( map->config_line ) my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir(): request matched to %s map `%s'.\n",
 	mapnames[map->type], map->config_line);
 
     IF_FREE ( rq->original_host );
@@ -787,7 +856,7 @@ case MAP_REGEX:
 	    struct url	url;
 
 	    bzero(&url, sizeof(url));
-	    my_xlog(LOG_HTTP|LOG_DBG, "redir(): new dest: %s\n", destination);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir(): new dest: %s\n", destination);
 	    /* we must split new destination */
 	    if ( !parse_raw_url(destination, &url) ) {
 		/* it is ok 				  */
@@ -807,7 +876,7 @@ case MAP_REGEX:
 	break;
 
 default:
-	my_xlog(LOG_SEVERE, "redir(): Unknown MAP type %d\n", map->type);
+	my_xlog(OOPS_LOG_SEVERE, "redir(): Unknown MAP type %d\n", map->type);
 	goto done;
     }
 
@@ -920,7 +989,7 @@ u_short			port;
     } else
 	return(NULL);
 
-    my_xlog(LOG_DBG|LOG_INFORM, "find_map(): it's my.\n");
+    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): it's my.\n");
     /* first - take destination from 'Host:'		*/
     if ( rq->original_host ) {
 	host = rq->original_host;
@@ -957,7 +1026,7 @@ u_short			port;
 		    }
 		    if (    !strcasecmp(host_buf, this->from_host)
 			 && (port == this->from_port) ) {
-			my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Found in hash.\n");
+			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Found in hash.\n");
 			goto hash_found;
 		    }
 		    this = this->next_in_hash;
@@ -971,14 +1040,14 @@ u_short			port;
 		case MAP_REGEX_CS:
 		case MAP_REGEX:
 		    if ( src && !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
-			my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
+			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
 			goto hash_found;
 		    }
 		    break;
 		case MAP_ACL:
 		    if ( rq_match_named_acl_by_index(rq, this->acl_index)
 			&& !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
-			my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
+			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
 			goto hash_found;
 		    }
 		    break;
@@ -994,26 +1063,26 @@ u_short			port;
 	case MAP_STRING_CS:
 	case MAP_STRING:
 		if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
-		    my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in string map.\n", host);
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in string map.\n", host);
 		    return(map);
 		}
 		break;
 	case MAP_REGEX_CS:
 	case MAP_REGEX:
 		if ( src && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
-		    my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
 		    return(map);
 		}
 		break;
 	case MAP_ACL:
 		if ( rq_match_named_acl_by_index(rq, map->acl_index)
 		    && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
-		    my_xlog(LOG_HTTP|LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
 		    return(map);
 		}
 		break;
 	default:
-		my_xlog(LOG_SEVERE, "find_map(): Here is unknown map type %d\n", map->type);
+		my_xlog(OOPS_LOG_SEVERE, "find_map(): Here is unknown map type %d\n", map->type);
 		break;
 	    }
 	    map = map->next;
@@ -1029,7 +1098,7 @@ try_addresses:
 	    str_to_sa(map->from_host, (struct sockaddr*)&map_sa);
 	    if ( (map_sa.sin_addr.s_addr == rq->my_sa.sin_addr.s_addr) &&
 		(!map->from_port || (map->from_port == ntohs(rq->my_sa.sin_port)) ) ) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "find_map(): Map found: %s\n", map->from_host);
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): Map found: %s\n", map->from_host);
 		break;
 	    }
 	}
@@ -1038,7 +1107,7 @@ try_addresses:
 
     if ( !map ) {
 	if ( !default_map ) goto done;
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "find_map(): Default used.\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): Default used.\n");
 	map = default_map;
     }
     res = map;
@@ -1797,8 +1866,14 @@ u_short			port=80;
     if ( !rq || !rq->av_pairs) return(NULL);
     if ( rq->original_host ) {
 	host = rq->original_host;
-    } else
-	host = attr_value(rq->av_pairs, "host");
+    } else {
+        /* If we have absolute URI, then it have precedence     */
+        /* 12.04.2001                                           */
+        if ( rq->url.host )
+                host = rq->url.host;
+            else
+                host = attr_value(rq->av_pairs, "host");
+    }
     if ( !host ) return(NULL);
     if ( rq->original_path ) {
 	path = rq->original_path;
@@ -1937,19 +2012,20 @@ struct	map	*map;
     rc = stat(map_file, &sb);
     if ( rc == -1 ) {
 	verb_printf("reload_map_file(): Can't stat %s: %m\n", map_file);
-	my_xlog(LOG_SEVERE, "reload_map_file(): Can't stat %s: %m\n", map_file);
+	my_xlog(OOPS_LOG_SEVERE, "reload_map_file(): Can't stat %s: %m\n", map_file);
 	return;
     }
     if ( sb.st_mtime <= map_file_mtime )
 	return;
     WRLOCK_ACCEL_CONFIG ;
-    map_file_mtime = sb.st_mtime;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "reload_map_file(): reload mapfile.\n");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_map_file(): reload mapfile.\n");
     mf = fopen(map_file, "r");
     if ( !mf ) {
 	verb_printf("reload_map_file(): Can't fopen %s: %m", map_file);
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_map_file(): Can't fopen %s: %m", map_file);
 	goto done;
     }
+    map_file_mtime = sb.st_mtime;
     if ( map_hash_table ) {
 	free(map_hash_table);
 	map_hash_table = NULL;
@@ -2076,7 +2152,7 @@ struct	map	*map;
 	if ( !strncasecmp(p, "map", 3) )
 	    parse_map(p);
     }
-
+    if ( mf ) fclose(mf);
 done:
     UNLOCK_ACCEL_CONFIG ;
 }

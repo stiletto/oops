@@ -53,18 +53,20 @@ char		module_info[]	= MODULE_INFO;
 char		module_name[]	= MODULE_NAME;
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
 int		mod_log(int elapsed, struct request *rq, struct mem_obj *obj);
 int		mod_reopen(void);
+#define		MODULE_STATIC
 #else
 static	char	module_type 	= MODULE_LOG;
 static	char	module_info[]	= MODULE_INFO;
 static	char	module_name[]	= MODULE_NAME;
 static	int	mod_load();
 static	int	mod_unload();
-static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 static	int	mod_log(int elapsed, struct request *rq, struct mem_obj *obj);
 static	int	mod_reopen(void);
+#define		MODULE_STATIC	static
 #endif
 
 struct	log_module custom_log = {
@@ -85,6 +87,7 @@ struct	log_module custom_log = {
 	mod_reopen
 };
 
+MODULE_STATIC
 int
 mod_log(int elapsed, struct request *rq, struct mem_obj *obj)
 {
@@ -100,6 +103,7 @@ logfile_t *curr;
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 void
 process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 				    struct mem_obj *obj)
@@ -395,6 +399,7 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
     UNLOCK_CL;
 }
 
+MODULE_STATIC
 void
 close_logfiles(void)
 {
@@ -412,6 +417,7 @@ logfile_t	*curr = logfiles, *next;
     logfiles = NULL;
 }
 
+MODULE_STATIC
 logfile_t*
 new_logfile(char *path)
 {
@@ -428,6 +434,7 @@ logfile_t	*new = NULL;
     return(new);
 }
 
+MODULE_STATIC
 int
 mod_reopen()
 {
@@ -436,7 +443,7 @@ logfile_t	*curr;
     RDLOCK_CL;
     curr = logfiles;
     while(curr) {
-	if ( curr->path ) my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "mod_reopen(): Reopen %s\n", curr->path);
+	if ( curr->path ) my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "mod_reopen(): Reopen %s\n", curr->path);
 	if ( curr->file ) fclose(curr->file);
 	if ( curr->path ) curr->file = fopen(curr->path, "a");
 	if ( curr->file ) setbuf(curr->file, NULL);
@@ -446,6 +453,7 @@ logfile_t	*curr;
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_load()
 {
@@ -455,6 +463,7 @@ mod_load()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_unload()
 {
@@ -462,8 +471,9 @@ mod_unload()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     WRLOCK_CL;
     close_logfiles();
@@ -472,12 +482,14 @@ mod_config_beg()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config_end()
+mod_config_end(int i)
 {
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_run()
 {
@@ -495,7 +507,7 @@ logfile_t *curr;
 		if ( curr->allocated )
 		    curr->buff = malloc(curr->allocated);
 	    } else
-		my_xlog(LOG_SEVERE, "mod_run(): custom_log: fopen(%s): %m\n",
+		my_xlog(OOPS_LOG_SEVERE, "mod_run(): custom_log: fopen(%s): %m\n",
 			curr->path);
 	}
 	curr = curr->next;
@@ -505,8 +517,9 @@ logfile_t *curr;
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config(char* config)
+mod_config(char* config, int i)
 {
 char	*p = config;
 

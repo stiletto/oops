@@ -1,8 +1,25 @@
 FTP reget		done
 HTTP ranges and reget	done
-Per-session bandwidth
+Per-session bandwidth	done
 More info on error page	done
 per peer acl		done
 TCP_MEM_HIT
-'ignore if-modified-since' option for accel
+'ignore if-modified-since' 
+option for accel
+
 AS-based acl
+
+504 code from parent	done
+
+bind per group		done (group connect_from)
+spaces in access_log	done (htmlize)
+
+host from abs uri must	done
+have priority over
+Host:
+
+https ignore "parent"	done
+option
+
+separate timeouts for
+connect, read, ...

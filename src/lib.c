@@ -130,7 +130,7 @@ ERRBUF ;
 
     va_start(ap, form);
 
-    if ( TEST(lvl, ~ LOG_PRINT) ) {
+    if ( TEST(lvl, ~ OOPS_LOG_PRINT) ) {
 	    char	*b1;
 	    int		b1len;
 
@@ -157,7 +157,7 @@ ERRBUF ;
 #endif
     }
 
-    if ( TEST(lvl, LOG_PRINT) )
+    if ( TEST(lvl, OOPS_LOG_PRINT) )
 	vprintf(fbuf, ap);
 
     va_end(ap);
@@ -183,7 +183,7 @@ char			*meth, *tag, *content, *hierarchy, *source, ctbuf[40];
 struct	url		*url;
 struct	sockaddr_in	*sa;
 int			code, size, maxlen;
-char			*proto, *host, *path, *user;
+char			*proto, *host, *path, *user, *htmlized_path = NULL;
 
     if ( !rq ) return;
 
@@ -230,12 +230,15 @@ char			*proto, *host, *path, *user;
     if ( !proto ) proto = "NULL";
     if ( !host ) host = "NULL";
     if ( !path ) path = "/";
+    htmlized_path = htmlize(path);
+    if ( htmlized_path == NULL )
+        htmlized_path = strdup(path);
 
-    if ( proto && host && path ) {
-	maxlen = strlen(proto)+strlen(host)+strlen(path)+5;
+    if ( proto && host && htmlized_path ) {
+	maxlen = strlen(proto)+strlen(host)+strlen(htmlized_path)+5;
 	urlp = malloc(maxlen);
     }
-    if ( urlp ) sprintf(urlp,"%s://%s%s", proto, host, path);
+    if ( urlp ) sprintf(urlp,"%s://%s%s", proto, host, htmlized_path);
     s = my_inet_ntoa(sa);
     if ( s ) maxlen += strlen(s);
     sbuf = malloc(maxlen + strlen(meth) + strlen(tag) + strlen(hierarchy)
@@ -252,6 +255,7 @@ char			*proto, *host, *path, *user;
     }
     if ( s )	xfree(s);
     if ( urlp ) xfree(urlp);
+    if ( htmlized_path ) xfree(htmlized_path);
     short_flushout_fb(&accesslogbuff);
 }
 
@@ -320,7 +324,7 @@ str_to_sa(char *val, struct sockaddr *sa)
 			he = gethostbyname_r(val, &he_b, he_strb, sizeof(he_strb), &he_errno);
 #endif
 			if ( !he ) {
-			    my_xlog(LOG_DNS|LOG_DBG, "str_to_sa(): %s is not a hostname, not an IP addr\n", val);
+			    my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "str_to_sa(): %s is not a hostname, not an IP addr\n", val);
 			    return(1);
 			}
 			ad = (*(struct in_addr*)*he->h_addr_list).s_addr;
@@ -333,7 +337,7 @@ str_to_sa(char *val, struct sockaddr *sa)
 #endif
 		}
 		if ( !ad ) {
-			my_xlog(LOG_DNS|LOG_DBG, "str_to_sa(): %s is not a hostname, not an IP addr\n", val);
+			my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "str_to_sa(): %s is not a hostname, not an IP addr\n", val);
 			return(1);
 		}
 		((struct sockaddr_in*)sa)->sin_addr.s_addr = ad;
@@ -348,30 +352,45 @@ str_to_sa(char *val, struct sockaddr *sa)
 int
 bind_server_so(int server_so, struct request *rq)
 {
-int	r;
-int	ba_addr;
+int		r;
+int		ba_addr;
+struct	group	*gr;
 
-    if ( rq && ( ba_addr = find_bind_acl(rq) ) ) {
-	struct	sockaddr_in	sa;
-	bzero(&sa, sizeof(sa));
-	sa.sin_addr.s_addr = ba_addr;
-	sa.sin_family = AF_INET;
+    if ( TEST(rq->flags, RQ_GO_DIRECT|RQ_FORCE_DIRECT|RQ_SERVED_DIRECT) ) {
+	if ( rq && ( ba_addr = find_bind_acl(rq) ) ) {
+	    struct	sockaddr_in	sa;
+	    bzero(&sa, sizeof(sa));
+	    sa.sin_addr.s_addr = ba_addr;
+	    sa.sin_family = AF_INET;
 #if     !defined(SOLARIS) && !defined(LINUX) && !defined(OSF) && !defined(_WIN32)
-	sa.sin_len = sizeof(sa);
+	    sa.sin_len = sizeof(sa);
 #endif
-	r = bind(server_so, (struct sockaddr*)&sa, sizeof(sa));
+	    r = bind(server_so, (struct sockaddr*)&sa, sizeof(sa));
+	    if ( r ) {
+		char *s = my_inet_ntoa(&gr->conn_from_sa);
+		my_xlog(OOPS_LOG_SEVERE, "bind_server_so(): Can't bind by bind_acl to %s: %m\n", s);
+		free(s);
+	    } else
+		return(r);
+	}
+	if ( rq->conn_from_sa.sin_addr.s_addr ) {
+	    r = bind(server_so, (struct sockaddr*)&rq->conn_from_sa, sizeof(struct sockaddr_in));
+	    if ( r ) {
+		char *s = my_inet_ntoa(&rq->conn_from_sa);
+		my_xlog(OOPS_LOG_SEVERE, "bind_server_so(): Can't bind by group connect_from to %s: %m\n", s);
+		free(s);
+	    } else
+		return(r);
+	}
+    } else {
+	if ( !connect_from_sa_p )
+	    return(0);
+	r = bind(server_so, (struct sockaddr*)connect_from_sa_p, sizeof(struct sockaddr_in));
 	if ( r ) {
-	    my_xlog(LOG_SEVERE, "bind_server_so(): Can't bind to bind_acl result: %m\n");
-	} else
-	    return(r);
-    }
-    if ( !connect_from_sa_p )
-	return(0);
-    r = bind(server_so, (struct sockaddr*)connect_from_sa_p, sizeof(struct sockaddr_in));
-    if ( r ) {
-	my_xlog(LOG_SEVERE, "bind_server_so(): Can't bind: %m\n");
-    }
+	    my_xlog(OOPS_LOG_SEVERE, "bind_server_so(): Can't bind: %m\n");
+	}
     return(r);
+    }
 }
 
 void
@@ -388,7 +407,7 @@ int	ip_addr;
     if ( (t = strchr(host_name, '.')) != 0 ) {
 	strncpy(domain_name, t, sizeof(domain_name)-1);
 	domain_name[sizeof(domain_name)-1] = 0;
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 1: host_name = `%s' domain_name = `%s'\n",
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "init_domain_name(): 1: host_name = `%s' domain_name = `%s'\n",
 		host_name, domain_name);
 	return;
     }
@@ -403,7 +422,7 @@ int	ip_addr;
 		else
 		    strncpy(host_name, bind_addr, sizeof(host_name)-1);
 		host_name[sizeof(host_name)-1] = 0;
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 2: host_name = `%s' domain_name = `%s'\n",
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "init_domain_name(): 2: host_name = `%s' domain_name = `%s'\n",
 			host_name, domain_name);
 		return;
 	    }
@@ -419,7 +438,7 @@ int	ip_addr;
 		else
 		    strncpy(host_name, connect_from, sizeof(host_name)-1);
 		host_name[sizeof(host_name)-1] = 0;
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 3: host_name = `%s' domain_name = `%s'\n",
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "init_domain_name(): 3: host_name = `%s' domain_name = `%s'\n",
 			host_name, domain_name);
 		return;
 	    }
@@ -436,7 +455,7 @@ int	ip_addr;
 		strncpy(domain_name, t, sizeof(domain_name)-1);
 		domain_name[sizeof(domain_name)-1] = 0;
     }
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 4: host_name = `%s' domain_name = `%s'\n",
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "init_domain_name(): 4: host_name = `%s' domain_name = `%s'\n",
 	    host_name, domain_name);
 }
 
@@ -535,7 +554,7 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 
     dns_so = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if ( dns_so == -1 ) {
-	my_xlog(LOG_DNS|LOG_SEVERE, "my_gethostbyname(): Can't create DNS socket: %m\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_SEVERE, "my_gethostbyname(): Can't create DNS socket: %m\n");
 	return(0);
     }
     bzero(&dns_sa, sizeof(dns_sa));
@@ -575,20 +594,20 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 resend:
     r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&dns_sa, sizeof(dns_sa));
     if ( r == -1 ) {
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Can't send to DNS server: %m\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Can't send to DNS server: %m\n");
 	CLOSE(dns_so);
 	return(0);
     } else
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): DNS rq sent.\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): DNS rq sent.\n");
     if ( (ns_configured > 1) && (wait_for_read(dns_so, 500) == FALSE) ) {
 	int i;
 	/* if we have another nameservers, which we can try to send rq */
 	for (i=1;i<ns_configured;i++) {
 	    r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&ns_sa[i], sizeof(struct sockaddr_in));
 	    if ( r == -1 ) {
-		my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Can't send to DNS server: %m\n");
+		my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Can't send to DNS server: %m\n");
 	    } else
-		my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): DNS rq sent.\n");
+		my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): DNS rq sent.\n");
 	}
     }
     /* wait for response */
@@ -597,17 +616,17 @@ resend:
     if ( resend_tmo > 30 ) resend_tmo = 30;
     switch(r) {
     case(-2): /* timeout */
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Timeout reading DNS answer: %m\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Timeout reading DNS answer: %m\n");
 	if (--resend_cnt) goto resend;
 	break;
     case(-1): /* error 		*/
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Error reading DNS answer: %m\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Error reading DNS answer: %m\n");
 	break;
     case (0): /* ????? 		*/
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Emty DNS answer\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Emty DNS answer\n");
 	break;
     default:  /* parse data 	*/
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): got %d bytes answer\n", r);
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): got %d bytes answer\n", r);
 	ah = (struct dnsqh *)dnsa;
 	flags = ntohs(ah->flags);
 	acount = ntohs(ah->ancount);
@@ -615,11 +634,11 @@ resend:
 	limit = (u_char*)&dnsa + r;
 	if ( (flags & 0x8000) && (ah->id == qh->id) && (!(flags&0xf)) ) {
 	    if ( !ntohs(ah->ancount) ) {
-		my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): got 0 answers.\n");
+		my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): got 0 answers.\n");
 		break;
 	    }
 	} else {
-	    my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
+	    my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
 	    				ah->id, flags);
 	    break;
 	}
@@ -670,7 +689,7 @@ find_IN_A:
 	dns_name  = xmalloc(dnsnlen, "my_gethostbyname(): dns_name");
 	if ( !dns_items || !dns_name )
 	    goto dns_c_failed;
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Put %d answers in dns_cache\n", results);
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Put %d answers in dns_cache\n", results);
 	strncpy(dns_name, (char*)&tmpname[0], dnsnlen);
 	ci = dns_items; current = answers;
 	for(i=0;i<results;i++,current++,ci++) {
@@ -680,7 +699,7 @@ find_IN_A:
 	}
 	if ( lookup_dns_cache(dns_name, dns_items, results) ) goto dns_c_failed;
 
-	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Done...\n");
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): Done...\n");
 	goto fin;
 
     dns_c_failed:
@@ -710,7 +729,7 @@ unsigned		use;
     cp = dns_hash[hash].first;
     while ( cp ) {
 	if ( (cp->stamp == stamp) && !strcmp(name,cp->name) ) {
-	    my_xlog(LOG_DNS|LOG_DBG, "lookup_dns_cache(): It's here\n");
+	    my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "lookup_dns_cache(): It's here\n");
 	    break;
 	}
 	cp = cp->next;
@@ -814,7 +833,7 @@ struct	tm	tm;
 	switch(field) {
 	case FIELD_WDAY:
 		if ( strlen(s) < 3 ) {
-		    my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+		    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 		    free(xdate);
 		    return(-1);
 		}
@@ -840,7 +859,7 @@ struct	tm	tm;
 			wday = 6;
 			break;
 		default:
-			my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+			my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			free(xdate);
 			return(-1);
 		}
@@ -859,7 +878,7 @@ struct	tm	tm;
 		    }
 		    if ( t ) mday = t;
 			else {
-			     my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+			     my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			     free(xdate);
 			     return(-1);
 		    }
@@ -886,7 +905,7 @@ struct	tm	tm;
 		    }
 		    if ( t ) mday = t;
 			else {
-			     my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+			     my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			     free(xdate);
 			     return(-1);
 		    }
@@ -896,7 +915,7 @@ struct	tm	tm;
 	case FIELD_MONT:
 		/* Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec */
 		if ( strlen(s) < 3 ) {
-		    my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+		    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 		    free(xdate);
 		    return(-1);
 		}
@@ -934,7 +953,7 @@ struct	tm	tm;
 			month = 11;
 			break;
 		    default:
-			my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+			my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 			free(xdate);
 			return(-1);
 		}
@@ -952,7 +971,7 @@ struct	tm	tm;
 		    break;
 		year = atoi(s);
 		if ( year == 0 ) {
-		     my_xlog(LOG_DBG|LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
+		     my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "http_date(): Unparsable date: %s\n", date);
 		     free(xdate);
 		     return(-1);
 		}
@@ -1162,8 +1181,10 @@ pid_t	child;
 	chdir("/");
     }
     if ( !noclose ) {
+        fclose(stdin);
 	fclose(stdout);
 	fclose(stderr);
+        close(3);
     }
     return(0);
 }
@@ -1230,7 +1251,7 @@ STRERROR_R(int err, char *errbuf, size_t lerrbuf)
     return(strerror_r(err, errbuf, lerrbuf));
 #else
     if ( strerror_r(err, errbuf, lerrbuf) == -1 )
-	my_xlog(LOG_DBG, "STRERROR_R(): strerror_r() returned (-1), errno = %d\n", err);
+	my_xlog(OOPS_LOG_DBG, "STRERROR_R(): strerror_r() returned (-1), errno = %d\n", err);
     return(errbuf);
 #endif
 }
@@ -1240,23 +1261,23 @@ increase_hash_size(struct obj_hash_entry* hash, int size)
 {
 int	rc; 
     if ( !hash ) {
-	my_xlog(LOG_SEVERE, "increase_hash_size(): hash == NULL in increase_hash_size\n");
+	my_xlog(OOPS_LOG_SEVERE, "increase_hash_size(): hash == NULL in increase_hash_size\n");
 	return;
     }
     if ( size < 0 ) {
-	my_xlog(LOG_SEVERE, "increase_hash_size(): size<=0 in increase_hash_size\n");
+	my_xlog(OOPS_LOG_SEVERE, "increase_hash_size(): size<=0 in increase_hash_size\n");
 	do_exit(1);
 	return;
     }
     if ( !(rc = pthread_mutex_lock(&hash->size_lock)) ) {
 	hash->size += size;
 	if ( hash->size < 0 ) {
-    	    my_xlog(LOG_SEVERE, "increase_hash_size(): increase: hash_size has negative value: %d!\n", hash->size);
+    	    my_xlog(OOPS_LOG_SEVERE, "increase_hash_size(): increase: hash_size has negative value: %d!\n", hash->size);
 	    do_exit(1);
 	}
 	pthread_mutex_unlock(&hash->size_lock);
     } else {
-	my_xlog(LOG_SEVERE, "increase_hash_size(): Can't lock hash entry for increase size\n");
+	my_xlog(OOPS_LOG_SEVERE, "increase_hash_size(): Can't lock hash entry for increase size\n");
     }
 }
 
@@ -1269,7 +1290,7 @@ int	rc;
 	return;
     }
     if ( size < 0 ) {
-	my_xlog(LOG_SEVERE, "decrease_hash_size(): size<0 in decrease_hash_size\n");
+	my_xlog(OOPS_LOG_SEVERE, "decrease_hash_size(): size<0 in decrease_hash_size\n");
 	do_exit(1);
 	return;
     }
@@ -1277,12 +1298,12 @@ int	rc;
     if ( !(rc=pthread_mutex_lock(&hash->size_lock)) ) {
 	hash->size -= size;
 	if ( hash->size < 0 ) {
-    	    my_xlog(LOG_SEVERE, "decrease_hash_size(): decrease: hash_size has negative value: %d!\n", hash->size);
+    	    my_xlog(OOPS_LOG_SEVERE, "decrease_hash_size(): decrease: hash_size has negative value: %d!\n", hash->size);
 	    do_exit(1);
 	}
 	pthread_mutex_unlock(&hash->size_lock);
     } else {
-	my_xlog(LOG_SEVERE, "decrease_hash_size(): Can't lock hash entry for decrease size\n");
+	my_xlog(OOPS_LOG_SEVERE, "decrease_hash_size(): Can't lock hash entry for decrease size\n");
     }
 }
 
@@ -1343,23 +1364,23 @@ struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 
 #if	defined(RLIMIT_DATA)
 	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
 	}
 #endif
 #if	defined(RLIMIT_NOFILE)
 	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
 	}
 #endif
 #if	defined(RLIMIT_CORE)
 	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
 	}
 #endif
 #if	defined(RLIMIT_NPROC) && defined(LINUX)
 	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
 	    if ( !getrlimit(RLIMIT_NPROC, &rl) ) /* ??? same condition ??? */    {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "report_limits(): RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
 	    }
 	}
 #endif
@@ -1663,7 +1684,7 @@ struct buff *next;
 
     while(buff) {
 	next = buff->next;
-	/*my_xlog(LOG_DBG, "free_container(): Free buffer: %d of %d, next: %p\n", buff->size, buff->curr_size, buff->next);*/
+	/*my_xlog(OOPS_LOG_DBG, "free_container(): Free buffer: %d of %d, next: %p\n", buff->size, buff->curr_size, buff->next);*/
 	if ( buff->data ) free(buff->data);
 	free(buff);
 	buff = next;
@@ -1675,7 +1696,7 @@ analyze_header(char *p, struct server_answ *a)
 {
 char	*t;
 
-    my_xlog(LOG_HTTP|LOG_DBG, "analyze_header(): ---> `%s'.\n", p);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "analyze_header(): ---> `%s'.\n", p);
     if ( !a->status_code ) {
 	/* check HTTP/X.X XXX */
 	if ( !strncasecmp(p, "HTTP/", 5) ) {
@@ -1686,11 +1707,11 @@ char	*t;
 	    }
 	    t = strchr(p, ' ');
 	    if ( !t ) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "analyze_header(): Wrong_header: %s\n", p);
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Wrong_header: %s\n", p);
 		return;
 	    }
 	    a->status_code = atoi(t);
-	    my_xlog(LOG_DBG, "analyze_header(): Status code: %d\n", a->status_code);
+	    my_xlog(OOPS_LOG_DBG, "analyze_header(): Status code: %d\n", a->status_code);
 	}
 	return;
     }
@@ -1741,7 +1762,7 @@ char	*t;
 	x=p + 6; /* strlen("date: ") */
 	while( *x && IS_SPACE(*x) ) x++;
 	a->times.date  = global_sec_timer;
-	if (http_date(x, &a->times.date) ) my_xlog(LOG_DBG|LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
+	if (http_date(x, &a->times.date) ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
 	return;
     }
     if ( !strncasecmp(p, "Last-Modified: ", 15) ) {
@@ -1749,7 +1770,7 @@ char	*t;
 	/* length */
 	x=p + 15; /* strlen("date: ") */
 	while( *x && IS_SPACE(*x) ) x++;
-	if (http_date(x, &a->times.last_modified) ) my_xlog(LOG_DBG|LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
+	if (http_date(x, &a->times.last_modified) ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
 	    else
 		a->flags |= ANSW_LAST_MODIFIED;
 	return;
@@ -1804,7 +1825,7 @@ char	*t;
 	while( *x && IS_SPACE(*x) ) x++;
 	a->times.expires  = time(NULL);
 	if (http_date(x, &a->times.expires)) {
-		my_xlog(LOG_DBG|LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
 		return;
 	}
 	a->flags |= ANSW_HAS_EXPIRES;
@@ -1891,7 +1912,7 @@ char		nullstr[1];
     while( *sp && IS_SPACE(*sp) ) sp++;
     while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
     if ( !*sp ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "add_header_av(): Invalid header string: '%s'\n", avtext);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "add_header_av(): Invalid header string: '%s'\n", avtext);
 	nullstr[0] = 0;
 	sp = nullstr;
     }
@@ -2099,15 +2120,15 @@ store_in_chain(char *src, int size, struct mem_obj *obj)
 struct buff *hot = obj->hot_buff, *new;
 
     if (!hot) {
-	my_xlog(LOG_SEVERE, "store_in_chain(): hot == NULL!\n");
+	my_xlog(OOPS_LOG_SEVERE, "store_in_chain(): hot == NULL!\n");
 	return(-1);
     }
     if (!obj) {
-	my_xlog(LOG_SEVERE, "store_in_chain(): obj == NULL!\n");
+	my_xlog(OOPS_LOG_SEVERE, "store_in_chain(): obj == NULL!\n");
 	return(-1);
     }
     if ( size < 0 ) {
-	my_xlog(LOG_SEVERE, "store_in_chain(): size = %d!\n", size);
+	my_xlog(OOPS_LOG_SEVERE, "store_in_chain(): size = %d!\n", size);
 	return(-1);
     }
     if ( hot->used + size <= hot->curr_size ) {
@@ -2171,7 +2192,7 @@ int	tot;
 	tot = ((tot / CHUNK_SIZE) + 1) * CHUNK_SIZE;
 	t = xmalloc(tot, "attach_data(): 2");
 	if (!t ) {
-	    my_xlog(LOG_SEVERE, "attach_data(): No mem in attach data.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "attach_data(): No mem in attach data.\n");
 	    return(-1);
 	}
 	memcpy(t, buff->data, buff->used);
@@ -2217,24 +2238,24 @@ int			num = 0;
 	num++;
 	if ( buf->state==BU_BUSY ) {
 	    x = buf->data + buf->current_size;
-	    if ( *x     != 'd' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+1) != 'e' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+2) != 'a' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+3) != 'd' ) {my_xlog(LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    my_xlog(LOG_SEVERE, "list_all_mallocs(): Busy block: %s\n", buf->descr);
+	    if ( *x     != 'd' ) {my_xlog(OOPS_LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+1) != 'e' ) {my_xlog(OOPS_LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+2) != 'a' ) {my_xlog(OOPS_LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+3) != 'd' ) {my_xlog(OOPS_LOG_SEVERE, "list_all_mallocs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    my_xlog(OOPS_LOG_SEVERE, "list_all_mallocs(): Busy block: %s\n", buf->descr);
 	    if (!strcmp(buf->descr, "string"))
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "list_all_mallocs(): <%s>\n", buf->data);
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "list_all_mallocs(): <%s>\n", buf->data);
 	} else {
 	    int i = buf->size;
 	    x=buf->data;
 	    for(;i;i--,x++) if (*x) {
-		my_xlog(LOG_SEVERE, "list_all_mallocs(): free buffer `%s' destroyed\n", buf->descr);
+		my_xlog(OOPS_LOG_SEVERE, "list_all_mallocs(): free buffer `%s' destroyed\n", buf->descr);
 		do_exit(0);
 	    };
 	}
 	buf=buf->next;
     }
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "list_all_mallocs(): Total bufs: %d\n", num);
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "list_all_mallocs(): Total bufs: %d\n", num);
 }
 
 void
@@ -2247,15 +2268,15 @@ char			*x;
     while(buf) {
 	if ( buf->state==BU_BUSY ) {
 	    x = buf->data + buf->current_size;
-	    if ( *x     != 'd' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+1) != 'e' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+2) != 'a' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
-	    if ( *(x+3) != 'd' ) {my_xlog(LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *x     != 'd' ) {my_xlog(OOPS_LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+1) != 'e' ) {my_xlog(OOPS_LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+2) != 'a' ) {my_xlog(OOPS_LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
+	    if ( *(x+3) != 'd' ) {my_xlog(OOPS_LOG_SEVERE, "check_all_buffs(): cb, Destroyed: `%s'\n",buf->data); do_exit(0);}
 	} else {
 	    int i = buf->size;
 	    x=buf->data;
 	    for(;i;i--,x++) if (*x) {
-		my_xlog(LOG_SEVERE, "check_all_buffs(): free buffer `%s' destroyed.\n", buf->descr);
+		my_xlog(OOPS_LOG_SEVERE, "check_all_buffs(): free buffer `%s' destroyed.\n", buf->descr);
 		do_exit(0);
 	    };
 	}
@@ -2271,7 +2292,7 @@ xmalloc(size_t size, char *d)
 char	*p;
 
 	if ( size < 0 ) {
-	    my_xlog(LOG_DBG, "xmalloc(): Alloc %d for %s\n", size, d);
+	    my_xlog(OOPS_LOG_DBG, "xmalloc(): Alloc %d for %s\n", size, d);
 	    do_exit(1);
 	}
 	p = malloc(size);
@@ -2286,9 +2307,9 @@ struct malloc_buf	*buf;
 	malloc_mutex_inited = 1;
     }
     if ( !d ) {
-	my_xlog(LOG_SEVERE, "xmalloc(): Invalid malloc call.\n");
+	my_xlog(OOPS_LOG_SEVERE, "xmalloc(): Invalid malloc call.\n");
     }
-    my_xlog(LOG_DBG, "xmalloc(): %d for %s\n", size, d);
+    my_xlog(OOPS_LOG_DBG, "xmalloc(): %d for %s\n", size, d);
     pthread_mutex_lock(&malloc_mutex);
     check_all_buffs();
     b = &m;
@@ -2303,7 +2324,7 @@ struct malloc_buf	*buf;
 	int	i = buf->size;
 	x=buf->data;
 	for(;i;i--,x++) if (*x) {
-		my_xlog(LOG_SEVERE, "xmalloc(): free buffer `%s' destroyed.\n", buf->descr);
+		my_xlog(OOPS_LOG_SEVERE, "xmalloc(): free buffer `%s' destroyed.\n", buf->descr);
 		do_exit(0);
 	};
 	buf->current_size  = size;
@@ -2315,7 +2336,7 @@ struct malloc_buf	*buf;
 	*(x+2)	= 'a';
 	*(x+3)	= 'd';
 	pthread_mutex_unlock(&malloc_mutex);
-	my_xlog(LOG_DBG, "xmalloc(): returning old %p\n", buf->data);
+	my_xlog(OOPS_LOG_DBG, "xmalloc(): returning old %p\n", buf->data);
 	return(buf->data);
     } else {
 	char *x;
@@ -2335,7 +2356,7 @@ struct malloc_buf	*buf;
 	*(x+2)	= 'a';
 	*(x+3)	= 'd';
 	pthread_mutex_unlock(&malloc_mutex);
-	my_xlog(LOG_DBG, "xmalloc(): returning new %p\n", buf->data);
+	my_xlog(OOPS_LOG_DBG, "xmalloc(): returning new %p\n", buf->data);
 	return(buf->data);
     }
 #endif
@@ -2361,12 +2382,12 @@ char			*x;
     printf("xfree(): free %p\n", ptr);
     while(buf) {
 	if ( buf->data == ptr ) {
-	    my_xlog(LOG_DBG, "xfree(): free %s\n", buf->descr);
+	    my_xlog(OOPS_LOG_DBG, "xfree(): free %s\n", buf->descr);
 	    x = buf->data + buf->current_size;
-	    if ( *x     != 'd' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
-	    if ( *(x+1) != 'e' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
-	    if ( *(x+2) != 'a' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
-	    if ( *(x+3) != 'd' ) {my_xlog(LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *x     != 'd' ) {my_xlog(OOPS_LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *(x+1) != 'e' ) {my_xlog(OOPS_LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *(x+2) != 'a' ) {my_xlog(OOPS_LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
+	    if ( *(x+3) != 'd' ) {my_xlog(OOPS_LOG_SEVERE, "xfree(): Destroyed: %s\n",buf->data); do_exit(0);}
 	    buf->state= BU_FREE;
 	    bzero(buf->data, buf->size);
 	    printf("xfree(): freed %p %d bytes\n", buf->data, buf->size);
@@ -2459,13 +2480,13 @@ lookup_mime_type(char *path)
 struct mime_types_ *mt = mime_types;
 char		   *ext;
 
-    my_xlog(LOG_DBG|LOG_INFORM, "lookup_mime_type(): Looking up mimetype for %s\n", path);
+    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "lookup_mime_type(): Looking up mimetype for %s\n", path);
     /* extract ext from path */
     ext = strrchr(path, '.');
     if ( ext ) ext++;
     if ( ext && *ext ) while ( mt->ext ) {
 	if ( !strcasecmp(ext,mt->ext) ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "lookup_mime_type(): type: %s\n", mt->type);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "lookup_mime_type(): type: %s\n", mt->type);
 	    return(mt->type);
 	}
 	mt++;
@@ -2502,7 +2523,7 @@ unsigned char 	c;
     len = strlen(src);
     lim = src+len;
 
-    res = xmalloc((len*4)/3+4, "base64_encode(): 1");
+    res = xmalloc((len*4)/3+5, "base64_encode(): 1");
     if ( !res )
 	return(NULL);
     o_char = res;
@@ -2534,9 +2555,9 @@ unsigned char 	c;
 	} else {
 	    *(o_char++) = alphabet[(bits >> 6) & 0x3f];
 	    *(o_char++) = '=';
-	    *(o_char) = 0;
 	}
     }
+    *(o_char) = 0;
     return(res);
 }
 
@@ -2880,6 +2901,54 @@ leave_l_string_list(struct l_string_list *l_list)
     }
 }
 
+l_mod_call_list_t *
+alloc_l_mod_call_list(void)
+{
+l_mod_call_list_t *new;
+
+    new = malloc(sizeof(*new));
+    if ( new ) {
+	bzero(new, sizeof(*new));
+	pthread_mutex_init(&new->lock, NULL);
+    }
+    return(new);
+}
+
+l_mod_call_list_t *
+lock_l_mod_call_list(l_mod_call_list_t *l_list)
+{
+    if ( l_list ) {
+	pthread_mutex_lock(&l_list->lock);
+	l_list->refs++;
+	pthread_mutex_unlock(&l_list->lock);
+	return(l_list);
+    }
+    return(NULL);
+}
+
+void
+leave_l_mod_call_list(l_mod_call_list_t *l_list)
+{
+mod_call_t      *this, *next;
+
+    if ( l_list ) {
+	pthread_mutex_lock(&l_list->lock);
+	if ( (l_list->refs == 1) ) {
+		pthread_mutex_destroy(&l_list->lock);
+                this = l_list->list;
+                while(this) {
+                    next = this->next;
+                    free(this);
+                    this = next;
+                }
+		free(l_list);
+	} else {
+	    l_list->refs--;
+	    pthread_mutex_unlock(&l_list->lock);
+	}
+    }
+}
+
 void
 free_refresh_patterns(refresh_pattern_t *r_p)
 {
@@ -3043,6 +3112,7 @@ gid_t		gid = 0;
 	if ( (pwd = getpwnam(user)) != 0 ) {
 	    uid = pwd->pw_uid;
 	    gid = pwd->pw_gid;
+            oops_uid = uid;
 	} else
 	    printf("set_euser(): Can't getpwnam `%s'.\n", oops_user);
     }
@@ -3066,7 +3136,7 @@ init_filebuff(filebuff_t *fb)
     fb->File = NULL;
 #endif
     pthread_mutex_init(&fb->lock, NULL);
-    dataq_init(&fb->queue);
+    dataq_init(&fb->queue,128);
     return(1);
 }
 
@@ -3188,4 +3258,30 @@ internal_doc_t	*res = array;
 	res++;
     }
     return(NULL);
+}
+
+int
+word_vector(char *string, char *delim, char** res, int size)
+{
+int     i = 0;
+char    *t, *p, *ptr;
+
+    p = string;
+    while( (t = strtok_r(p, delim, &ptr)) ) {
+        p = NULL;
+        if ( i < size ) {
+            *res = strdup(t);
+            res++;
+            i++;
+        }
+    }
+    return(i);
+}
+
+void
+free_word_vector(char** vector, int size)
+{
+int     i;
+    assert(size>=0);
+    for(i=0;i<size;i++) free(vector[i]);
 }

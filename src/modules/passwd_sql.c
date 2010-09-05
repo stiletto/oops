@@ -54,7 +54,7 @@ MODULE_STATIC	char		module_info[] = MODULE_INFO ;
 
 #if	(defined(__MYSQL) && defined(HAVE_MYSQL)) || (defined(__PGSQL) && defined(HAVE_PGSQL))
 MODULE_STATIC	int		mod_load(),mod_unload();
-MODULE_STATIC	int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+MODULE_STATIC	int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 MODULE_STATIC	int		auth(int so, struct group *group, struct request* rq, int *flags);
 
 struct	auth_module STRUCT_NAME = {
@@ -149,11 +149,13 @@ static	int	auth_check_user(char * user, char * pass);
 static	void	send_auth_req(int, struct request *);
 
 /* ------------------------------------------------------------------------ */
+MODULE_STATIC
 int mod_run()
 {
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int mod_load()
 {
     printf(MODULE_INFO " started\n");
@@ -165,6 +167,7 @@ int mod_load()
     return(MOD_CODE_OK);
 }
 /* ------------------------------------------------------------------------ */
+MODULE_STATIC
 int mod_unload()
 {
     if (logbuf)         free(logbuf);
@@ -175,7 +178,8 @@ int mod_unload()
     return(MOD_CODE_OK);
 }
 /* ------------------------------------------------------------------------ */
-int mod_config_beg()
+MODULE_STATIC
+int mod_config_beg(int i)
 {
     WRLOCK_PWF_CONFIG ;
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): config_beg");
@@ -199,7 +203,8 @@ int mod_config_beg()
     return(MOD_CODE_OK);
 }
 /* ------------------------------------------------------------------------ */
-int mod_config_end()
+MODULE_STATIC
+int mod_config_end(int i)
 {
 char	*sch="None";
 char    *p;
@@ -265,7 +270,8 @@ static int getint_fromcfg(char *srcstr)
     return atoi(srcstr);
 }
 
-int mod_config(char *config)
+MODULE_STATIC
+int mod_config(char *config, int)
 {
     char	*p = config;
 
@@ -527,6 +533,7 @@ exit:
     UNLOCK_SELECT;
 }
 
+MODULE_STATIC
 int auth(int so, struct group *group, struct request* rq, int *flags) 
 {
     char	*authorization = NULL;

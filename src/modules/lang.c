@@ -29,18 +29,20 @@ char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 int		output(int so, struct output_object *obj, struct request *rq, int *flags);
 int		compare_u_agents(char*, char*);
+#define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_OUTPUT ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
 static	int	mod_load();
 static	int	mod_unload();
-static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 static	int	output(int so, struct output_object *obj, struct request *rq, int *flags);
 static	int	compare_u_agents(char*, char*);
+#define		MODULE_STATIC	static
 #endif
 
 struct	output_module lang = {
@@ -70,12 +72,14 @@ static	void		recode_buff(struct buff*, struct charset*);
 #define	RDLOCK_LANG_CONFIG	pthread_rwlock_rdlock(&lang_config_lock)
 #define	UNLOCK_LANG_CONFIG	pthread_rwlock_unlock(&lang_config_lock)
 
+MODULE_STATIC
 int
 mod_run()
 {
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_load()
 {
@@ -88,6 +92,7 @@ mod_load()
     pthread_rwlock_init(&lang_config_lock, NULL);
     return(MOD_CODE_OK);
 }
+MODULE_STATIC
 int
 mod_unload()
 {
@@ -96,8 +101,9 @@ mod_unload()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     WRLOCK_LANG_CONFIG ;
     if ( charsets ) {
@@ -109,8 +115,9 @@ mod_config_beg()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config_end()
+mod_config_end(int i)
 {
 charset_t	*cs;
 
@@ -129,8 +136,9 @@ charset_t	*cs;
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config(char *config)
+mod_config(char *config, int i)
 {
 char	*p = config;
 
@@ -216,6 +224,7 @@ done:
 }
 
 /* change content of object, actually not send it */
+MODULE_STATIC
 int
 output(int so, struct output_object *obj, struct request *rq, int *flags)
 {
@@ -271,6 +280,7 @@ struct	av	*ct_av = NULL;
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 void
 recode_buff(struct buff *buff, struct charset *cs)
 {
@@ -288,6 +298,7 @@ int		 i;
     }
 }
 
+MODULE_STATIC
 int
 compare_u_agents(char *a1, char *a2)
 {

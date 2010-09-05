@@ -1,5 +1,6 @@
 /*
 Copyright (C) 1999 Igor Khasilev, igor@paco.net
+Copyright (C) 2001 Tamas SZERB, <toma@rulez.org>
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -20,30 +21,54 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-#define	MODULE_NAME	"passwd_file"
-#define	MODULE_INFO	"Auth using passwd file"
+#define	MODULE_NAME	"pam"
+#define	MODULE_INFO	"Auth using PAM"
 
-#if	defined(MODULES)
-char		module_type   = MODULE_AUTH ;
-char		module_name[] = MODULE_NAME ;
-char		module_info[] = MODULE_INFO ;
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
-int		auth(int so, struct group *group, struct request* rq, int *flags);
-#define		MODULE_STATIC
+/* toma : */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*
+#define PAMSERVICE "oops"
+*/
+#define PAMUSER "oops@"
+
+static char *password = NULL;
+
+/* : toma */
+#if	!defined(MODULES)
+#define MODPREF  static
 #else
-static	char	module_type   = MODULE_AUTH ;
-static	char	module_name[] = MODULE_NAME ;
-static	char	module_info[] = MODULE_INFO ;
-static  int     mod_load();
-static  int     mod_unload();
-static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
-static	int	auth(int so, struct group *group, struct request* rq, int *flags);
-#define		MODULE_STATIC	static
+#define MODPREF
 #endif
 
-struct	auth_module	passwd_file = {
+MODPREF char		module_type   = MODULE_AUTH ;
+MODPREF char		module_name[] = MODULE_NAME ;
+MODPREF char		module_info[] = MODULE_INFO ;
+
+#if     defined(HAVE_LIBPAM)
+
+MODPREF int		mod_load();
+MODPREF int		mod_unload();
+MODPREF int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+MODPREF int		auth(int so, struct group *group, struct request* rq, int *flags);
+
+/* toma : */
+
+#include <security/pam_appl.h>
+
+int	password_conversation (int num_msg, const struct pam_message **msg, struct pam_response **resp, void *appdata_ptr);
+
+static struct pam_conv conv = {
+	&password_conversation,
+	NULL
+};
+
+/* : toma */
+
+struct	auth_module	pam = {
 	{
 	NULL, NULL,
 	MODULE_NAME,
@@ -77,7 +102,7 @@ static	char	*authreq = NULL;
 static	int	 authreqlen;
 static	char	*authreqfmt = "%s realm=%s";
 static	char	*std_template = "\n<body>Authorization to proxy-server failed.<p><hr>\n\
-<i><font size=-1>by \'passwd_file\' module to Oops.";
+<i><font size=-1>by \'pam\' module to Oops.";
 static	int	std_template_len;
 static	int	pwf_charset_len;
 static	int	badschlen;
@@ -87,13 +112,13 @@ Proxy-Authenticate: %s realm=%s\n\n\
 <body>Authorization to proxy-server failed.<p>\n\
 Your browser proposed unsupported scheme\n\
 <hr>\n\
-<i><font size=-1>by \'passwd_file\' module to Oops.";
+<i><font size=-1>by \'pam\' module to Oops.";
 
 #define	RDLOCK_PWF_CONFIG	pthread_rwlock_rdlock(&pwf_lock)
 #define	WRLOCK_PWF_CONFIG	pthread_rwlock_wrlock(&pwf_lock)
 #define	UNLOCK_PWF_CONFIG	pthread_rwlock_unlock(&pwf_lock)
 
-static	void	reload_pwf(void), reload_pwf_template(void);
+static	void	/*reload_pwf(void),*/ reload_pwf_template(void);
 static	void	check_pwf_age(void), check_pwf_template_age(void);
 static	int	pwf_auth(char*, char*);
 static	void	send_auth_req(int, struct request *);
@@ -102,18 +127,16 @@ static	void	send_auth_req(int, struct request *);
 pthread_mutex_t	crypt_lock;
 #endif
 
-MODULE_STATIC
 int
 mod_run()
 {
     return(MOD_CODE_OK);
 }
 
-MODULE_STATIC
 int
 mod_load()
 {
-    printf("Passwd_file started\n");
+    printf("PAM started\n");
     pthread_rwlock_init(&pwf_lock, NULL);
 #if	!defined(SOLARIS)
     pthread_mutex_init(&crypt_lock, NULL);
@@ -121,15 +144,13 @@ mod_load()
     std_template_len = strlen(std_template);
     return(MOD_CODE_OK);
 }
-MODULE_STATIC
 int
 mod_unload()
 {
-    printf("passwd_file stopped\n");
+    printf("pam stopped\n");
     return(MOD_CODE_OK);
 }
 
-MODULE_STATIC
 int
 mod_config_beg(int i)
 {
@@ -150,7 +171,6 @@ mod_config_beg(int i)
     return(MOD_CODE_OK);
 }
 
-MODULE_STATIC
 int
 mod_config_end(int i)
 {
@@ -173,15 +193,14 @@ char	*sch="None";
 	badschlen = strlen(badsch);
     }
 
-    if ( pwf_name[0] )
-	reload_pwf();
+/*    if ( pwf_name[0] ) */
+/*	reload_pwf(); */
     if ( pwf_template[0] )
 	reload_pwf_template();
     UNLOCK_PWF_CONFIG ;
     return(MOD_CODE_OK);
 }
 
-MODULE_STATIC
 int
 mod_config(char *config, int i)
 {
@@ -191,10 +210,10 @@ char	*p = config;
     WRLOCK_PWF_CONFIG ;
 
     while( *p && IS_SPACE(*p) ) p++;
-    if ( !strncasecmp(p, "file", 4) ) {
-	p += 4;
+    if ( !strncasecmp(p, "service", 7) ) {
+	p += 7;
 	while (*p && IS_SPACE(*p) ) p++;
-	strncpy(pwf_name, p, sizeof(pwf_name) -1 );
+ 	strncpy(pwf_name, p, sizeof(pwf_name) -1 );
     } else
     if ( !strncasecmp(p, "realm", 5) ) {
 	p += 5;
@@ -223,7 +242,6 @@ char	*p = config;
     return(MOD_CODE_OK);
 }
 
-MODULE_STATIC
 int
 auth(int so, struct group *group, struct request* rq, int *flags) {
 char	*authorization = NULL;
@@ -231,10 +249,11 @@ char	*authorization = NULL;
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): Authenticate request.\n");
 
     if ( !authreq ) {
-	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): Something wrong with passwd_file module.\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): Something wrong with pam module.\n");
 	return(MOD_CODE_OK);
     }
 
+/*
     WRLOCK_PWF_CONFIG ;
     check_pwf_age();
     check_pwf_template_age();
@@ -246,13 +265,14 @@ char	*authorization = NULL;
 	UNLOCK_PWF_CONFIG ;
 	return(MOD_CODE_OK);
     }
+*/
     if ( rq->av_pairs)
 	authorization = attr_value(rq->av_pairs, "Proxy-Authorization");
     if ( !authorization ) {
 	/* send 407 Proxy Authentication Required */
 	send_auth_req(so, rq);
 	SET(*flags, MOD_AFLAG_OUT);
-	UNLOCK_PWF_CONFIG ;
+/*	UNLOCK_PWF_CONFIG ; */
 	return(MOD_CODE_ERR);
     } else {
 	char *data;
@@ -268,6 +288,9 @@ char	*authorization = NULL;
 		p = strchr(up, ':');
 		if ( p ) { *p=0; p++; }
 		rc = pwf_auth(u, p);
+/* toma : */
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): rc=%d\n",rc);
+/* : toma */
 	        if ( rc ) {
 		    /*failed*/
 		    free(up);
@@ -301,8 +324,8 @@ au_ok:
 void
 check_pwf_age(void)
 {
-    if ( global_sec_timer - pwf_check_time < 60 ) return; /* once per minute */
-    reload_pwf();
+/*    if ( global_sec_timer - pwf_check_time < 60 ) return; */ /* once per minute */
+/*    reload_pwf(); */
 }
 
 void
@@ -312,6 +335,7 @@ check_pwf_template_age(void)
     reload_pwf_template();
 }
 
+/*
 void
 reload_pwf(void)
 {
@@ -326,7 +350,8 @@ int		rc, size, fd;
 	size = sb.st_size;
 	if ( size <= 0 ) return;
 	if ( pwds ) free(pwds); pwds = NULL;
-	pwds = xmalloc(size+2,"reload_pwf(): pwds"); /* for leading \n and closing 0 */
+	pwds = xmalloc(size+2,"reload_pwf(): pwds"); */ /* for leading \n and closing 0 */
+/*
 	if ( pwds ) {
 	    *pwds = '\n';
 	    fd = open(pwf_name, O_RDONLY);
@@ -345,6 +370,8 @@ int		rc, size, fd;
 	}
     }
 }
+*/  
+
 
 void
 reload_pwf_template(void)
@@ -382,6 +409,7 @@ int		rc, size, fd;
 int
 pwf_auth(char* user, char *pass)
 {
+/*
 char	*patt=NULL, *record;
 char	passwd[128], *s, *d, *r;
 int	off, rc=1;
@@ -418,6 +446,58 @@ int	off, rc=1;
 bad_auth:;
     if ( patt ) xfree(patt);
     return(rc);
+*/
+
+/* toma : */
+
+pam_handle_t *pamh = NULL;
+int retval;
+int rc=1;
+
+/* user, pass */
+
+	conv.appdata_ptr = (char *) pass;
+	if (pamh)
+	{
+		retval = pam_end (pamh, retval);
+		if (retval != PAM_SUCCESS)
+			my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "pwf_auth(): failed to release PAM authenticator\n");
+		pamh=NULL;
+	}
+	if (!pamh)
+	{
+		retval = pam_start (pwf_name, PAMUSER, &conv, &pamh);
+		if (retval != PAM_SUCCESS)
+			my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "pwf_auth(): failed to create PAM authenticator\n");
+	}
+	if (retval == PAM_SUCCESS)
+		retval = pam_set_item (pamh, PAM_USER, user);
+	if (retval == PAM_SUCCESS)
+		retval = pam_set_item (pamh, PAM_CONV, &conv);
+	if (retval == PAM_SUCCESS)
+		retval = pam_authenticate (pamh, 0);
+	if (retval == PAM_SUCCESS)
+		retval = pam_acct_mgmt (pamh, 0);
+	if (retval == PAM_SUCCESS)
+	{
+		rc=0;
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "pwf_auth(): OK\n");	
+	}
+	else
+	{
+		rc=1;
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "pwf_auth(): ERR\n");
+	}
+	if (pamh)
+		retval = pam_end (pamh, retval);
+		if (retval != PAM_SUCCESS)
+		{
+			pamh = NULL;
+			my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "pwf_auth(): failed to release PAM authenticator\n");
+		}
+/*	return (retval == PAM_SUCCESS ? 0 : 1); */ /* indicate success */
+	return rc;
+/* : toma */
 }
 
 void
@@ -452,3 +532,50 @@ int			rc;
     free_output_obj(obj);
     return;
 }
+
+/* toma : */
+
+int password_conversation (int num_msg, const struct pam_message **msg,
+	struct pam_response **resp, void *appdata_ptr)
+{
+	if (num_msg != 1 || msg[0]->msg_style != PAM_PROMPT_ECHO_OFF)
+	{
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "password_conversation(): Unexpected PAM converstaion error.\n");
+		return PAM_CONV_ERR;
+	}
+	if (!appdata_ptr) appdata_ptr = password;
+	if (!appdata_ptr)
+	{
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "password_conversation(): No password available.\n");
+		return PAM_CONV_ERR;
+	}
+	*resp = calloc (num_msg, sizeof (struct pam_response));
+	if (!*resp)
+	{
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "password_conversation(): Out of memory!\n");
+		return PAM_CONV_ERR;
+	}
+	(*resp)[0].resp = strdup ((char *) appdata_ptr);
+	(*resp)[0].resp_retcode = 0;
+	return ((*resp)[0].resp ? PAM_SUCCESS : PAM_CONV_ERR);
+}
+
+/* : toma */
+#else /* HAVE_LIBPAM */
+struct  auth_module pam = {
+        {
+        NULL, NULL,
+        MODULE_NAME,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        MODULE_AUTH,
+        MODULE_INFO,
+        NULL
+        },
+        NULL
+};
+#endif

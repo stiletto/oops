@@ -30,35 +30,52 @@ struct	url		*url = &rq->url;
 struct	pollarg		pollarg[2];
 int			received = 0, delta_tv;
 struct	timeval		start_tv, stop_tv;
+char                    *parent_req = NULL;
 ERRBUF ;
 
-    my_xlog(LOG_DBG, "send_ssl(): Connecting %s:%d\n", rq->url.host, rq->url.port);
+    my_xlog(OOPS_LOG_DBG, "send_ssl(): Connecting %s:%d\n", rq->url.host, rq->url.port);
     gettimeofday(&start_tv, NULL);
-    server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if ( parent_port ) {
+        server_so = parent_connect_silent(so, parent_host, parent_port, rq);
+    } else {
+        server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    }
     if ( server_so == -1 ) {
 	say_bad_request(so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
 			ERR_INTERNAL, rq);
 	goto done;
     }
-    if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
-	say_bad_request(so, "Can't translate name to address", url->host, ERR_DNS_ERR, rq);
-	goto done;
-    }
-    server_sa.sin_port = htons(url->port);
-    my_xlog(LOG_DBG, "send_ssl(): Connecting %s:%d\n", url->host, url->port);
-    r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
-    if ( r == -1 ) {
-	say_bad_request(so, "Can't connect", STRERROR_R(ERRNO, ERRBUFS),
+    if ( parent_port ) {
+        parent_req = malloc(64 + strlen(url->host));
+        if ( parent_req ) {
+            sprintf(parent_req, "CONNECT %s:%d HTTP/1.0\r\n\r\n", url->host, url->port);
+            r = writet(server_so, parent_req, strlen(parent_req), READ_ANSW_TIMEOUT);
+            free(parent_req);
+            if ( r < 0 ) goto done;
+        } else
+            goto done;
+    } else {
+        bind_server_so(server_so, rq);
+        if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
+	    say_bad_request(so, "Can't translate name to address", url->host, ERR_DNS_ERR, rq);
+	    goto done;
+        }
+        server_sa.sin_port = htons(url->port);
+        my_xlog(OOPS_LOG_DBG, "send_ssl(): Connecting %s:%d\n", url->host, url->port);
+        r = connect(server_so, (struct sockaddr*)&server_sa, sizeof(server_sa));
+        if ( r == -1 ) {
+	    say_bad_request(so, "Can't connect", STRERROR_R(ERRNO, ERRBUFS),
 			ERR_TRANSFER, rq);
-	goto done;
-    }
-    if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_ssl(): fcntl(): %m\n");
-    if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_ssl(): fcntl(): %m\n");
+	    goto done;
+        }
+        if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
+	    my_xlog(OOPS_LOG_SEVERE, "send_ssl(): fcntl(): %m\n");
+        if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
+	    my_xlog(OOPS_LOG_SEVERE, "send_ssl(): fcntl(): %m\n");
 
-    r = writet(so, ce, celen, READ_ANSW_TIMEOUT);
-    if ( r < 0 ) goto done;
+        r = writet(so, ce, celen, READ_ANSW_TIMEOUT);
+        if ( r < 0 ) goto done;
+    }
     forever() {
     sel_again:
 	pollarg[0].fd = server_so;

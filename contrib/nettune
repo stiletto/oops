@@ -1,21 +1,9 @@
 #!/sbin/sh
 ############################################################################
-# $Id: nettune,v 1.1.1.1 2000/04/06 14:07:42 igor Exp $
+# $Id: nettune,v 1.2 2001/03/26 12:27:22 ai Exp $
 #
 # Author: Jens-S. Vöckler <voeckler@rvs.uni-hannover.de>
-#
-# $Log: nettune,v $
-# Revision 1.1.1.1  2000/04/06 14:07:42  igor
-# Initial CVS import
-#
-# Revision 3.1  1999/03/15 21:17:33  chouanar
-# add minor correction for 2.7 + author change
-#
-# Revision 3.0  1999/03/14 23:24:26  chouanar
-# *** empty log message ***
-#
-# Revision 2.0  1998/11/17 22:48:51  jean
-# *** empty log message ***
+#         Jean Chouanard <chouanard@parc.xerox.com>
 #
 ############################################################################
 #
@@ -25,36 +13,54 @@
 # and : http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html
 #
 
+# insert configuration from secure installation tool, 
+# see: http://yassp.parc.xerox.com/
+test -r /etc/yassp.conf && . /etc/yassp.conf
+
+# determine security settings
+if [ "X${NET_SECURITY}" = "X" ]; then
+    NET_SECURITY=YES
+fi
+
+# set default paths and say hello
 PATH=/usr/sbin:/usr/bin
-/usr/ucb/echo -n "Tweaking Solaris TCP/IP: "
-SECURITY="YES"
+echo "Tweaking Solaris TCP/IP: \c"
 
 # determine, if SunOS 5.6 (Solaris 2.6) or above is installed (care w/ 2.5.1!)
 osver=`uname -r | sed 's/\.//' | awk '{ print $1*10 }'`
 
-# determine, if patch 10358[123]-12 or above is installed (2.5.1: x86+Sparc)
-# if you are using Solaris < 2.5.1, you must modify this to suit your needs.
-# since /var is usually not yet mounted, we must look into the kernel module.
-patch=`strings -a /kernel/drv/tcp | egrep '10358[123]' | awk '{ print $4 }'`
-if [ -z "$patch" ]; then patch="0-0"; fi
-patch=`echo $patch | awk -F- '{ print $2*1 }'`
-
-# report your findings (for Solari < 2.6 only)
 if [ $osver -lt 560 ]; then
-    if [ $patch -gt 0 ]; then
-	/usr/ucb/echo -n "TCP patch pl-$patch found "
-	if [ $patch -ge 12 ]; then
-	    echo "(good)"
+    # do some additional processing, if the environment is < Solaris 2.6
+    # only call, if the strings command is available (was installed)
+    if [ -x /usr/bin/strings ]; then 
+	# determine, if patch 10358[123]-12 or above is installed 
+	# (2.5.1: x86+Sparc) if you are using Solaris < 2.5.1, you 
+	# must modify this to suit your needs. Since /var is usually 
+	# not yet mounted, we must look into the kernel module.
+	patch=`/usr/bin/strings -a /kernel/drv/tcp | egrep '10358[123]' | awk '{ print $4 }'`
+	if [ -z "$patch" ]; then patch="0-0"; fi
+	patch=`echo $patch | awk -F- '{ print $2*1 }'`
+	if [ $patch -gt 0 ]; then 
+	    echo "TCP patch pl-$patch found \c"
+	    if [ $patch -ge 12 ]; then
+		echo "(good)"
+	    else
+		echo "(too low)"
+	    fi
 	else 
-	    echo "(too low)"
-	fi
+	    echo "TCP patch missing (bad)"
+	    patch=0
+        fi
     else
-	echo "TCP patch missing (bad)"
+	echo "cannot check TCP (strings missing)"
+	patch=0
     fi
 elif [ $osver -gt 560 ]; then
     echo "Solaris 7 or above (excellent)"
+    patch=0
 else
     echo "Solaris 2.6 (good)"
+    patch=0
 fi
 
 #
@@ -67,7 +73,7 @@ if [ $osver -ge 560 -o $patch -ge 12 ]; then
      # Solaris 2.6 *OR* patch 103582-12 or above applied
      echo "   tweaking separate connection queues"
      ndd -set /dev/tcp tcp_conn_req_max_q 512   # 128 for restrictions
-     if [ "YES${SECURITY}" = "YESYES" ] ; then
+     if [ "YES${NET_SECURITY}" = "YESYES" ] ; then
 	# use 10240 for SYN flood symptom treatment
 	echo "   tweaking against SYN flood symptoms"
 	ndd -set /dev/tcp tcp_conn_req_max_q0 10240
@@ -82,10 +88,10 @@ fi
 
 
 #
-# retransmission timeouts
+# retransmission timeouts		Sol8
 #
 # tcp_rexmit_interval_initial	3000
-# tcp_rexmit_interval_min	200
+# tcp_rexmit_interval_min	200	 400
 # tcp_ip_abort_interval		480000
 # tcp_ip_abort_cinterval	180000
 # tcp_rexmit_interval_max	60000
@@ -93,20 +99,23 @@ fi
 echo "   tweaking timeouts"
 ndd -set /dev/tcp tcp_rexmit_interval_initial 3000 # 500 for laboratories
 ndd -set /dev/tcp tcp_rexmit_interval_min 2000     # 200 for laboratories
-ndd -set /dev/tcp tcp_ip_abort_interval 600000     # 10 minutes before drop
-ndd -set /dev/tcp tcp_ip_abort_cinterval 60000     # 60 seconds to estab. conn.
-ndd -set /dev/tcp tcp_rexmit_interval_max 240000   # RFC instead of 2MSL
+ndd -set /dev/tcp tcp_ip_abort_interval 600000     # 10 min before drop
+ndd -set /dev/tcp tcp_ip_abort_cinterval 60000     # 60 sec to estab. conn.
+ndd -set /dev/tcp tcp_rexmit_interval_max 60000    # free nw resources quickly
 
 #
-# slow start bug / feature
+# slow start bug / feature           Sol8
 #
-# tcp_slow_start_initial	2
-# tcp_slow_start_after_idle	2
+# tcp_slow_start_initial	2	4
+# tcp_slow_start_after_idle	2	4
 #
-if [ $osver -ge 560 -o $patch -ge 15 ]; then
-     # Solaris 2.6 *OR* patch 103582-15 or above applied
-     echo "   tweaking slow start bug/feature"
-     ndd -set /dev/tcp tcp_slow_start_initial 2
+if [ $osver -lt 580 ]; then
+    if [ $osver -ge 560 -o $patch -ge 15 ]; then
+	# Solaris 2.6 *OR* patch 103582-15 or above applied
+	echo "   tweaking slow start bug/feature"
+	ndd -set /dev/tcp tcp_slow_start_initial 2    # Solaris 8 uses 4
+	ndd -set /dev/tcp tcp_slow_start_after_idle 2 # Solaris 8 uses 4
+    fi
 fi
 
 #
@@ -125,7 +134,7 @@ if [ $osver -le 560 ] ; then
      # Before Solaris 7
      ndd -set /dev/tcp tcp_close_wait_interval 60000 # 2MSL value
 else
-     # Solaris 7 have change the name. It's now named for for it does.
+     # Solaris 7 has changed the name. It's now named for for it does.
      ndd -set /dev/tcp tcp_time_wait_interval 60000 # 2MSL value
 fi
 
@@ -142,45 +151,86 @@ ndd -set /dev/ip ip_icmp_err_interval 0
 ndd -set /dev/ip ip_forward_src_routed 0
 ndd -set /dev/tcp tcp_smallest_anon_port 8192
 ndd -set /dev/udp udp_smallest_anon_port 8192
+if [ $osver -ge 580 ]; then
+    # ip6_forward_src_routed	1
+    ndd -set /dev/ip ip6_forward_src_routed 0
+fi
 
 #
-# security relevant features
+# security relevant features			Sol8
 #
-# ip_forward_directed_broadcasts	1
-# ip_forwarding				2
-# ip_respond_to_echo_broadcast		1
-# ip_ignore_redirect			0
-# ip_send_redirects			1
-# ip_ire_flush_interval			1200000
-# arp_cleanup_interval			300000
-# ip_strict_dst_multihoming		0
+# ip_forward_directed_broadcasts	1	1
+# ip_forwarding				!=0	!=0
+# ip_respond_to_echo_broadcast		1	1
+# ip_ignore_redirect			0	0
+# ip_send_redirects			1	1
+# ip_ire_flush_interval			1200000	-
+# ip_ire_arp_interval			-	120000
+# arp_cleanup_interval			300000	300000
+# ip_strict_dst_multihoming		0	0
 #
-if [ "YES${SECURITY}" = "YESYES" ] ; then
-     echo "   applying security tweaks..."
-     # pointed out by Jean Chouanard (see Stevens 12.3 and E.4):
-     # - uncomment, if you don't want to forward pings or other broadcasts
-     #   to the broadcast address(es) of your installed interface(s).
-     ndd -set /dev/ip ip_forward_directed_broadcasts 0
-     # - uncomment, if you have multiple interfaces installed, but don't
-     #   want to act as a router (no forwarding). Reasonable for most hosts.
-     ndd -set /dev/ip ip_forwarding 0
-     # - uncomment, if you don't want to respond to a ping to any of your
-     #   broadcast addresses. On one hand, it is rumored to have caused panics.
-     #   On the other hand, it is a valid response, and often used to determine
-     #   the UP hosts on a particular network.
-     ndd -set /dev/ip ip_respond_to_echo_broadcast 0
+# ip6_forwarding			-	!=0
+# ip6_respond_to_echo_multicast		-	1
+# ip6_ignore_redirect			-	0
+# ip6_send_redirects			-	0
+# ip6_strict_dst_multihoming		-	0
+# 
+if [ "YES${NET_SECURITY}" = "YESYES" ] ; then
+    echo "   applying security tweaks..."
+    # pointed out by Jean Chouanard (see Stevens 12.3 and E.4):
+    # - uncomment, if you don't want to forward pings or other broadcasts
+    #   to the broadcast address(es) of your installed interface(s).
+    ndd -set /dev/ip ip_forward_directed_broadcasts 0
 
-     # - For ICMP redirect protection
-     ndd -set /dev/ip ip_ignore_redirect 1
-     ndd -set /dev/ip ip_send_redirects 0
+    # - uncomment, if you have multiple interfaces installed, but don't
+    #   want to act as a router (no forwarding). Reasonable for most hosts.
+    ndd -set /dev/ip ip_forwarding 0
+    test $osver -ge 580 && ndd -set /dev/ip ip6_forwarding 0
 
-     # Next 3 from Titan ( See http://www.fish.com/titan/ )
-     # - Unconditionally flush ARP info from IP routing table
-     ndd -set /dev/ip ip_ire_flush_interval 120000
-     # - discard ARP entry from ARP cache after this interval
-     ndd -set /dev/arp arp_cleanup_interval 60000
-     # - Enable the 'strong end system' model from RFC 1122
-     ndd -set /dev/ip ip_strict_dst_multihoming 1
+    # - uncomment, if you don't want to respond to a ping to any of your
+    #   broadcast addresses. On one hand, it is rumored to have caused 
+    #   panics. On the other hand, it is a valid response, and often 
+    #   used to determine the UP hosts on a particular network.
+    ndd -set /dev/ip ip_respond_to_echo_broadcast 0
+    test $osver -ge 580 && ndd -set /dev/ip ip6_respond_to_echo_multicast 0
+
+    # - uncomment, if you don't want to respond to a timestamp
+    #   request, unicast or braodcast
+    ndd -set /dev/ip ip_respond_to_timestamp 0
+    ndd -set /dev/ip ip_respond_to_timestamp_broadcast 0
+
+    # - For ICMP redirect protection
+    ndd -set /dev/ip ip_ignore_redirect 1
+    test $osver -ge 580 && ndd -set /dev/ip ip6_ignore_redirect 1
+    ndd -set /dev/ip ip_send_redirects 0
+    test $osver -ge 580 && ndd -set /dev/ip ip6_send_redirects 0
+
+    # Next 3 from Titan ( See http://www.fish.com/titan/ )
+    # - Unconditionally flush ARP info from IP routing table
+    if [ $osver -le 570 ]; then
+	ndd -set /dev/ip ip_ire_flush_interval 120000
+    else
+	# is this the correct parameter?
+	ndd -set /dev/ip ip_ire_arp_interval 120000
+    fi
+    # - discard ARP entry from ARP cache after this interval
+    ndd -set /dev/arp arp_cleanup_interval 60000
+
+    # - Enable the 'strong end system' model from RFC 1122
+    #   Beware, this might break some interface routing policies in
+    #   combination with static routes - disable, if you need such.
+    ndd -set /dev/ip ip_strict_dst_multihoming 1
+    test $osver -ge 580 && ndd -set /dev/ip ip6_strict_dst_multihoming 1
+
+    # - add the NFS port (TCP and UDP) as priviledged ports
+    ndd /dev/udp udp_extra_priv_ports | grep 2049 1>/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	ndd -set /dev/udp udp_extra_priv_ports_add 2049
+    fi
+    ndd /dev/tcp tcp_extra_priv_ports| grep 2049  1>/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+	ndd -set /dev/tcp tcp_extra_priv_ports_add 2049
+    fi
 fi
 
 #
@@ -197,8 +247,95 @@ ndd -set /dev/udp udp_recv_hiwat 64000 # queue for UDP
 ndd -set /dev/tcp tcp_xmit_hiwat 32768 # Cockroft's recommendation
 ndd -set /dev/tcp tcp_recv_hiwat 32768 # Cockroft's recommendation 
 
-# Note:
-# Under 2.6 you can use tcp_host_param to boost just selected networks
-# See: http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html#thp
+
+# Note: Starting with Solaris 2.6 you can use tcp_host_param to boost 
+# just selected networks, with Solaris 8 IPv6 hosts separately, see: 
+# http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html#thp
 #
 echo "done."
+
+ 
+
+# ******************************************************************************
+# $Log: nettune,v $
+# Revision 1.2  2001/03/26 12:27:22  ai
+# *** empty log message ***
+#
+# Revision 3.22  2000/07/13 19:34:53  chouanar
+# corrected a typo on the ip6 params
+#
+# Revision 3.21  2000/07/07 21:38:25  chouanar
+# Updated to the latest version provided by Jens-S. Vöckler, which include IPv6 tuning
+#
+# Revision 3.20  2000/05/25 16:54:13  chouanar
+# rc.conf -> yassp.conf
+#
+# Revision 3.19  2000/05/21 18:25:02  chouanar
+# use rc.conf
+#
+# Revision 3.18  2000/05/19 21:19:10  chouanar
+# Support Solaris 8
+# add no respond to timestamp and timestamp_broadcast
+#
+# Revision 3.17  2000/05/19 19:36:27  chouanar
+# typo
+#
+# Revision 3.16  2000/05/19 19:35:52  chouanar
+# add missing CR at the end of the file + addition for 2.8
+#
+# Revision 3.15  2000/05/19 19:35:07  chouanar
+# *** empty log message ***
+#
+# Revision 3.14  2000/04/12 15:30:46  chouanar
+# *** empty log message ***
+#
+# Revision 3.13  2000/04/12 05:54:30  chouanar
+# *** empty log message ***
+#
+# Revision 3.12  2000/04/12 05:48:46  chouanar
+# *** empty log message ***
+#
+# Revision 3.11  2000/04/12 05:47:42  chouanar
+# *** empty log message ***
+#
+# Revision 3.10  2000/04/12 05:42:37  chouanar
+# correction for extra_priv_ports
+#
+# Revision 3.9  2000/04/11 20:59:29  chouanar
+# add NFS ports as priviledged ports (2049 udp and TCP)
+#
+# Revision 3.8  2000/04/11 14:37:03  chouanar
+# *** empty log message ***
+#
+# Revision 3.7  2000/04/10 23:21:54  chouanar
+# corrected arp_cleanup_interval
+# Correct the patch computation for Solaris 2.5.x
+#
+# Revision 3.6  2000/03/16 02:51:05  chouanar
+# Add :
+# sourcing the yassp.conf to see if we apply the NET_SECURITY extras
+#
+# Revision 3.5  2000/03/09 00:55:20  chouanar
+# check that /usr/bin/strings exist before calling it for 2.5
+# get rid off /usr/ucb/echo
+#
+# Revision 3.4  1999/07/19 18:21:54  chouanar
+# Reflect the lastest nettune script from Jens
+#
+# Revision 3.3  1999/07/01 23:36:44  chouanar
+# indentation
+#
+# Revision 3.2  1999/07/01 19:46:43  chouanar
+# Add the $SECURITY variable and the arp stuff from the titan pkg
+#
+# Revision 3.1  1999/03/15 21:17:33  chouanar
+# add minor correction for 2.7 + author change
+#
+# Revision 3.0  1999/03/14 23:24:26  chouanar
+# *** empty log message ***
+#
+# Revision 2.0  1998/11/17 22:48:51  jean
+# *** empty log message ***
+#
+#
+#

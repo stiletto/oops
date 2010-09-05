@@ -29,14 +29,16 @@ char		module_info[]	= MODULE_INFO;
 char		module_name[]	= MODULE_NAME;
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+#define		MODULE_STATIC
 #else
 static	char	module_type	= MODULE_LOG;
 static	char	module_info[]	= MODULE_INFO;
 static	char	module_name[]	= MODULE_NAME;
 static	int	mod_load();
 static	int	mod_unload();
-static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+#define		MODULE_STATIC	static
 #endif
 
 struct	log_module log_dummy = {
@@ -55,6 +57,7 @@ struct	log_module log_dummy = {
 	}
 };
 
+MODULE_STATIC
 int
 mod_load()
 {
@@ -62,27 +65,32 @@ mod_load()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_unload()
 {
     printf("Dummy logging stopped\n");
     return(MOD_CODE_OK);
 }
+MODULE_STATIC
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     return(MOD_CODE_OK);
 }
+MODULE_STATIC
 int
-mod_config_end()
+mod_config_end(int i)
 {
     return(MOD_CODE_OK);
 }
+MODULE_STATIC
 int
-mod_config()
+mod_config(char* config, int i)
 {
     return(MOD_CODE_OK);
 }
+MODULE_STATIC
 int
 mod_run()
 {

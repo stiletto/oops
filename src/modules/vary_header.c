@@ -44,6 +44,7 @@ int		mod_load();
 int		mod_unload();
 int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
 int		match_headers(struct mem_obj *obj, struct request *rq, int *flags);
+#define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_HEADERS ;
 static	char	module_name[] = MODULE_NAME ;
@@ -52,6 +53,7 @@ static  int     mod_load();
 static  int     mod_unload();
 static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
 static	int	match_headers(struct mem_obj *obj, struct request *rq, int *flags);
+#define		MODULE_STATIC	static
 #endif
 
 struct	headers_module	vary_header = {
@@ -79,6 +81,7 @@ pthread_rwlock_t	vary_config_lock;
 
 void	free_action(struct header_action*);
 
+MODULE_STATIC
 int
 mod_run()
 {

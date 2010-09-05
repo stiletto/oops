@@ -20,8 +20,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        "oops.h"
 #include	"dataq.h"
 
-dataq_t	wq;
-
 void
 worker(void *arg)
 {
@@ -29,16 +27,10 @@ work_t		*work;
 int		so;
 void*		(*processor)(void*);
 
-    arg = arg;
-    printf("worker(): New worker started\n");
-
-    forever() {
-	dataq_dequeue_special(&wq, (void**)&work);
-	so =	    work->so;
-	processor = work->f;
-	if ( processor ) {
-	    (*processor)((void*)work);
-	}
-	/* work freed by processor */
+    work = (work_t*)arg;
+    so =	    work->so;
+    processor = work->f;
+    if ( processor ) {
+	(*processor)((void*)work);
     }
 }

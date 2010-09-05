@@ -15,6 +15,7 @@
 #undef HAVE_IPF
 #undef HAVE_SOCKLEN_T
 #undef HAVE_UINT32_T
+#undef HAVE_UINT16_T
 #undef HAVE__GMTOFF__
 #undef HAVE_STRUCT_TIMESPEC
 #undef HAVE_PTHREAD_RWLOCK_INIT
@@ -29,3 +30,6 @@
 #undef MYSQL_PATH
 #undef PGSQL_PATH
 #undef HAVE_ZLIB
+#undef HAVE_LIBPAM
+#undef HAVE_LIBTNFPROBE
+#undef TNF_ENABLED

@@ -49,26 +49,28 @@ struct mem_obj	*obj;
 	    total_size += hash_ptr[i]->size;
 	} else
 	if ( hash_ptr[i]->size < 0 ) {
-	    my_xlog(LOG_SEVERE, "flush_mem_cache(): Negative hash size.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "flush_mem_cache(): Negative hash size.\n");
 	    abort();
 	}
 	/*if ( total_size > lo_mark_val ) break;*/
 	continue;
     }
     UNLOCK_CONFIG ;
-    my_xlog(LOG_STOR, "flush_mem_chache: total_size: %d.\n", total_size);
+    my_xlog(OOPS_LOG_STOR, "flush_mem_chache: total_size: %d.\n", total_size);
     if ( total_size < lo_mark_val ) return;
     if ( total_size > mem_max_val ) {
 	gc_mode = GC_DROP ;
-	my_xlog(LOG_STOR, "flush_mem_chache: DROPout documents.\n");
+	my_xlog(OOPS_LOG_STOR, "flush_mem_chache: DROPout documents.\n");
     } else {
 	gc_mode = GC_EASY ;
-	my_xlog(LOG_STOR, "flush_mem_chache: SWAPout documents.\n");
+	my_xlog(OOPS_LOG_STOR, "flush_mem_chache: SWAPout documents.\n");
     }
     /* create kill-list */
     kill_size = total_size - lo_mark_val;
     destroyed = 0;
+    MY_TNF_PROBE_0(obj_chain_lock_start, "contention", "obj_chain_lock start");
     pthread_mutex_lock(&obj_chain);
+    MY_TNF_PROBE_0(obj_chain_lock_stop, "contention", "obj_chain_lock stop");
     obj = oldest_obj;
     while( obj && (kill_size > 0) ) {
 	if ( !obj->refs && ( obj->rate <= SWAP_RATE ) ) {
@@ -81,9 +83,9 @@ struct mem_obj	*obj;
 	    obj = obj->younger;
     }
     pthread_mutex_unlock(&obj_chain);
-    my_xlog(LOG_STOR, "flush_mem_chache: %d documents in kill list.", kill_list.count);
+    my_xlog(OOPS_LOG_STOR, "flush_mem_chache: %d documents in kill list.", kill_list.count);
     if ( kill_list.count > 0 ) {
-	my_xlog(LOG_DBG, "flush_mem_cache(): Will swap/destroy %d objects.\n", kill_list.count);
+	my_xlog(OOPS_LOG_DBG, "flush_mem_cache(): Will swap/destroy %d objects.\n", kill_list.count);
 	RDLOCK_CONFIG ;
 	if ( gc_mode == GC_EASY )
 #if	defined(USE_INTERNAL_DB_LOCKS)
@@ -93,7 +95,7 @@ struct mem_obj	*obj;
 #endif
 	db_mod_attach();
 	while ( (obj = list_dequeue(&kill_list)) != 0 ) {
-	    my_xlog(LOG_STOR|LOG_DBG, "flush_mem_cache(): Destroying object <%s/%s>\n",
+	    my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "flush_mem_cache(): Destroying object <%s/%s>\n",
 			obj->url.host, obj->url.path);
 	    if ( gc_mode == GC_EASY )
 		swap_out_object(obj);
@@ -153,7 +155,7 @@ int			i, k;
 	}
 	pthread_mutex_unlock(&dns_cache_lock);
 
-	my_xlog(LOG_DNS|LOG_DBG, "garbage_collector(): %d dns hash entries.\n", k);
+	my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "garbage_collector(): %d dns hash entries.\n", k);
 
 	flush_mem_cache(0);
 
@@ -234,7 +236,7 @@ struct	storage_st	*storage;
 	}
 	blk = move_obj_to_storage(obj, &storage, &chain);
 	if ( !blk ) goto stored;
-	my_xlog(LOG_STOR|LOG_DBG, "swap_out_object(): Stored in %u of storage %u\n",
+	my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "swap_out_object(): Stored in %u of storage %u\n",
 		blk, storage->super.id);
 	urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
 	urll+= 3 + 1; /* :// + \0 */
@@ -270,10 +272,10 @@ struct	storage_st	*storage;
 	    		/last_modified_factor;
 	        if ( delta > max_expire_value ) delta = max_expire_value;
 	        disk_ref->expires = now + delta;
-	        my_xlog(LOG_STOR|LOG_DBG, "swap_out_object(): Modified %d sec ago (%dd).\n",
+	        my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "swap_out_object(): Modified %d sec ago (%dd).\n",
 	    		now-obj->times.last_modified,
 	    		(now-obj->times.last_modified)/(24*3600));
-	        my_xlog(LOG_STOR|LOG_DBG, "swap_out_object(): Will expired %d sec in future (%dd).\n",
+	        my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "swap_out_object(): Will expired %d sec in future (%dd).\n",
 	    		delta, delta/(24*3600));
 	    }
 	    disk_ref->expires = now + default_expire_value ;
@@ -286,9 +288,9 @@ struct	storage_st	*storage;
 		break;
 	    default:
 		if ( rc != DB_API_RES_CODE_EXIST )
-			my_xlog(LOG_SEVERE, "swap_out_object(): dbp->put failed, rc = %d\n", rc);
+			my_xlog(OOPS_LOG_SEVERE, "swap_out_object(): dbp->put failed, rc = %d\n", rc);
 		    else
-			my_xlog(LOG_SEVERE, "swap_out_object('%s'): key exists\n", url_str);
+			my_xlog(OOPS_LOG_SEVERE, "swap_out_object('%s'): key exists\n", url_str);
 		/* release allocated blocks */
 		WRLOCK_STORAGE(storage);
 		release_blks(blk, storage, disk_ref);
@@ -311,11 +313,11 @@ eraser(void *arg)
 eraser_data_t	*ed;
 
     if ( arg ) return (void*)0;
-    dataq_init(&eraser_queue);
+    dataq_init(&eraser_queue, 128);
     forever() {
 	dataq_dequeue(&eraser_queue, (void**)&ed);
 	if ( ed ) {
-	    if ( ed->url ) my_xlog(LOG_STOR, "eraser(): Eraser got %s\n", ed->url);
+	    if ( ed->url ) my_xlog(OOPS_LOG_STOR, "eraser(): Eraser got %s\n", ed->url);
 	    RDLOCK_CONFIG;
 	    WRLOCK_DB;
 	    if ( ed->url && ed->disk_ref )
@@ -326,7 +328,7 @@ eraser_data_t	*ed;
 	    IF_FREE(ed->disk_ref);
 	    xfree(ed);
 	} else {
-	    my_xlog(LOG_SEVERE, "eraser(): Null pointer\n");
+	    my_xlog(OOPS_LOG_SEVERE, "eraser(): Null pointer\n");
 	}
     }
 }

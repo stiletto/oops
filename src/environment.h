@@ -66,8 +66,9 @@ extern		int	getdomainname(char *, int);
 #include	<sys/file.h>
 #include	<sys/time.h>
 #include	<sys/resource.h>
-#include        <sys/un.h>
-#include        <sys/wait.h>
+#include    <sys/un.h>
+#include    <sys/wait.h>
+#include    <sys/uio.h>
 
 #if	defined(_AIX)
 #define pthread_sigmask sigthreadmask
@@ -143,4 +144,11 @@ typedef		int		socklen_t;
 #if	!defined(HAVE_SYSERRLIST)
 extern	const char	*const sys_errlist[];
 extern	const int	sys_nerr;
+#endif
+
+#if defined(SOLARIS) && defined(HAVE_LIBTNFPROBE) && defined(TNF_ENABLED)
+#include    <tnf/probe.h>
+#define MY_TNF_PROBE_0(a,b,c)   TNF_PROBE_0(a,b,c)
+#else
+#define MY_TNF_PROBE_0(a,b,c)
 #endif

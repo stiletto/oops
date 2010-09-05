@@ -17,7 +17,7 @@
 %token	NETWORKS_ACL_T STORAGE_OFFSET_T AUTO_T USERID_T CHROOT_T
 %token	BIND_ACL_T MAXREQRATE_T BLACKLIST_T START_RED_T REFUSE_AT_T
 %token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T MY_AUTH_T PARENT_AUTH_T
-%token	PEER_ACCESS_T PER_SESS_BW_T PER_IP_BW_T PER_IP_CONN_T
+%token	PEER_ACCESS_T PER_SESS_BW_T PER_IP_BW_T PER_IP_CONN_T CONN_FROM_T
 %token	ALWAYS_CHECK_FRESHNESS_ACL_T PEER_DOWN_TIMEOUT_T
 
 %type	<NETPTR>	network_list network
@@ -25,7 +25,7 @@
 %type	<STRING_LIST>	mod_op mod_ops string_list string_list_e
 %type	<GROUPOPS>	group_op group_ops
 %type	<GROUPOPS>	http icp badports bandwidth miss auth_mods redir_mods
-%type	<GROUPOPS>	denytime per_sess_bw per_ip_bw per_ip_conn
+%type	<GROUPOPS>	denytime per_sess_bw per_ip_bw per_ip_conn conn_from
 %type	<STORAGEST>	st_op st_ops
 %type	<INT>		num
 %type	<OFFSET>	offset
@@ -611,27 +611,36 @@ string		: STRING { $$ = yylval.STRPTR; }
 
 module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			struct string_list	*list = $4;
-			struct general_module	*mod = module_by_name($2);
+			struct general_module	*mod;
+			char			*modname, *inst;
+			int			instance = 0;
+
+			modname = $2;
+			if ( (inst = strchr($2, '/') ) ) {
+			    *inst = 0;
+			    instance = atoi(++inst);
+			}
+			mod = module_by_name(modname);
 			if ( mod ) {
-			    verb_printf("Config %s\n", $2);
-			    if ( mod->config_beg ) (*mod->config_beg)();
+			    verb_printf("Config %s / %d\n", modname, instance);
+			    if ( mod->config_beg ) (*mod->config_beg)(instance);
 			    while( list ) {
 				verb_printf("send `%s' to `%s'.\n", list->string, $2);
-				if (mod->config) (*mod->config)(list->string);
+				if (mod->config) (*mod->config)(list->string, instance);
 				list = list->next;
 			    }
-			    if ( mod->config_end ) (*mod->config_end)();
-			    verb_printf("Done with %s\n", $2);
+			    if ( mod->config_end ) (*mod->config_end)(instance);
+			    verb_printf("Done with %s / %d\n", modname, instance);
 			} else {
-			    verb_printf("Module %s not found\n", $2);
+			    verb_printf("Module %s not found\n", modname);
 			}
 			free_string_list($4);
 			free($2);
 		}
 		| MODULE module_name '{' '}' L_EOS {
 			struct general_module	*mod = module_by_name($2);
-			if ( mod && mod->config_beg ) (*mod->config_beg)();
-			if ( mod && mod->config_end ) (*mod->config_end)();
+			if ( mod && mod->config_beg ) (*mod->config_beg)(0);
+			if ( mod && mod->config_end ) (*mod->config_end)(0);
 			free($2);
 		}
 mod_ops		: mod_op {
@@ -839,6 +848,10 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 				case OP_PER_IP_CONN:
 					new_grp->per_ip_conn = (int)ops->val;
 					break;
+				case OP_CONN_FROM:
+					memcpy(&new_grp->conn_from_sa, ops->val, sizeof(new_grp->conn_from_sa));
+					free(ops->val);
+					break;
 				case OP_MISS:
 					new_grp->miss_deny = (int)ops->val;
 					break;
@@ -863,8 +876,30 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 					    new_grp->redir_mods =
 						malloc(sizeof(*new_grp->redir_mods));
 					    if (new_grp->redir_mods) {
+						struct string_list	*l = ops->val;
+						mod_call_t		*mc, *last=NULL;
+						char			*sl;
+
 						bzero(new_grp->redir_mods, sizeof(*new_grp->redir_mods));
-						new_grp->redir_mods->list = ops->val;
+						while ( l ) {
+						    mc = calloc(1, sizeof(*mc));
+						    if ( mc ) {
+							if ( !last ) {
+							    new_grp->redir_mods->list = mc;
+							} else {
+							    last->next = mc;
+							}
+							last = mc;
+							strncpy(mc->mod_name, l->string, sizeof(mc->mod_name)-1);
+							if ( (sl = strchr(mc->mod_name, '/') ) ) {
+							    *sl = 0;
+							    mc->mod_instance = atoi(sl+1);
+							}
+							printf("%s:%d\n", mc->mod_name, mc->mod_instance);
+						    }
+						    l = l->next;
+						}
+						free_string_list(ops->val);
 						new_grp->redir_mods->refs = 1;
 						pthread_mutex_init(&new_grp->redir_mods->lock, NULL);
 					    }
@@ -893,7 +928,7 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 			}
 			new_grp->next = groups;
 			/* create acl/dstdomain cache */
-			new_grp->dstdomain_cache = hash_make(64, STRING_HASH_KEY);
+			new_grp->dstdomain_cache = hash_init(128, HASH_KEY_STRING);
 			groups = new_grp;
 		}
 group_name	: STRING {
@@ -945,6 +980,7 @@ group_op	: NETWORKS network_list ';' {
 		| per_sess_bw	{ $$ = $1; }
 		| per_ip_bw	{ $$ = $1; }
 		| per_ip_conn	{ $$ = $1; }
+		| conn_from	{ $$ = $1; }
 		| badports	{ $$ = $1; }
 		| http		{ $$ = $1; }
 		| icp		{ $$ = $1; }
@@ -1082,7 +1118,7 @@ per_ip_bw	: PER_IP_BW_T num ';' {
 per_ip_conn	: PER_IP_CONN_T num ';' {
 		    struct	group_ops_struct	*new_op;
 
-			new_op = xmalloc(sizeof(*new_op), "parser: bandwidth/ip");
+			new_op = xmalloc(sizeof(*new_op), "parser: connect/ip");
 			if ( !new_op ) {
 				yyerror();
 				$$ = NULL;
@@ -1093,6 +1129,35 @@ per_ip_conn	: PER_IP_CONN_T num ';' {
 			    new_op->next=NULL;
 			    $$ = new_op;
 			}
+		}
+conn_from	: CONN_FROM_T string ';' {
+		    struct	group_ops_struct	*new_op;
+
+		    new_op = xmalloc(sizeof(*new_op), "parser: group connect_from");
+		    if ( !new_op ) {
+			yyerror();
+			$$ = NULL;
+		    } else {
+			char			c_from[64], *p;
+			struct sockaddr_in	*c_from_sa_p;
+			c_from_sa_p = xmalloc(sizeof(*c_from_sa_p), "parser: group c_from_sa_p ");
+
+			bzero(c_from_sa_p, sizeof(*c_from_sa_p));
+			strncpy(c_from, $2, sizeof(c_from)-1);
+			p = c_from;
+			while ( *p ) {*p=tolower(*p);p++;}
+			verb_printf("Group conn_from: %s\n", c_from);
+
+			if ( str_to_sa(c_from, (struct sockaddr*)c_from_sa_p) ) {
+			    verb_printf("WARNING: Can't resolve group connect_from %s, function disabled.\n", c_from);
+			    bzero(c_from_sa_p, sizeof(*c_from_sa_p));
+			} else
+			    verb_printf("Group connect_from %s enabled.\n", c_from);
+			new_op->op = OP_CONN_FROM;
+			new_op->val = (void*)c_from_sa_p;
+			new_op->next = NULL;
+			$$ = new_op;
+		    }
 		}
 range		: '[' num ':' num ']'  {
 			if ( !badp_p ) badp_p = &badports[0];

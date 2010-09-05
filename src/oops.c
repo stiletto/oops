@@ -138,12 +138,13 @@ int		mem_max_val, lo_mark_val, hi_mark_val;
 u_short		internal_http_port;
 struct	obj_hash_entry	hash_table[HASH_SIZE];
 struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
-list_t		icp_requests_list;
+hash_t		*icp_requests_hash = NULL;
 list_t		blacklist;
 char		domain_name[MAXHOSTNAMELEN+1];
 char		host_name[MAXHOSTNAMELEN+1];
 char		*oops_user;
 char		*oops_chroot;
+uid_t           oops_uid = -1;
 int             insert_via;
 int             insert_x_forwarded_for;
 int		dont_cache_without_last_modified;
@@ -164,6 +165,9 @@ filebuff_t	accesslogbuff;
 
 struct	rq_hash_entry	rq_hash[RQ_HASH_SIZE];
 struct	ip_hash_head	ip_hash[IP_HASH_SIZE];
+
+workq_t icp_workq;
+workq_t wq;
 
 struct cidr_net**
 sort_n(struct cidr_net *nets, int *counter)
@@ -285,7 +289,7 @@ struct	cidr_net	*nets, *next_net;
 	if ( groups->denytimes ) free_denytimes(groups->denytimes);
 	if ( groups->badports ) free(groups->badports);
 	if ( groups->auth_mods ) leave_l_string_list(groups->auth_mods);
-	if ( groups->redir_mods ) leave_l_string_list(groups->redir_mods);
+	if ( groups->redir_mods ) leave_l_mod_call_list(groups->redir_mods);
 	if ( groups->networks_acl ) free_acl_access(groups->networks_acl);
 	free_acl(groups->http);
 	free_acl(groups->icp);
@@ -321,7 +325,7 @@ int			i;
     if ( sorted_networks_cnt ) {
 	sorted_networks_ptr = xmalloc(sorted_networks_cnt * sizeof(struct cidr_net*),"sort_networks(): 1");
 	if ( !sorted_networks_ptr ) {
-	    my_xlog(LOG_SEVERE, "sort_networks(): No mem for sorted_networks.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "sort_networks(): No mem for sorted_networks.\n");
 	    sorted_networks_cnt = 0;
 	    return;
 	}
@@ -362,6 +366,7 @@ usage(void)
     printf("usage:  oops [-{C|c} config_filename] [-v] [-V] [-w num] [-W num]\n");
     printf("             [-x acdfhinsACDFHINS] [-{Z|z}]\n");
     printf("-C|c filename - path to config file.\n");
+    printf("-d            detaches from the terminal, so runs as daemon.\n");
     printf("-v            - verbose startup.\n");
     printf("-V            - show version info.\n");
     printf("-w number     - use thread pool. number define initial size of the pool.\n");
@@ -385,7 +390,7 @@ int	format_storages = 0;
     current_workers = 0;
     check_config_only = FALSE;
     verbose_startup = FALSE;
-    verbosity_level = LOG_SEVERE | LOG_PRINT | LOG_NOTICE;
+    verbosity_level = OOPS_LOG_SEVERE | OOPS_LOG_PRINT | OOPS_LOG_NOTICE;
     /* set stdout unbuffered					*/
     setbuf(stdout, NULL);
     /* stderr by default is unbuffered, but this wont hurt 	*/
@@ -394,7 +399,7 @@ int	format_storages = 0;
 #if	defined(_WIN32)
     SetConsoleTitle("Oops Internet Object Cache");
     if ( SetConsoleCtrlHandler(KillHandler, TRUE) == 0 )
-	my_xlog(LOG_PRINT, "main(): SetConsoleCtrlHandler(): %m\n");
+	my_xlog(OOPS_LOG_PRINT, "main(): SetConsoleCtrlHandler(): %m\n");
 
     if ( winsock_init() == -1 )
 	exit(1);
@@ -421,56 +426,56 @@ int	format_storages = 0;
 				verbosity_level = -1;
 				break;
 			case 'A':
-				verbosity_level = LOG_SEVERE | LOG_PRINT;
+				verbosity_level = OOPS_LOG_SEVERE | OOPS_LOG_PRINT;
 				break;
 
 			case 'c':
-				verbosity_level |= LOG_NOTICE;
+				verbosity_level |= OOPS_LOG_NOTICE;
 				break;
 			case 'C':
-				verbosity_level &= ~ LOG_NOTICE;
+				verbosity_level &= ~ OOPS_LOG_NOTICE;
 				break;
 
 			case 'd':
-				verbosity_level |= LOG_DBG;
+				verbosity_level |= OOPS_LOG_DBG;
 				break;
 			case 'D':
-				verbosity_level &= ~ LOG_DBG;
+				verbosity_level &= ~ OOPS_LOG_DBG;
 				break;
 
 			case 'f':
-				verbosity_level |= LOG_FTP;
+				verbosity_level |= OOPS_LOG_FTP;
 				break;
 			case 'F':
-				verbosity_level &= ~ LOG_FTP;
+				verbosity_level &= ~ OOPS_LOG_FTP;
 				break;
 
 			case 'h':
-				verbosity_level |= LOG_HTTP;
+				verbosity_level |= OOPS_LOG_HTTP;
 				break;
 			case 'H':
-				verbosity_level &= ~ LOG_HTTP;
+				verbosity_level &= ~ OOPS_LOG_HTTP;
 				break;
 
 			case 'i':
-				verbosity_level |= LOG_INFORM;
+				verbosity_level |= OOPS_LOG_INFORM;
 				break;
 			case 'I':
-				verbosity_level &= ~ LOG_INFORM;
+				verbosity_level &= ~ OOPS_LOG_INFORM;
 				break;
 
 			case 'n':
-				verbosity_level |= LOG_DNS;
+				verbosity_level |= OOPS_LOG_DNS;
 				break;
 			case 'N':
-				verbosity_level &= ~ LOG_DNS;
+				verbosity_level &= ~ OOPS_LOG_DNS;
 				break;
 
 			case 's':
-				verbosity_level |= LOG_STOR;
+				verbosity_level |= OOPS_LOG_STOR;
 				break;
 			case 'S':
-				verbosity_level &= ~ LOG_STOR;
+				verbosity_level &= ~ OOPS_LOG_STOR;
 				break;
 		    }
 		    vlvls++;
@@ -601,8 +606,9 @@ int	format_storages = 0;
     pthread_mutex_init(&mktime_lock, NULL);
     pthread_rwlock_init(&config_lock, NULL);
     pthread_rwlock_init(&db_lock, NULL);
-    list_init(&icp_requests_list);
+    icp_requests_hash = hash_init(128, HASH_KEY_INT);
     list_init(&blacklist);
+    workq_init(&icp_workq, 64, icp_processor);
     skip_check = 0;
     kill_request = 0;
     global_sec_timer = time(NULL);
@@ -788,7 +794,7 @@ run:
 	pid_d = open(pidfile, O_RDWR|O_CREAT|O_NONBLOCK, S_IRUSR|S_IWUSR|S_IRGRP);
 	if ( pid_d == -1 ) {
 	    fprintf(stderr, "main(): Fatal: Can't create pid file.\n");
-	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't create pid file: %m\n");
+	    my_xlog(OOPS_LOG_SEVERE, "main(): Fatal: Can't create pid file: %m\n");
 	    do_exit(1);
 	}
 #if	!defined(_WIN32)
@@ -797,7 +803,7 @@ run:
 	fl.l_whence = 0; fl.l_len = 0;
 	if ( fcntl(pid_d, F_SETLK, &fl) < 0 ) {
 	    fprintf(stderr, "main(): Fatal: Can't lock pid file.\n");
-	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't lock pid file: %m\n");
+	    my_xlog(OOPS_LOG_SEVERE, "main(): Fatal: Can't lock pid file: %m\n");
 	    do_exit(1);
 	}
 #endif	/* !_WIN32 */
@@ -855,16 +861,16 @@ run:
     if ( connect_from[0] != 0 ) {
 	connect_from_sa_p = &connect_from_sa;
 	if ( str_to_sa(connect_from, (struct sockaddr*)connect_from_sa_p) ) {
-	    my_xlog(LOG_SEVERE, "main(): WARNING: can't resolve %s, binding disabled.\n",
+	    my_xlog(OOPS_LOG_SEVERE, "main(): WARNING: can't resolve %s, binding disabled.\n",
 	    	connect_from);
 	    connect_from_sa_p = NULL;
 	} else
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): Binding to %s enabled.\n", connect_from);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "main(): Binding to %s enabled.\n", connect_from);
     } else
 	connect_from_sa_p = NULL;
 
     report_limits();
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): oops %s Started.\n", VERSION);
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "main(): oops %s Started.\n", VERSION);
     version = VERSION;
     bzero(&Me, sizeof(Me));
     Me.sin_family = AF_INET;
@@ -1084,7 +1090,7 @@ just_free:
 }
 
 int
-add_socket_to_listen_list(int so, u_short port, struct in_addr *addr, void* (*f)(void*))
+add_socket_to_listen_list(int so, u_short port, struct in_addr *addr, int flags, void* (*f)(void*))
 {
 struct	listen_so_list *new = xmalloc(sizeof(*new),"add_socket_to_listen_list(): 1"), *next;
 
@@ -1092,6 +1098,7 @@ struct	listen_so_list *new = xmalloc(sizeof(*new),"add_socket_to_listen_list(): 
     bzero(new, sizeof(*new));
     new->so = so;
     new->port = port;
+    new->flags = flags;
     if ( addr ) new->addr.s_addr = addr->s_addr;
     new->process_call = f;
     new->next = NULL;
@@ -1118,6 +1125,9 @@ struct passwd	*pwd = NULL;
 	rc = setgid(pwd->pw_gid);
 	if ( rc == -1 )
 	    verb_printf("set_user(): Can't setgid(): %m\n");
+        else
+            oops_uid = pwd->pw_uid;
+
 #if	defined(LINUX)
 	/* due to linuxthreads design you can not call setuid even
 	   when you call setuid before any thread creation

@@ -45,7 +45,7 @@ struct	pollarg	pollarg;
 	/* have somethng to read	*/
 	got = recv(so, p, to_read,0);
 	if ( got == 0 ) {
-	    my_xlog(LOG_DBG|LOG_INFORM, "readt(): got: %d, tmo: %d, to_read: %d\n", got, tmo, to_read);
+	    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "readt(): got: %d, tmo: %d, to_read: %d\n", got, tmo, to_read);
 	}
 	return(got);
 }

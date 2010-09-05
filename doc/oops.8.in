@@ -24,6 +24,8 @@ Help about the oops's arguments.
 path to config file.
 .IP \fB-C\ file\fP
 same as the \fB-c\f
+.IP \fB-d
+detaches from the terminal, so runs as daemon
 .IP \fB-v\fP
 verbose startup.
 .IP \fB-V\fP

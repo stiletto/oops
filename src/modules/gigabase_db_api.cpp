@@ -48,7 +48,7 @@ extern	"C" {
 int		mod_run();
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(char*), mod_run();
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 int		db_api_open(int*), db_api_close();
 int		db_api_get(db_api_arg_t*, db_api_arg_t*, int*);
 int		db_api_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*,int*);
@@ -69,7 +69,7 @@ extern	"C" {
 static	int	mod_run();
 static	int	mod_load();
 static	int	mod_unload();
-static	int	mod_config_beg(), mod_config_end(), mod_config(char*), mod_run();
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 static	int	db_api_open(int*), db_api_close();
 static	int	db_api_get(db_api_arg_t*, db_api_arg_t*, int*);
 static	int	db_api_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*, int*);
@@ -178,7 +178,7 @@ mod_unload()
 }
 
 int
-mod_config_beg()
+mod_config_beg(int instance)
 {
     WRLOCK_GDB_CONFIG ;
     dbname[0] = dbhome[0] = 0;
@@ -188,7 +188,7 @@ mod_config_beg()
 }
 
 int
-mod_config_end()
+mod_config_end(int instance)
 {
     if ( db_cache_mem < 1024 ) 
 	db_cache_mem = 1024;
@@ -196,7 +196,7 @@ mod_config_end()
 }
 
 int
-mod_config(char *config)
+mod_config(char *config, int instance)
 {
 char	*p = config;
 
@@ -258,7 +258,7 @@ db_api_close()
 {
     WRLOCK_GDB_CONFIG ;
     if ( gdb_in_use == TRUE ) {
-	my_xlog(LOG_STOR, "gigabase_db_api_close(): GigaBASE closed\n");
+	my_xlog(OOPS_LOG_STOR, "gigabase_db_api_close(): GigaBASE closed\n");
 	db->close();
 	delete(db);
 	db = NULL;
@@ -422,7 +422,7 @@ int			r;
 	UNLOCK_GDB_CONFIG ;
 	return(MOD_CODE_OK);
     }
-    my_xlog(LOG_STOR, "gigabase_db_api_cursor_open()\n");
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_cursor_open()\n");
 
     db->attach();
 
@@ -439,7 +439,7 @@ int			r;
     r = dbcp->select();
     newc->next_status = (r>0)?TRUE:FALSE;
     res = newc;
-    my_xlog(LOG_STOR, "gigabase_db_api_cursor_open'ed(): %d entries\n", r);
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_cursor_open'ed(): %d entries\n", r);
     *aflag = MOD_AFLAG_BRK;
     return(res);
 }
@@ -498,7 +498,7 @@ char			*allocated;
 	data->flags = DB_API_RES_CODE_OK ;
 	curs->next_status = dbcp->next()?TRUE:FALSE;
     } else {
-	my_xlog(LOG_STOR, "Cursor empty\n");
+	my_xlog(OOPS_LOG_STOR, "Cursor empty\n");
 	key->data = data->data = NULL;
 	key->size = data->size = 0;
 	data->flags = DB_API_RES_CODE_NOTFOUND ;
@@ -526,7 +526,7 @@ dbCursor<URL_Info>      *dbcp;
     // cursor_get called ->next(), so we have return. But we have to check
     // if next() was successfull
     if ( curs->next_status == TRUE ) dbcp->prev();
-    my_xlog(LOG_STOR, "gigabase_db_api_cursor_del(%s)\n", (*dbcp)->url);
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_cursor_del(%s)\n", (*dbcp)->url);
     dbcp->remove();
 
 done:
@@ -544,7 +544,7 @@ db_api_sync()
     RDLOCK_GDB_CONFIG ;
     if ( gdb_in_use == FALSE || !db )
 	goto done;
-    my_xlog(LOG_STOR, "gigabase_db_api_sync()\n");
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_sync()\n");
     db->commit();
 done:
     UNLOCK_GDB_CONFIG ;
@@ -557,7 +557,7 @@ db_api_attach(int *aflag)
     RDLOCK_GDB_CONFIG ;
     if ( gdb_in_use == FALSE || !db )
         goto done;
-    my_xlog(LOG_STOR, "gigabase_db_api_attach()\n");
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_attach()\n");
     *aflag = MOD_AFLAG_BRK;
     db->attach();
 done:
@@ -572,7 +572,7 @@ db_api_detach(int *aflag)
     RDLOCK_GDB_CONFIG ;
     if ( gdb_in_use == FALSE || !db )
 	goto done;
-    my_xlog(LOG_STOR, "gigabase_db_api_detach()\n");
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_detach()\n");
     *aflag = MOD_AFLAG_BRK;
     db->detach();
 done:
@@ -587,7 +587,7 @@ db_api_precommit(int *aflag)
     RDLOCK_GDB_CONFIG ;
     if ( gdb_in_use == FALSE || !db )
 	goto done;
-    my_xlog(LOG_STOR, "gigabase_db_api_precommit()\n");
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_precommit()\n");
     *aflag = MOD_AFLAG_BRK;
     db->precommit();
 done:

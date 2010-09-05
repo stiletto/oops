@@ -80,7 +80,7 @@ char	*n[] = {
 char	**np = &n[0];
 
     while ( res->from != res->to ) {
-	my_xlog(LOG_STOR, "%8.8s - %d\n", *np, res->sum);
+	my_xlog(OOPS_LOG_STOR, "%8.8s - %d\n", *np, res->sum);
 	res++;
 	np++;
     }
@@ -224,16 +224,16 @@ time_t			now;
 	    my_sleep(10);
 	    continue;
 	}
-	if (TEST(verbosity_level, LOG_STOR)) hg_print();
+	if (TEST(verbosity_level, OOPS_LOG_STOR)) hg_print();
 	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
-	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n",
+	    my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n",
 		    total_free, total_blks);
 	    /* 1. create db cursor */
 	    WRLOCK_DB ;
 	    dbcp =  db_mod_cursor_open(DB_API_CURSOR_NORMAL);
 	    if ( !dbcp ) {
 		UNLOCK_DB;
-		my_xlog(LOG_SEVERE, "clean_disk(): cursor: %m\n");
+		my_xlog(OOPS_LOG_SEVERE, "clean_disk(): cursor: %m\n");
 		goto err;
 	    }
 	    while ( continue_cleanup(total_blks, total_free, disk_hi_free) ) {
@@ -254,7 +254,7 @@ time_t			now;
 		    goto done;
 		}
 		if ( rc != 0 ) {
-		    my_xlog(LOG_SEVERE, "clean_disk(): c_get: %d\n", rc);
+		    my_xlog(OOPS_LOG_SEVERE, "clean_disk(): c_get: %d\n", rc);
 		    db_mod_cursor_close(dbcp);
 		    dbcp = NULL;
 		    UNLOCK_DB;
@@ -270,7 +270,7 @@ time_t			now;
 			UNLOCK_STORAGE(storage) ;
 			total_free+=disk_ref->blk;
 		    } else {
-			my_xlog(LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk.\n");
+			my_xlog(OOPS_LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk.\n");
 		    }
 		    decrement_hg(disk_ref->created, disk_ref->blk);
 		}
@@ -291,7 +291,7 @@ time_t			now;
 	    UNLOCK_DB ;
 	    forced_cleanup = FALSE;
 	} else {
-	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Skip cleanup: %d out of %d (%d%%) free.\n",
+	    my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "clean_disk(): Skip cleanup: %d out of %d (%d%%) free.\n",
 		    total_free, total_blks, (total_free*100)/total_blks);
 	}
 
@@ -339,12 +339,12 @@ run_locked:
 	if ( !dbcp ) {
 	    UNLOCK_DB ;
 	    UNLOCK_CONFIG ;
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	    	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);
 	    return ;
 	}
     }
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE started, %d total, %d expired\n",
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_expire(): EXPIRE started, %d total, %d expired\n",
 	    total_cnt, expired_cnt);
     now = global_sec_timer;
     get_counter = 0 ;
@@ -398,7 +398,7 @@ done:
 	db_mod_cursor_close(dbcp);
     UNLOCK_DB ;
     UNLOCK_CONFIG ;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);
 }
 

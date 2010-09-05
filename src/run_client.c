@@ -80,7 +80,7 @@ struct	work		*work;
     xfree(work);	/* we don't need it anymore	*/
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "run_client(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "run_client(): fcntl(): %m\n");
 
     increment_clients();
     set_socket_options(so);
@@ -89,7 +89,8 @@ struct	work		*work;
     bzero(&request, sizeof(request));
     request.accepted_so = accepted_so;
     request.so = so;
-    getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen);
+    if ( getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen) == -1 )
+	my_xlog(OOPS_LOG_SEVERE, "run_client(): getpeername(%d): %m\n", so);
     getsockname(so, (struct sockaddr*)&request.my_sa, &mysalen);
     request.request_time = started = time(NULL);
     insert_request_in_hash(&request);
@@ -98,7 +99,7 @@ struct	work		*work;
     auth_mods_visited  = FALSE;
     buf = xmalloc(READ_BUFF_SZ, "run_client(): For client request.");
     if ( !buf ) {
-	my_xlog(LOG_SEVERE, "run_client(): No mem for header!\n");
+	my_xlog(OOPS_LOG_SEVERE, "run_client(): No mem for header!\n");
 	goto done;
     }
     current_size = READ_BUFF_SZ;
@@ -107,19 +108,19 @@ struct	work		*work;
     forever() {
 	got = readt(so, (char*)cp, current_size-(cp-ip), 100);
 	if ( got == 0 ) {
-	    my_xlog(LOG_FTP|LOG_HTTP|LOG_DBG, "run_client(): Client closed connection.\n");
+	    my_xlog(OOPS_LOG_FTP|OOPS_LOG_HTTP|OOPS_LOG_DBG, "run_client(): Client closed connection.\n");
 	    goto done;
 	}
 	if ( got == -2 ) {
-	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "Read client input timeout.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "Read client input timeout.\n");
 	    if ( time(NULL) - started > READ_REQ_TIMEOUT ) {
-		my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Client send too slow.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "run_client(): Client send too slow.\n");
 		goto done;
 	    }
 	    continue;
 	}
 	if ( got <  0 ) {
-	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Failed to read from client.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "run_client(): Failed to read from client.\n");
 	    goto done;
 	}
 	cp += got;
@@ -127,7 +128,7 @@ struct	work		*work;
 	    char *nb = xmalloc(current_size+CHUNK_SIZE, "run_client(): new block");
 	    /* resize buf */
 	    if ( !nb ) {
-		my_xlog(LOG_SEVERE, "run_client(): No mem to read request.\n");
+		my_xlog(OOPS_LOG_SEVERE, "run_client(): No mem to read request.\n");
 		goto done;
 	    }	    
 	    memcpy(nb, buf, current_size);
@@ -140,7 +141,7 @@ struct	work		*work;
 	    *cp=0;
 	status = check_headers(&request, (char*)ip, (char*)cp, &checked_len, so);
 	if ( status ) {
-	    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Failed to check headers.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "run_client(): Failed to check headers.\n");
 	    say_bad_request(so, "Bad request format.\n", "",
 		    ERR_BAD_URL, &request);
 	    goto done;
@@ -149,10 +150,12 @@ struct	work		*work;
 	    break;
     }
     if ( request.headers_off <= 0 ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run_client(): Something wrong with headers_off: %d\n", request.headers_off);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "run_client(): Something wrong with headers_off: %d\n", request.headers_off);
 	goto done;
     }
     headers = (char*)buf + request.headers_off;
+    if ( getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen) == -1 )
+	my_xlog(OOPS_LOG_SEVERE, "run_client(): getpeername(%d): %m\n", so);
     RDLOCK_CONFIG ;
 ck_group:
     group = rq_to_group(&request);
@@ -165,7 +168,7 @@ ck_group:
     miss_denied = group->miss_deny;
     if ( (rc = deny_http_access(so, &request, group)) != 0 ) {
 	UNLOCK_CONFIG ;
-	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): Access banned.\n");
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "run_client(): Access banned.\n");
 	switch ( rc ) {
 	case ACCESS_PORT:
 		say_bad_request(so, "<font color=red>Access denied for requestsd port.\n</font>", "",
@@ -208,7 +211,7 @@ ck_group:
     */
     if ( !redir_mods_visited ) {
 	mod_flags = 0;
-	request.redir_mods = lock_l_string_list(group->redir_mods);
+	request.redir_mods = lock_l_mod_call_list(group->redir_mods);
 	/* check for redirects */
 	if ( check_redirect(so, &request, group, &mod_flags) ) {
 	    UNLOCK_CONFIG;
@@ -259,6 +262,12 @@ ck_group:
     if ( group && group->per_ip_bw ) {
 	request.flags |= RQ_HAVE_PER_IP_BW;
 	request.per_ip_bw = group->per_ip_bw;
+    }
+    if ( group && group->conn_from_sa.sin_addr.s_addr ) {
+	memcpy(&request.conn_from_sa, &group->conn_from_sa, sizeof(request.conn_from_sa));
+    }
+    if ( group && ( group->miss_deny == TRUE ) ) {
+        request.flags |= RQ_HAS_ONLY_IF_CACHED;
     }
     if ( request.ip_hash_ptr &&
 	 group->per_ip_conn &&
@@ -358,7 +367,7 @@ ck_group:
 	(RQ_HAS_MAX_AGE|RQ_HAS_MAX_STALE|RQ_HAS_MIN_FRESH) ) {
 	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT, &new_object, &request);
 	if ( !stored_url ) {
-	    my_xlog(LOG_SEVERE, "run_client(): Can't create or find memory object.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "run_client(): Can't create or find memory object.\n");
 	    say_bad_request(so, "Can't create memory object.\n", "No memory?",
 	    	ERR_INTERNAL, &request);
 	    goto done;
@@ -389,7 +398,7 @@ ck_group:
 	    } else
 		freshness_lifetime = freshness_val;
 	    if ( freshness_lifetime < request.max_stale ) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run_client(): Must revalidate: freshness_lifetime = %d, request.max_stale: %d\n",
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "run_client(): Must revalidate: freshness_lifetime = %d, request.max_stale: %d\n",
 				freshness_lifetime, request.max_stale);
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	    } else {
@@ -423,7 +432,7 @@ ck_group:
     }
     stored_url = locate_in_mem(&request.url, AND_PUT|AND_USE, &new_object, &request);
     if ( !stored_url ) {
-	my_xlog(LOG_SEVERE, "run_client(): Can't create or find memory object.\n");
+	my_xlog(OOPS_LOG_SEVERE, "run_client(): Can't create or find memory object.\n");
 	say_bad_request(so, "Can't create memory object.\n", "No memory?",
 		ERR_INTERNAL, &request);
 	goto done;
@@ -431,7 +440,7 @@ ck_group:
 
     if ( new_object ) {
 read_net:
-	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): read <%s><%s><%d><%s> from the net.\n",
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "run_client(): read <%s><%s><%d><%s> from the net.\n",
 		request.url.proto, request.url.host, request.url.port, request.url.path);
 	if ( miss_denied ) {
 	    say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
@@ -466,7 +475,7 @@ read_net:
 		&& always_check_freshness_acl
 		&& obj_check_acl_access(always_check_freshness_acl, stored_url, &request) )
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
-	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): read <%s:%s:%s> from mem.\n",
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "run_client(): read <%s:%s:%s> from mem.\n",
 		request.url.proto, request.url.host, request.url.path);
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
 	CLOSE(so); so = -1;
@@ -574,10 +583,12 @@ u_short 	url_hash = hash(url);
 int		found=0, mod_flags = 0;
 
     if ( new_object ) *new_object = FALSE;
+    MY_TNF_PROBE_0(obj_chain_lock_start, "contention", "obj_chain_lock begin")
     if ( pthread_mutex_lock(&obj_chain) ) {
 	fprintf(stderr, "locate_in_mem(): Failed mutex lock.\n");
 	return(NULL);
     }
+    MY_TNF_PROBE_0(obj_chain_lock_stop, "contention", "obj_chain_lock end")
     /* lock hash entry */
     if ( pthread_mutex_lock(&hash_table[url_hash].lock) ) {
 	fprintf(stderr, "locate_in_mem(): Failed mutex lock\n");
@@ -697,25 +708,30 @@ int		found=0, mod_flags = 0;
 			struct	storage_st	*storage;
 			RDLOCK_CONFIG;
 			RDLOCK_DB;
+                        MY_TNF_PROBE_0(locate_url_on_disk_start, "contention", "obj_chain_lock begin");
 			rc = locate_url_on_disk(url, &disk_ref);
+                        MY_TNF_PROBE_0(locate_url_on_disk_stop, "contention", "obj_chain_lock begin");
 			if ( rc >= 0 && disk_ref ) {
 			    /* it is on disk */
 			    storage = locate_storage_by_id(disk_ref->id);
 			    if ( storage && (storage->flags&ST_READY) ) {
-				my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR|LOG_DBG, "locate_in_mem(): Found on disk: %s\n", storage->path);
+				my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_STOR|OOPS_LOG_DBG, "locate_in_mem(): Found on disk: %s\n", storage->path);
 				/* order important. flags must be changed
 				   when all done
 				*/
 				obj->disk_ref = disk_ref ;
 				if ( new_object ) *new_object = FALSE;
 				obj->writers = 0; /* like old object */
+                                MY_TNF_PROBE_0(load_obj_from_disk_start, "contention", "obj_chain_lock begin");
 				if ( load_obj_from_disk(obj, disk_ref) ) {
+                                    MY_TNF_PROBE_0(load_obj_from_disk_stop, "contention", "obj_chain_lock begin");
 				    obj->disk_ref = NULL ;
 				    if ( new_object ) *new_object = TRUE ;
 				    obj->writers = 1; /* like old object */
 				    xfree(disk_ref);
 				    goto nf;
 				}
+                                MY_TNF_PROBE_0(load_obj_from_disk_stop, "contention", "obj_chain_lock begin");
 				/* ok, obj was loaded */
 				resident_size = calculate_resident_size(obj);
         			obj->resident_size = resident_size;
@@ -740,7 +756,7 @@ int		found=0, mod_flags = 0;
 				pthread_cond_broadcast(&obj->decision_cond);
 			    }
 			} else {
-			    my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "locate_in_mem(): Not found.\n");
+			    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "locate_in_mem(): Not found.\n");
 			}
 		nf:	UNLOCK_DB;
 			UNLOCK_CONFIG;
@@ -764,7 +780,7 @@ char		*new_attr=NULL, *new_val=NULL;
 
     while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
     if ( !*sp ) {
-	my_xlog(LOG_SEVERE, "add_request_av(): Invalid request string: %s\n", avtext);
+	my_xlog(OOPS_LOG_SEVERE, "add_request_av(): Invalid request string: %s\n", avtext);
 	return(-1);
     }
     if ( *sp ==':' ) sp++;
@@ -808,20 +824,32 @@ int
 check_headers(struct request *request, char *beg, char *end, int *checked, int so)
 {
 char	*start;
-char	*p, saved;
+char	*p = NULL, saved;
 int	r;
 
 go:
     if ( request->state == REQUEST_READY ) return(0);
     start = beg + *checked;
     if ( !*checked ) {
-	p = memchr(beg, '\r', end-beg);
-	if ( !p ) {
-	    if ( !(p = memchr(beg, '\n', end-beg)) )
-		return(0);
-	    saved = '\n';
-	} else
-	    saved = '\r';
+        char    *pn, *pr;
+        pr = memchr(beg, '\r', end-beg);
+        pn = memchr(beg, '\n', end-beg);
+        if        ( (pn == NULL) && (pr != NULL) ) {
+            p = pr;
+            saved = '\r';
+        } else if ( (pr == NULL) && (pn != NULL) ) {
+            p = pn;
+            saved = '\n';
+        } else if ( (pr != NULL) && (pn != NULL) ) {
+            if ( pr < pn ) {
+                p = pr;
+                saved = '\r';
+            } else {
+                p = pn;
+                saved = '\n';
+            }
+        }
+        if ( p == NULL ) return(0);
 	/* first line in request */
 	*p = 0;
 	r = parse_http_request(start, request, so);
@@ -848,7 +876,7 @@ go:
 	    }
 	    request->data = alloc_buff(CHUNK_SIZE);
 	    if ( !request->data ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "check_headers(): req_data.\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_headers(): req_data.\n");
 	    	return(-1);
 	    }
 	    start += 4;
@@ -895,7 +923,7 @@ go:
 	}
 	*t = 0;
 	/* check headers of my interest */
-	my_xlog(LOG_HTTP|LOG_DBG, "check_headers(): ---> `%s'\n", p);
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "check_headers(): ---> `%s'\n", p);
 	if ( !request->data ) /* we don't parse POST data now */
 		add_request_av(p, request);
 	if ( !strncasecmp(p, "Content-length: ", 16) ) {
@@ -1006,7 +1034,7 @@ int	http_major, http_minor;
     else if ( !strcasecmp(src, "PURGE") ) rq->meth = METH_PURGE;
     else if ( !strcasecmp(src, "OPTIONS") ) rq->meth = METH_OPTIONS;
     else {
-	my_xlog(LOG_SEVERE, "parse_http_request(): Unrecognized method `%s'.\n", src);
+	my_xlog(OOPS_LOG_SEVERE, "parse_http_request(): Unrecognized method `%s'.\n", src);
 	*p = ' ';
 	return(-1);
     }
@@ -1015,19 +1043,23 @@ int	http_major, http_minor;
     p++;
     /* next space must be before HTTP */
     httpv = strrchr(p, 'H');
+    if ( rq->meth == METH_CONNECT ) {
+        if ( httpv )
+            *httpv = 0;
+	if ( parse_connect_url(p, httpv+1, &rq->url, so) ) {
+	    if ( httpv ) *httpv = ' ';
+	    return(-1);
+	}
+	if ( httpv ) *httpv = ' ';
+        return(0);
+    }
     if ( !httpv )
 	return(-1);
     if ( (httpv <= p) )
 	return(-1);
     httpv--;
     *httpv = 0;
-    if ( rq->meth == METH_CONNECT ) {
-	if ( parse_connect_url(p, httpv+1, &rq->url, so) ) {
-	    *httpv = ' ';
-	    return(-1);
-	}
-    }
-    else if ( parse_url(p, httpv+1, &rq->url, so) ) {
+    if ( parse_url(p, httpv+1, &rq->url, so) ) {
 	*httpv = ' ';
 	return(-1);
     }
@@ -1435,7 +1467,7 @@ release_obj(struct mem_obj *obj)
 	obj->refs--;
     pthread_mutex_unlock(&obj->lock);
     if ( obj->refs < 0 ) {
-    	my_xlog(LOG_DBG|LOG_INFORM, "release_obj(): obj->refs < 0 = %d\n", obj->refs);
+    	my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "release_obj(): obj->refs < 0 = %d\n", obj->refs);
 	exit(0);
     }
 }
@@ -1456,10 +1488,12 @@ struct	disk_ref	*disk_ref = NULL;
 char			*url_str = NULL;
 struct	url		*url;
 
+    MY_TNF_PROBE_0(obj_chain_lock_start, "contention", "obj_chain_lock begin");
     if ( pthread_mutex_lock(&obj_chain) ) {
 	fprintf(stderr, "leave_obj(): Failed mutex lock in leave.\n");
  	return;
     }
+    MY_TNF_PROBE_0(obj_chain_lock_stop, "contention", " obj_chain_lock end");
     if ( pthread_mutex_lock(&hash_table[url_hash].lock) ) {
 	fprintf(stderr, "leave_obj(): Failed mutex lock in leave.\n");
 	pthread_mutex_unlock(&obj_chain);
@@ -1484,7 +1518,7 @@ struct	url		*url;
     if ( (obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) && !obj->refs ) {
 	child = obj->child_obj;
 	if ( obj->flags & FLAG_FROM_DISK ) {
-	    my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR|LOG_DBG, "leave_obj(): Must be erased from storage.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_STOR|OOPS_LOG_DBG, "leave_obj(): Must be erased from storage.\n");
 	    must_be_erased = TRUE;
 	    url = &obj->url;
 	    urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
@@ -1534,7 +1568,7 @@ struct	av	*av, *next;
     IF_FREE( rq->method );
     IF_FREE(rq->original_host);
     if ( rq->data ) free_container(rq->data);
-    if ( rq->redir_mods ) leave_l_string_list(rq->redir_mods);
+    if ( rq->redir_mods ) leave_l_mod_call_list(rq->redir_mods);
     if ( rq->cs_to_server_table ) leave_l_string_list(rq->cs_to_server_table);
     if ( rq->cs_to_client_table ) leave_l_string_list(rq->cs_to_client_table);
     IF_FREE(rq->matched_acl);
@@ -1621,7 +1655,7 @@ increment_clients(void)
 	clients_number++;
 	pthread_mutex_unlock(&clients_lock);
     } else {
-	my_xlog(LOG_SEVERE, "increment_clients(): Can't lock clients_lock in increment.\n");
+	my_xlog(OOPS_LOG_SEVERE, "increment_clients(): Can't lock clients_lock in increment.\n");
     }
     LOCK_STATISTICS(oops_stat);
 	oops_stat.clients++;
@@ -1635,7 +1669,7 @@ decrement_clients(void)
 	clients_number--;
 	pthread_mutex_unlock(&clients_lock);
     } else {
-	my_xlog(LOG_SEVERE, "decrement_clients(): Can't lock clients_lock in decrement.\n");
+	my_xlog(OOPS_LOG_SEVERE, "decrement_clients(): Can't lock clients_lock in decrement.\n");
     }
     LOCK_STATISTICS(oops_stat);
 	oops_stat.clients--;
@@ -1669,12 +1703,12 @@ int			newobj;
     obj = locate_in_mem(&rq->url, AND_USE|AND_PUT, &newobj, rq);
     if ( obj ) {
 	if ( !newobj ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "make_purge(): Document destroyed.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "make_purge(): Document destroyed.\n");
 	    res = succ;
 	    result = "<body>Successfully removed</body>\n";
 	    IF_STRDUP(rq->tag, "TCP_HIT");
 	} else {
-	    my_xlog(LOG_HTTP|LOG_DBG, "make_purge(): Document not found.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "make_purge(): Document not found.\n");
 	    res = fail;
 	    result = "<body>Document not found\n</body>";
 	    IF_STRDUP(rq->tag, "TCP_MISS");
@@ -1684,7 +1718,7 @@ int			newobj;
     } else {
 	/* not found */
 	res = fail;
-	my_xlog(LOG_HTTP|LOG_DBG, "make_purge(): Document not found.\n");
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "make_purge(): Document not found.\n");
 	IF_STRDUP(rq->tag, "TCP_MISS");
     }
     output = malloc(sizeof(*output));

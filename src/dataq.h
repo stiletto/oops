@@ -1,33 +1,29 @@
 #if	!defined(DATAQ_H_INCLUDED)
 #define DATAQ_H_INCLUDED
-/* BeginSourceFile dataq.h */
 
-#include	"llt.h"
+#define	DATAQ_MAGIC	0x0000ABBA
 
-typedef struct dataq_data {
-	ll_t list;
-	void *data;
-} dataq_data_t;
+typedef	struct	dataq_el_ {
+    void	*data;
+} dataq_el_t;
 
-typedef struct dataq_waiter {
-	ll_t list;
-	pthread_cond_t cv;
-	int wakeup;
-} dataq_waiter_t;
+typedef	struct	dataq_ {
+    int			valid;
+    int			q_max;
+    pthread_mutex_t	q_lock;
+    pthread_cond_t	q_enq_cv;	/* to wait for enqueue 	*/
+    pthread_cond_t	q_deq_cv;	/* to wait for dequeue 	*/
+    int			q_count;	/* total data in queue 	*/
+    dataq_el_t		*q_ptr;
+    int			q_rptr;		/* reqd pinter		*/
+    int			q_wptr;		/* write pointer	*/
+    int			q_enq_waiters;	/* waiters to enqueue	*/
+    int			q_deq_waiters;	/* ---"--- to dequeue	*/
+} dataq_t, *dataq_ptr;
 
-typedef struct dataq {
-	pthread_mutex_t lock;
-	int num_data;
-	int num_waiters;
-	llh_t data;
-	llh_t waiters;
-} dataq_t;
-extern int dataq_init(dataq_t *ptr);
-extern int dataq_enqueue(dataq_t *dataq, void *in);
-extern int dataq_dequeue(dataq_t *dataq, void **outptr);
-extern int dataq_dequeue_no_wait(dataq_t *dataq, void **outptr);
-extern int dataq_destroy(dataq_t *dataq);
-extern int dataq_dequeue_special(dataq_t *dataq, void **outptr);
-
-/* EndSourceFile */
+extern	int dataq_init(dataq_t* dq, int size);
+extern	int dataq_destroy(dataq_t *dq);
+extern	int dataq_enqueue(dataq_t *dq, void *);
+extern	int dataq_dequeue(dataq_t *dq, void **);
+extern	int dataq_dequeue_no_wait(dataq_t *dq, void **);
 #endif

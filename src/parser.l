@@ -1,6 +1,6 @@
 %a 10000
 %o 16000
-%p 7000
+%p 10000
 %n 1000
 %e 3000
 %{
@@ -398,6 +398,9 @@ line		[^\n]+
 		}
 <groupst>[Pp][Ee][Rr][_-][Ii][Pp][_-][Cc][Oo][Nn][Nn] {
 		return(PER_IP_CONN_T);
+		}
+<groupst>[Cc][Oo][Nn][Nn][Ee][Cc][Tt][_-][Ff][Rr][Oo][Mm] {
+		return(CONN_FROM_T);
 		}
 <groupst>{icp}	{
 		BEGIN(icpst);

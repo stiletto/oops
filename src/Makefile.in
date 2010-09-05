@@ -17,7 +17,7 @@ LIBZ_NAME = @LIBZ_NAME@
 SRCS = oops.c lib.c run.c run_client.c common.c http_utils.c ftp_utils.c \
 	storage.c garbage_c.c  icp.c acl.c y.tab.c lex.yy.c \
 	rotate_logs.c clean_disk.c ssl.c list.c statistics.c \
-	worker.c queue.c hash.c modules.c @EXTRASRC@
+	worker.c dataq.c hash.c modules.c workq.c @EXTRASRC@
 OBJS = $(SRCS:.c=.o) $(STATIC_MODULES)
 
 #CFLAGS = -Wall -ggdb -D_REENTRANT -D_POSIX_PTHREADS_SEMANTICS
@@ -44,15 +44,11 @@ mkinstalldirs:
 			 ${OOPSPATH}/DB \
 			 ${OOPSPATH}/storages \
 			 ${OOPS_SYSCONFDIR}/tables \
-			 ${OOPS_LIBDIR}/modules
+			 ${OOPS_LIBDIR}
 
 	if [ "X@OOPS_USER@" != "X" ]; then\
-		${CHOWN} @OOPS_USER@ ${OOPSPATH};\
 		${CHOWN} @OOPS_USER@ ${OOPSPATH}/logs;\
 		${CHOWN} @OOPS_USER@ ${OOPSPATH}/DB;\
-		${CHOWN} @OOPS_USER@ ${OOPSPATH}/storages;\
-		${CHOWN} @OOPS_USER@ ${OOPS_SYSCONFDIR}/tables;\
-		${CHOWN} @OOPS_USER@ ${OOPS_LIBDIR}/modules;\
 	fi
 
 install: all mkinstalldirs

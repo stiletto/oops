@@ -146,17 +146,19 @@ check_redirect(int so, struct request *rq, struct group *group, int *flag)
 {
 int			rc = MOD_CODE_OK;
 struct	redir_module	*module;
-struct	l_string_list	*gr_mods = group->redir_mods;
-struct	string_list	*mod_list = NULL;
+l_mod_call_list_t       *gr_mods = group->redir_mods;
+mod_call_t	        *mod_list = NULL;
+int                     instance;
 
     if ( gr_mods ) mod_list = gr_mods->list;
      
     if ( flag ) *flag = 0;
     while( mod_list && (rc == MOD_CODE_OK) ) {
 	module = NULL;
-	if ( mod_list->string ) module = redir_module_by_name(mod_list->string);
+	module = redir_module_by_name(mod_list->mod_name);
+        instance = mod_list->mod_instance;
 	if ( module && module->redir ) {
-	    rc = module->redir(so, group, rq, flag);
+	    rc = module->redir(so, group, rq, flag, instance);
 	}
 	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
 	    return(MOD_CODE_ERR);
@@ -170,8 +172,9 @@ check_redir_connect(int *so, struct request *rq, int *flag)
 {
 int			rc = MOD_CODE_OK;
 struct	redir_module	*module;
-struct	l_string_list	*gr_mods = rq->redir_mods;
-struct	string_list	*mod_list = NULL;
+l_mod_call_list_t	*gr_mods = rq->redir_mods;
+mod_call_t      	*mod_list = NULL;
+int                     instance;
 
     if ( gr_mods ) mod_list = gr_mods->list;
      
@@ -179,10 +182,10 @@ struct	string_list	*mod_list = NULL;
     if ( flag ) *flag = 0;
     *so = -1;
     while( mod_list && (rc == MOD_CODE_OK) && (*so == -1) ) {
-	module = NULL;
-	if ( mod_list->string ) module = redir_module_by_name(mod_list->string);
+	module = redir_module_by_name(mod_list->mod_name);
+        instance = mod_list->mod_instance;
 	if ( module && module->redir_connect ) {
-	    rc = module->redir_connect(so, rq, flag);
+	    rc = module->redir_connect(so, rq, flag, instance);
 	}
 	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
 	    return(MOD_CODE_ERR);
@@ -196,8 +199,9 @@ do_redir_rewrite_header(char **hdr, struct request *rq, int *flag)
 {
 int			rc = MOD_CODE_OK;
 struct	redir_module	*module;
-struct	l_string_list	*gr_mods;
-struct	string_list	*mod_list = NULL;
+l_mod_call_list_t	*gr_mods;
+mod_call_t      	*mod_list = NULL;
+int                     instance;
 
     if ( !rq ) return(rc);
     if ( flag ) *flag = 0;
@@ -205,10 +209,10 @@ struct	string_list	*mod_list = NULL;
     if ( gr_mods ) mod_list = gr_mods->list;
 
     while( mod_list && (rc == MOD_CODE_OK) ) {
-	module = NULL;
-	if ( mod_list->string ) module = redir_module_by_name(mod_list->string);
+	module = redir_module_by_name(mod_list->mod_name);
+        instance = mod_list->mod_instance;
 	if ( module && module->redir_rewrite_header ) {
-	    rc = module->redir_rewrite_header(hdr, rq, flag);
+	    rc = module->redir_rewrite_header(hdr, rq, flag, instance);
 	}
 	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
 	    return(MOD_CODE_ERR);
@@ -253,6 +257,17 @@ struct	general_module	*mod = global_mod_chain;
 
     while (mod) {
 	if (mod->mod_run) (mod->mod_run)();
+	mod = mod->next_global;
+    }
+}
+
+void
+tick_modules(void)
+{
+struct	general_module	*mod = global_mod_chain;
+
+    while (mod) {
+	if (mod->mod_tick) (mod->mod_tick)();
 	mod = mod->next_global;
     }
 }
@@ -325,6 +340,7 @@ load_mods:
 		log_module->general.config_end = (mod_load_t*)dlsym(modh, "mod_config_end");
 		log_module->mod_log = (mod_load_t*)dlsym(modh, "mod_log");
 		MOD_RUN(log_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(log_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		nptr = (char*)dlsym(modh, "module_name");
 		*MOD_NAME(log_module) = 0;
 		if ( nptr )
@@ -355,6 +371,7 @@ load_mods:
 		MOD_CONFIG_BEG(err_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(err_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(err_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(err_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(err_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -384,6 +401,7 @@ load_mods:
 		MOD_CONFIG_BEG(auth_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(auth_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(auth_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(auth_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(auth_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -413,6 +431,7 @@ load_mods:
 		MOD_CONFIG_BEG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(redir_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(redir_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(redir_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -444,6 +463,7 @@ load_mods:
 		MOD_CONFIG_BEG(output_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(output_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(output_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(output_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(output_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -475,6 +495,7 @@ load_mods:
 		MOD_CONFIG_BEG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(listener_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(listener_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(listener_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -504,6 +525,7 @@ load_mods:
 		MOD_CONFIG_BEG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(headers_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(headers_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(headers_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -532,6 +554,7 @@ load_mods:
 		MOD_CONFIG_BEG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(pre_body_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -561,6 +584,7 @@ load_mods:
 		MOD_CONFIG_BEG(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
 		MOD_CONFIG_END(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
 		MOD_RUN(db_api_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		MOD_TICK(db_api_module) = (mod_load_t*)dlsym(modh, "mod_tick");
 		*MOD_NAME(db_api_module) = 0;
 		nptr = (char*)dlsym(modh, "module_name");
 		if ( nptr )
@@ -610,6 +634,7 @@ load_modules(void)
     insert_module(&custom_log.general, (struct general_module **)&log_first);
 
     insert_module(&oopsctl_mod.general, (struct general_module **)&listener_first);
+    insert_module(&wccp2_mod.general, (struct general_module **)&listener_first);
 
     insert_module(&accel.general, (struct general_module **)&redir_first);
     insert_module(&fastredir.general, (struct general_module **)&redir_first);
@@ -621,6 +646,7 @@ load_modules(void)
     insert_module(&err_mod.general, (struct general_module **)&err_first);
 
     insert_module(&passwd_file.general, (struct general_module **)&auth_first);
+    insert_module(&pam.general, (struct general_module **)&auth_first);
     insert_module(&passwd_mysql.general, (struct general_module **)&auth_first);
     insert_module(&passwd_pgsql.general, (struct general_module **)&auth_first);
 
@@ -746,12 +772,12 @@ struct		sockaddr_in	sin_addr;
 		pptr->port = port;
 		pptr->in_addr = sin_addr.sin_addr;
 		pptr->so = so;
-		add_socket_to_listen_list(so, port, &pptr->in_addr, NULL);
+		add_socket_to_listen_list(so, port, &pptr->in_addr, 0, NULL);
 		listen(so, 128);
 		pptr++;
 	    } else {
 		verb_printf("parse_myports(): bind: %s\n", strerror(errno));
-		my_xlog(LOG_SEVERE, "parse_myports(): bind: %m\n");
+		my_xlog(OOPS_LOG_SEVERE, "parse_myports(): bind: %m\n");
 	    }
 	    printf("port = %d\n", port);
 	}

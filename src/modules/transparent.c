@@ -45,16 +45,18 @@ char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
 int		mod_load();
 int     	mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
-int		redir(int so, struct group *group, struct request *rq, int *flags);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+int		redir(int so, struct group *group, struct request *rq, int *flags, int);
+#define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_REDIR ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
 static  int     mod_load();
 static  int     mod_unload();
-static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
-static	int	redir(int so, struct group *group, struct request *rq, int *flags);
+static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+static	int	redir(int so, struct group *group, struct request *rq, int *flags, int);
+#define		MODULE_STATIC	static
 #endif
 
 struct  redir_module    transparent = {
@@ -108,7 +110,7 @@ mod_unload()
 }
 
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     WRLOCK_TP_CONFIG ;
     nmyports = 0;
@@ -122,6 +124,7 @@ mod_config_beg()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_run()
 {
@@ -135,13 +138,13 @@ mod_run()
 }
 
 int
-mod_config_end()
+mod_config_end(int i)
 {
     return(MOD_CODE_OK);
 }
 
 int
-mod_config(char *config)
+mod_config(char *config, int i)
 {
 char		*p = config;
 
@@ -158,14 +161,14 @@ char		*p = config;
 }
 
 int
-redir(int so, struct group *group, struct request *rq, int *flags)
+redir(int so, struct group *group, struct request *rq, int *flags, int instance)
 {
 char			*host = NULL;
 u_short			port;
 char			*dd = NULL;
 
     RDLOCK_TP_CONFIG ;
-    my_xlog(LOG_DBG, "redir(): redir/transparent called.\n");
+    my_xlog(OOPS_LOG_DBG, "redir(): redir/transparent called.\n");
     if ( !rq ) goto done;
     port = ntohs(rq->my_sa.sin_port);
     if ( nmyports > 0 ) {
@@ -186,7 +189,7 @@ char			*dd = NULL;
     if ( rq->url.host )	   /* it have hostpart in url already */
 	goto notdone;
 
-    my_xlog(LOG_HTTP|LOG_DBG, "redir(): transparent: my.\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir(): transparent: my.\n");
     if ( rq->av_pairs)
 	host = attr_value(rq->av_pairs, "host");
     if ( !host ) {
@@ -203,7 +206,7 @@ char			*dd = NULL;
 	if (natfd < 0) {
 	    natfd = open(IPL_NAT, O_RDONLY, 0);
 	    if (natfd < 0) {
-		my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT open failed: %m\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "redir(): transparent: NAT open failed: %m\n");
 		goto notdone;
 	    }
 	}
@@ -214,7 +217,7 @@ char			*dd = NULL;
 		r = ioctl(natfd, SIOCGNATL, &natLookup);
 #undef	NEWSIOCGNATLCMD
         if ( r < 0 ) {
-	    my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT lookup failed: ioctl(SIOCGNATL).\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "redir(): transparent: NAT lookup failed: ioctl(SIOCGNATL).\n");
 	    goto notdone;
 	} else {
 	    struct sockaddr_in	sa;

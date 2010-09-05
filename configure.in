@@ -20,8 +20,11 @@ static_modules="yes")
 AC_ARG_ENABLE(db-locks,--enable-db-locks         Enable internal DB locks (use only with BerkeleyDB!),\
 AC_DEFINE(USE_INTERNAL_DB_LOCKS))
 
-AC_ARG_ENABLE(oops-user,--enable-oops-user        Username under which uid Oops will run,
+AC_ARG_ENABLE(oops-user,--enable-oops-user        Username under which uid Oops will run,\
 OOPS_USER="$enableval")
+
+AC_ARG_ENABLE(tnf-probes,--enable-tnf-probes       Enable TNFPROBE under Solaris,\
+AC_DEFINE(TNF_ENABLED))
 
 AC_ARG_WITH(DB,--with-DB=[[DIR]]           BerkeleyDB home directory,\
 LIBDB_PATH=$withval,LIBDB_PATH="")
@@ -138,7 +141,6 @@ EOF
     esac
     if test "X$LIBGB_PATH" = "X$LIBDB_PATH" ; then
 	LIBGB_PATH=""
-	LIBGB_NAME=""
     fi
     AC_DEFINE(HAVE_GIGABASE)
     AC_MSG_RESULT($LIBGB_NAME)
@@ -181,6 +183,10 @@ fi
 
 AC_CHECK_LIB(fl, yywrap, need_lfl="-lfl",need_lfl="")
 AC_CHECK_LIB(crypt, crypt, LIBS="$LIBS -lcrypt")
+AC_CHECK_LIB(pam, pam_end)
+if test "$enable_tnf_probes" = "yes" ; then
+    AC_CHECK_LIB(tnfprobe, tnf_probe_debug)
+fi
 
 ##
 ## Check some typdefs
@@ -221,6 +227,29 @@ AC_TRY_COMPILE([
 ],[
 uint32_t	test;],[
 AC_DEFINE(HAVE_UINT32_T) AC_MSG_RESULT(yes)
+],[AC_MSG_RESULT(no)])
+
+##
+## Check some typdefs
+##
+AC_MSG_CHECKING(for uint16_t)
+AC_TRY_COMPILE([
+#include	<stdio.h>
+#include	<stdlib.h>
+#ifdef	HAVE_UNISTD
+#include	<stdlib.h>
+#endif
+#ifdef	_WIN32
+#include	<inttypes.h>
+#else
+#include	<pthread.h>
+#endif
+#include	<signal.h>
+#include	<sys/types.h>
+#include	<netinet/in.h>
+],[
+uint16_t	test;],[
+AC_DEFINE(HAVE_UINT16_T) AC_MSG_RESULT(yes)
 ],[AC_MSG_RESULT(no)])
 
 ##
@@ -430,9 +459,9 @@ solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS"
 			CXX=g++
 			;;
 		*)	CFLAGS="$CFLAGS -mt"
-			SUNPRO_CC_VER=`CC -V 2>&1 | sed 's/.* //'`
-			if test "$SUNPRO_CC_VER" = "5.0" ; then
-			    CXX="CC -compat=4 -w -fast -xO3"
+			SUNPRO_CC_VER=`CC -V 2>&1 | sed 's/.*C++ //' | sed 's/\..*//'`
+			if test "$SUNPRO_CC_VER" = "5" ; then
+			    CXX="CC -compat=4 -w -fast -xO3 -DNO_MEMBER_TEMPLATES=1"
 			else
 			    CXX="CC -w -features=anachronisms"
 			fi
@@ -492,7 +521,11 @@ case "$regexp_val" in
     AC_DEFINE(REGEX_H, <regex.h>)
     ;;
   pcre)
-    LIBS="$LIBS /usr/local/lib/libpcreposix.a /usr/local/lib/libpcre.a"
+		if test -r "/usr/lib/libpcreposix.a" -a -r "/usr/lib/libpcre.a"; then
+			LIBS="$LIBS /usr/lib/libpcreposix.a /usr/lib/libpcre.a"
+		elif test -r "/usr/local/lib/libpcreposix.a" -a -r "/usr/local/lib/libpcre.a"; then
+	    LIBS="$LIBS /usr/local/lib/libpcreposix.a /usr/local/lib/libpcre.a"
+		fi
     if test "X`echo $CFLAGS | grep '\-I/usr/local/include'`" = "X"; then
 	CFLAGS="$CFLAGS -I/usr/local/include"
     fi
@@ -534,7 +567,7 @@ fi
 
 if test "$MODULES" != 1; then
 MOD_EXT=o
-STATIC_MODULES="modules/accel.o modules/berkeley_db_api.o modules/gigabase_db_api.o modules/custom_log.o modules/err.o modules/fastredir.o modules/lang.o modules/log_dummy.o modules/oopsctl_mod.o modules/passwd_file.o modules/passwd_mysql.o modules/passwd_pgsql.o modules/redir.o modules/transparent.o modules/vary_header.o"
+STATIC_MODULES="modules/accel.o modules/berkeley_db_api.o modules/gigabase_db_api.o modules/custom_log.o modules/err.o modules/fastredir.o modules/lang.o modules/log_dummy.o modules/oopsctl_mod.o modules/passwd_file.o modules/pam.c modules/passwd_mysql.o modules/passwd_pgsql.o modules/redir.o modules/transparent.o modules/vary_header.o modules/wccp2.o"
 fi
 
 echo $CC
@@ -636,3 +669,10 @@ AC_DEFINE_UNQUOTED(OOPS_CFLAGS, "$CFLAGS")
 AC_DEFINE_UNQUOTED(OOPS_LIBS, "$LIBS")
 AC_CONFIG_HEADER(src/config.h)
 AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg doc/oops.8 doc/oopsctl.8)
+
+if test "X$LIBDB_NAME" = "X" ; then
+    if test "X$LIBGB_NAME" = "X" ; then
+        echo Warning! You don\'t have BerkeleyDB or GigaBASE.
+        echo You will not be able to use storages.
+    fi
+fi

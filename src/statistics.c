@@ -24,9 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define		PURGE_INTERVAL	5
 #define		DSTD_CACHE_TTL	(30*60)
 
-void		purge_old_dstd(void*, void*,void*);
-static	void	destroy_entries(hash_t*, struct string_list*);
-static	struct	string_list *purged_entries = NULL;
+int		purge_old_dstd(hash_entry_t*);
 
 void
 check_transfer_rate(struct request *rq, int size)
@@ -97,7 +95,7 @@ int	cbytes, bw;
 
     if ( !rq || !(bw = rq->sess_bw) ) return(0);
     cbytes = rq->s0_sent;
-    my_xlog(LOG_SEVERE, "Session bw: %d\n", (cbytes*100)/bw);
+    my_xlog(OOPS_LOG_SEVERE, "Session bw: %d\n", (cbytes*100)/bw);
     return((cbytes*100)/bw);
 }
 
@@ -130,6 +128,7 @@ ip_hash_entry_t	*he, *next_he;
 
     forever() {
 	global_sec_timer = time(NULL);
+	tick_modules();
 
 	if ( ++counter == 60 ) {	/* once per minute */
 
@@ -160,12 +159,12 @@ ip_hash_entry_t	*he, *next_he;
 	    UNLOCK_STATISTICS(oops_stat);
 	    reqs = temp_stat.requests_http0;
 	    hits = temp_stat.hits0;
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): clients      : %d\n", temp_stat.clients);
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): http_requests: %d\n", temp_stat.requests_http);
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): icp_requests : %d\n", temp_stat.requests_icp);
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): req_rate     : %d/s\n", temp_stat.requests_http0/60);
-	    if ( reqs ) my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): hits_rate    : %d%%\n", (hits*100)/reqs);
-		  else  my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "statistics(): hits_rate    : 0%%\n");
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "statistics(): clients      : %d\n", temp_stat.clients);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "statistics(): http_requests: %d\n", temp_stat.requests_http);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "statistics(): icp_requests : %d\n", temp_stat.requests_icp);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "statistics(): req_rate     : %d/s\n", temp_stat.requests_http0/60);
+	    if ( reqs ) my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "statistics(): hits_rate    : %d%%\n", (hits*100)/reqs);
+		  else  my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "statistics(): hits_rate    : 0%%\n");
 	    counter = 0;
 	}
 
@@ -188,7 +187,7 @@ ip_hash_entry_t	*he, *next_he;
 	group = groups ;
 	if ( group ) {
 	    while ( group ) {
-		/* my_xlog(LOG_DBG, "statistics(): transfer : %d bytes/sec\n", MID(bytes)); */
+		/* my_xlog(OOPS_LOG_DBG, "statistics(): transfer : %d bytes/sec\n", MID(bytes)); */
 		pthread_mutex_lock(&group->group_mutex);
 		group->cs_total.bytes += group->cs0.bytes;
 		group->cs_total.requests += group->cs0.requests;
@@ -200,13 +199,7 @@ ip_hash_entry_t	*he, *next_he;
 		/* remove stale dstdomain cache entries */
 		if ( group->dstdomain_cache ) {
 		    if ( purge <= 0 ) {
-			hash_operate(group->dstdomain_cache, purge_old_dstd, NULL);
-			if ( purged_entries ) {
-			    /* */
-			    destroy_entries(group->dstdomain_cache, purged_entries);
-			    free_string_list(purged_entries);
-			    purged_entries = NULL;
-			}
+			if ( hash_operate(group->dstdomain_cache, purge_old_dstd) )
 			purge = PURGE_INTERVAL;
 		    } else
 			purge--;
@@ -263,36 +256,25 @@ ip_hash_entry_t	*he, *next_he;
     }
 }
 
-/* realy delete */
-void
-destroy_entries(hash_t *tbl, struct string_list *list)
+int
+purge_old_dstd(hash_entry_t *he)
 {
-struct dstdomain_cache_entry **dstd_ce, *dstd_ce_data;
+struct dstdomain_cache_entry *dstd_entry;
 
-    if ( !tbl ) return;
-
-    while( list ) {
-	dstd_ce = (struct dstdomain_cache_entry **)hash_get(tbl, list->string);
-	if ( dstd_ce ) {
-	    dstd_ce_data = (struct dstdomain_cache_entry *)*dstd_ce;
-	    if ( dstd_ce_data ) xfree(dstd_ce_data);
-	    *dstd_ce = NULL;
-	    hash_delete(tbl, (void**)dstd_ce);
-	}
-	list = list->next;
+    if (   !he 
+        || (he->flags & HASH_ENTRY_DELETED)
+        || (he->ref_count > 0)
+       ) return(0);
+    dstd_entry = he->data;
+    if ( !dstd_entry ) {
+        he->flags |= HASH_ENTRY_DELETED;
+        return(0);
     }
-}
-
-/* create list for further deletion */
-
-void
-purge_old_dstd(void *a1, void *a2, void *a3)
-{
-struct dstdomain_cache_entry *dstd_entry = (struct dstdomain_cache_entry *)a1;
-char			     *key = (char*)a3;
-
-    if ( !dstd_entry ) return;
     if ( global_sec_timer - dstd_entry->when_created > DSTD_CACHE_TTL ) {
-	add_to_string_list(&purged_entries, key);
+        free(he->data);
+        he->data = NULL;
+        he->flags |= HASH_ENTRY_DELETED;
+        return(0);
     }
+    return(0);
 }

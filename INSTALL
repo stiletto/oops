@@ -50,3 +50,81 @@ oops.cfg, tables, templates, rules will be in /usr/local/etc/oops,
 oops.pid in /var/run,
 modules in /usr/local/etc/oops,
 in /usr/local/oops you will have directories logs/, storages/, DB/
+
+
+Config for wccp2.
+----------------
+
+1. Set up oops for transparent operation.
+   Checklist:
+	enable redir_mods transparent for desired group
+	enable and configure module transparent
+	enable and configure module wccp2
+
+   Example:
+	group myusers {
+		networks 10/8 127/8;
+		...
+		redir_mods transpatent;
+	}
+
+	module transparent {
+		myport	80
+	}
+	mpodule wccp2 {
+		service-group port 80
+        	router 10.0.0.1
+	}
+}
+
+2. Setup firewall on your proxy machine for forwarding pachets to proxy.
+   This depends on your firewall. You can use Squid recomendations:
+   http://www.squid-cache.org/Doc/FAQ/FAQ-17.html#trans-freebsd
+
+   If needed - set up proper gre driver. Driver for FreeBSD 4.x you can find
+	direcory contrib.
+
+3. Setup your Cisco router
+   In the simpliest case:
+
+   (config)# ip wccp web-cache
+   (config)# interface FastEthernet0/1
+   (config)# ip wccp web-cache redirect out
+   (config)# ^Z
+
+   Note, here FastEthernet0/1 is your interface to the world (e.g.
+   all outgoing traffic go via this interface)
+
+4. Start oops.
+   In several seconds on Cisco you should see
+
+    CS#sh ip wccp web-cache detail 
+    WCCP Cache-Engine information:
+        IP Address:            10.0.0.2
+        Protocol Version:      2.0
+        State:                 Usable
+        Initial Hash Info:     00000000000000000000000000000000
+                               00000000000000000000000000000000
+        Assigned Hash Info:    FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+                               FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+        Hash Allotment:        256 (100.00%)
+        Packets Redirected:    8982
+        Connect Time:          00:00:10
+
+    CS#sh ip wccp web-cache view   
+        WCCP Routers Informed of:
+        10.0.0.1
+
+        WCCP Cache Engines Visible:
+        10.0.0.2
+
+        WCCP Cache Engines NOT Visible:
+        -none-
+
+5. If something not works.
+   Check that you point out correct ip address for router(s).
+   If not helps - try to run tcpdump...
+
+Useful links:
+http://www.cisco.com/univercd/cc/td/doc/product/software/ios121/121cgcr/fun_c/fcprt3/fcd305.htm
+http://www.cisco.com/univercd/cc/td/doc/product/iaabu/webcache/ce20/ver20/wc20wcc2.htm#xtocid508575

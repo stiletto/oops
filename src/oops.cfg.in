@@ -196,15 +196,18 @@ insert_via		yes
 #acl	USERS		username	joe
 acl	ADMINS		src_ip		127.0.0.1
 acl	PURGE		method		PURGE
+acl	CONNECT		method		CONNECT
+acl	SSLPORT		port		443
 
 ##
 #	acl_deny [!]ACL [!]ACL ...
 #	deny access for combined acl
 ##
 acl_deny PURGE !ADMINS
+acl_deny CONNECT !SSLPORT
 
 ##
-#  Never cache objects with URL, containing...
+#  Never cache objects with URL, containing next strings in path
 ##
 stop_cache	?
 stop_cache	cgi-bin
@@ -315,10 +318,17 @@ group	paco	{
 # Authentication modules for this group (seprated by space)
 ##
 #	auth_mods	passwd_file;
+#	auth_mods pam;
 
 ##
 # URL-Redirector (porno, ad. filtering) modules for this group (separate by
 # space)
+# NOTE: modules redir and fastredir can use several configs, one per group.
+#       use next form: redir_mods redir/1;
+#		  and  redir_mods redir/2;
+#		in the groups section.
+#	You also have to have correspondent module redir/1 {...} and
+#	redir/2 {...} sections.
 ##
 #	redir_mods	redir;
 
@@ -335,8 +345,14 @@ group	paco	{
 
 ##
 # limit connections number from each host
-#
+##
 #	per_ip_conn	8;
+
+##
+# Connect from specified ip address for group.
+# You can be use the ip address or host name.
+##
+#	connect_from	<ip-addr>;
 
 ##
 # limit request rate from this group (requests per second). This is crude,
@@ -450,6 +466,13 @@ module passwd_file {
 	template	@OOPS_SYSCONFDIR@/auth_template.html
 }
 
+module pam {
+	realm		oops
+	scheme		Basic
+	service		oops
+	template	@OOPS_SYSCONFDIR@/auth_template.html
+}
+
 module passwd_pgsql {
 	# proxy authentication using postgresql
 	# "Ivan B. Yelnikov" <bahek@khspu.ru>
@@ -485,6 +508,18 @@ module passwd_mysql {
         select          @OOPS_SYSCONFDIR@/select.sql
         template        @OOPS_SYSCONFDIR@/auth_template.html
 }
+
+# You can several (up to 15) redir configs:
+# module redir/1 {
+#	...
+# }
+# module redir/2 {
+#	...
+# }
+# ...
+#
+# Such names (redir/N) can be used in redir_mods statements in group
+# description
 
 module redir {
 	# file - regex rules.
@@ -544,6 +579,24 @@ module	vary {
 # myport can have next form:
 # myport [{hostname|ip_addr}:]port ...
 #	myport			80
+##
+# access can have next form:
+# access [{hostname|ip_addr}:]port ...
+# If this directive is set, then incoming packets will be checked 
+# for module "accel", according to this directive, not "myports". 
+# In this case "oops" will open sockets according to "myports"
+# as well as when rule "access" is missed. This is needed when destination 
+# of incoming packet doesn't match "oops" bindings ,for example when we're 
+# forwarding packets using firewall. 
+#
+# This allows us to produce the following construction :
+# firewall: forward network 80-85 -> ip:80
+# oops: myport ip:80
+# oops: access 80 81 82 83 84 85
+# (in this case "oops" will bind only to ip:80 according to rule "myports")
+##
+#	access			80 81
+#
 ##
 # allow access to proxy through accel module.
 # Deny will stop proxy through accel completely, regardless
@@ -647,5 +700,29 @@ module	berkeley_db {
 #    #  this parameter.
 #    ##
 #    #db_cache_mem	4m
+#
+#}
+
+#module wccp2 {
+# Cache identity.
+# Ip address under which your cache will be visible.
+# You should set it only in case oops can't determine it's IP in other other way
+#	identity  proxy.yourdomain.tld
+#
+# Service group.
+# Look Cisco documentation what service group is.
+# I two words - this is group of caches and routers which handle transparently
+# some kind of traffic. To intercept www requests from your users use
+# next 'service-group' definition
+#
+#        service-group port 80
+#
+# Routers for this service group.
+# Here you list ip-addresses of routers in service group.
+# To avoid problems list addresses from which cisco will reply - that is
+# address of interface which is directed to cache. You can describe several
+# (up to 32) routers.
+#
+#        router  212.109.32.113
 #
 #}

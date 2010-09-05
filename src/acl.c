@@ -33,7 +33,7 @@ struct	in_addr		*addr = &rq->client_sa.sin_addr;
     /* First check networks_acl for each group	*/
     while ( g ) {
 	if (    g->networks_acl
-	     && check_acl_list((acl_chk_list_t*)g->networks_acl, rq) ) return(g);
+	     && check_acl_access(g->networks_acl, rq) ) return(g);
 	g = g->next;
     }
     if ( !sorted_networks_cnt || !sorted_networks_ptr )
@@ -103,6 +103,8 @@ char				host[MAXHOSTNAMELEN], lh[MAXHOSTNAMELEN], *t;
 char				*s;
 int				dstdomain_cache_result = DSTDCACHE_NOTFOUND;
 struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
+hash_entry_t                    *he = NULL;
+int                             res;
 
     if ( !rq->url.host ) return(0);
     strncpy(host, (*rq).url.host, sizeof(host)-1);
@@ -120,16 +122,16 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
     s = my_inet_ntoa(&rq->client_sa);
     if ( !group ) {
 	if ( s ) {
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "deny_http_access(): No group for address %s - access denied\n", s);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "deny_http_access(): No group for address %s - access denied\n", s);
 	    xfree(s);
 	}
 	return(ACCESS_DOMAIN);
     }
-    if ( s ) my_xlog(LOG_DBG, "deny_http_access(): Connect from %s - group [%s]\n",
+    if ( s ) my_xlog(OOPS_LOG_DBG, "deny_http_access(): Connect from %s - group [%s] allowed.\n",
 		s, group->name);
     if ( !group->http || !group->http->allow ) {
 	if (s) {
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "deny_http_access(): No http or http_>allow for address %s - access denied\n", s);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "deny_http_access(): No http or http_>allow for address %s - access denied\n", s);
 	    xfree(s);
 	}
 	return(ACCESS_DOMAIN);
@@ -138,9 +140,12 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 
     /* first, check it in the dstdomain cache */
     if ( group->dstdomain_cache ) {
-	dst_he = (struct dstdomain_cache_entry**)hash_get(group->dstdomain_cache, host);
-        if ( dst_he ) dst_he_data = *dst_he;
-	if ( dst_he_data ) dstdomain_cache_result = dst_he_data->access;
+	res = hash_get(group->dstdomain_cache, host, &he);
+        if ( (res == 0) && (he != NULL) ) {
+            dst_he_data = he->data;
+	    if ( dst_he_data ) dstdomain_cache_result = dst_he_data->access;
+            hash_unref(group->dstdomain_cache, he);
+        }
     }
 
     best_allow = best_deny = NULL;
@@ -187,8 +192,6 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 	acl = acl->next;
     }
     if ( dstdomain_cache_result != DSTDCACHE_NOTFOUND ) {
-	if ( group->dstdomain_cache && dst_he )
-	    hash_release(group->dstdomain_cache, (void**)dst_he);
 	if ( dstdomain_cache_result == DSTDCACHE_ALLOW )
 		return(port_deny(group, rq));
 	return(ACCESS_DOMAIN);
@@ -211,9 +214,13 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 	if ( new ) {
 	    new->access = dstdomain_cache_result;
 	    new->when_created = global_sec_timer;
-	    *dst_he = (void*)new;
+            res = hash_put(group->dstdomain_cache, host, new, &he);
+            if ( res == 0 )
+                hash_unref(group->dstdomain_cache,he);
+              else {
+                free(new);
+            }
 	}
-	hash_release(group->dstdomain_cache, (void**)dst_he);
     }
     if ( dstdomain_cache_result == DSTDCACHE_ALLOW )
 	    return(port_deny(group, rq));
@@ -475,7 +482,7 @@ case ACL_CONTENT_TYPE:
 	    IF_FREE(ctd->ct);
 	}
 default:
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "free_named_acl(): Try to free unknown named acl %s\n", acl->name);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "free_named_acl(): Try to free unknown named acl %s\n", acl->name);
     }
     if ( acl->data ) free(acl->data);
     free(acl);
@@ -828,7 +835,7 @@ case ACL_SRC_IP:
 	if ( must_free_data ) free(data);
 	return(0);
 default:
-	my_xlog(LOG_SEVERE|LOG_PRINT, "parse_named_acl_data(): Unknown acl type %d in parse_named_acl_data\n", acl->type);
+	my_xlog(OOPS_LOG_SEVERE|OOPS_LOG_PRINT, "parse_named_acl_data(): Unknown acl type %d in parse_named_acl_data\n", acl->type);
     }
     if ( must_free_data ) free(data);
     return(0);
@@ -1148,7 +1155,7 @@ named_acl_t	*curr = aclist, *next;
 
     while ( curr ) {
 	next = curr->next;
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "free_named_acls(): Release acl %s\n", &curr->name);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "free_named_acls(): Release acl %s\n", &curr->name);
 	free_named_acl(curr);
 	curr = next;
     }

@@ -56,6 +56,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 int		no_direct_connections	= FALSE;
 
+static  unsigned int rnd_ctx = 1;
+
 int		str_to_sa(char*, struct sockaddr*);
 void		analyze_header(char*, struct server_answ *);
 int		attach_data(char* src, int size, struct buff *buff);
@@ -128,22 +130,26 @@ ERRBUF ;
     IF_STRDUP(rq->tag, "TCP_MISS");
     obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
     if ( !obj ) {
-	my_xlog(LOG_SEVERE, "send_not_cached(): Can't create new_obj.\n");
+	my_xlog(OOPS_LOG_SEVERE, "send_not_cached(): Can't create new_obj.\n");
 	goto done;
     }
     bzero(&answ_state, sizeof(answ_state));
     gettimeofday(&start_tv, NULL);
-    server_so = parent_port?parent_connect(so, parent_host, parent_port, rq):
-			    srv_connect(so, url, rq);
+    if ( parent_port ) {
+        server_so = parent_connect(so, parent_host, parent_port, rq);
+    } else {
+        SET(rq->flags, RQ_SERVED_DIRECT);
+        server_so = srv_connect(so, url, rq);
+    }
 
     if ( server_so == -1 )
 	goto done;
 
     set_socket_options(server_so);
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
 
     if ( parent_port && parent_auth ) {
 	IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
@@ -261,11 +267,11 @@ ERRBUF ;
 		obj->container = new;
 	    }
 	    if ( attach_data(answer, r, obj->container) ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "send_not_cached(): attach_data().\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_not_cached(): attach_data().\n");
 		goto done;
 	    }
 	    if ( check_server_headers(&answ_state, obj, obj->container, rq) ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "send_not_cached(): check_server_headers().\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_not_cached(): check_server_headers().\n");
 		goto done;
 	    }
 	    if ( answ_state.state & GOT_HDR ) {
@@ -279,7 +285,7 @@ ERRBUF ;
 		hdrs_to_send = alloc_buff(512);
 		if ( !hdrs_to_send ) goto done;
 		while(header) {
-	    	my_xlog(LOG_DBG, "send_not_cached(): Sending ready header `%s' -> `%s'.\n",
+	    	my_xlog(OOPS_LOG_DBG, "send_not_cached(): Sending ready header `%s' -> `%s'.\n",
 			header->attr, header->val);
 		    if ( !is_oops_internal_header(header) ) {
 
@@ -299,7 +305,7 @@ ERRBUF ;
 			    }
 			    if ( s
 			    	&& (d = check_rewrite_charset(s, rq, header, &recode_answer)) ) {
-				my_xlog(LOG_DBG, "send_not_cached(): Rewriten header=`%s'.\n", d);
+				my_xlog(OOPS_LOG_DBG, "send_not_cached(): Rewriten header=`%s'.\n", d);
 				attach_data(d, strlen(d), hdrs_to_send);
 				attach_data("\r\n", 2, hdrs_to_send);
 				xfree(d);
@@ -399,7 +405,7 @@ done:
     rq->received = received;
     log_access(delta_tv, rq, obj);
     if ( obj ) { obj->flags|=FLAG_DEAD; leave_obj(obj);}
-    my_xlog(LOG_HTTP|LOG_DBG, "send_not_cached(): not_cached done.\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_not_cached(): not_cached done.\n");
     return;
 }
 
@@ -410,7 +416,7 @@ int			server_so = -1;
 struct	mem_obj		*new_obj = NULL;
 struct	timeval		start_tv, stop_tv;
 time_t			now;
-int			delta_tv, received;
+int			delta_tv, received, rc;
 int			have_code = 0;
 char			*tcp_tag = "TCP_HIT", *meth;
 #define			ROLE_READER	1
@@ -419,6 +425,7 @@ char			*tcp_tag = "TCP_HIT", *meth;
 int			role, no_more_logs = FALSE, source_type;
 char			*origin;
 struct	sockaddr_in	peer_sa;
+hash_entry_t            *he = NULL;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -435,7 +442,7 @@ struct	sockaddr_in	peer_sa;
     now = time(NULL);
     if ( ( obj->flags & ANSW_HAS_EXPIRES ) &&
          	( now < obj->times.expires ) ) {
-	my_xlog(LOG_HTTP|LOG_DBG, "send_from_mem(): Document not expired, send from mem.\n");
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_from_mem(): Document not expired, send from mem.\n");
 	goto prepare_send_mem;
     }
     goto revalidate;
@@ -490,24 +497,23 @@ revalidate:
         if ( obj->child_obj )
 		DECREMENT_REFS(obj->child_obj);
 	obj->child_obj = NULL;
-
-	if ( !TEST(rq->flags, RQ_NO_ICP) && !parent_port && peers && (icp_so != -1)
+    retry:
+	if ( !TEST(rq->flags, RQ_NO_ICP|RQ_GO_DIRECT) && !parent_port && peers && (icp_so != -1)
 	 && (rq->meth == METH_GET)
 	 && !destination_is_local(rq->url.host) ) {
 	    struct icp_queue_elem *new_qe;
 	    struct timeval tv = start_tv;
 	    bzero((void*)&peer_sa, sizeof(peer_sa));
-	    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Sending icp requests.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Sending icp requests.\n");
 	    new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"fill_mem_obj(): new_qe");
 	    if ( !new_qe ) goto icp_failed;
 	    bzero(new_qe, sizeof(*new_qe));
 	    pthread_cond_init(&new_qe->icpr_cond, NULL);
 	    pthread_mutex_init(&new_qe->icpr_mutex, NULL);
 	    new_qe->waitors = 1;
-	    /* XXX make rq_n generation more random */
-	    new_qe->rq_n    = tv.tv_sec+tv.tv_usec;
+	    new_qe->rq_n    = rand_r(&rnd_ctx);
 	    pthread_mutex_lock(&new_qe->icpr_mutex);
-	    if ( !send_icp_requests(rq, new_qe) ) {
+	    if ( !send_icp_requests(rq, new_qe, &he) ) {
 		/* was placed in queue	*/
 		struct timespec  ts;
 		tv.tv_sec  += icp_timeout/1000000;
@@ -521,15 +527,20 @@ revalidate:
 		/* wait for answers */
 		if ( !new_qe->status && pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
 		    /* failed */
-		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp timed out.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp timed out.\n");
 		} else {
 		    /* success */
-		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp success.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp success.\n");
 		}
 		new_qe->rq_n = 0;
 		pthread_mutex_unlock(&new_qe->icpr_mutex);
+                if ( he ) {
+                    rc = delete_hash_entry(icp_requests_hash, he, NULL);
+                    if ( rc != 0 )
+                        abort();
+                }
 		if ( new_qe->status ) {
-		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
 		    peer_sa = new_qe->peer_sa;
 		    source_type = new_qe->type;
 		    server_so = peer_connect_silent(so, &new_qe->peer_sa, rq);
@@ -540,7 +551,7 @@ revalidate:
 		    if ( no_direct_connections ) {
 		   /* what now ? */
 		    }
-		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Direct.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Direct.\n");
 		}
 		icp_request_destroy(new_qe);
 		xfree(new_qe);
@@ -555,8 +566,16 @@ revalidate:
     icp_failed:;
 	} /* all icp things */
 	/* now make decision - object is valid or not		*/
-	server_so = parent_port?parent_connect_silent(so, parent_host, parent_port, rq):
-				srv_connect_silent(so, &obj->url, rq);
+        if ( parent_port 
+             && !TEST(rq->flags, RQ_GO_DIRECT)
+             && !destination_is_local(rq->url.host) ) {
+	    server_so = parent_connect_silent(so, parent_host, parent_port, rq);
+            source_type = PEER_PARENT;
+	} else {
+            SET(rq->flags, RQ_SERVED_DIRECT);
+	    server_so = srv_connect_silent(so, &obj->url, rq);
+            source_type = SOURCE_DIRECT;
+        }
 
     server_connect_done:;
 	if ( server_so == -1 ) {
@@ -571,11 +590,23 @@ revalidate:
 	    goto done;
 	}
 	new_obj = check_validity(server_so, rq, meth, obj);
-	obj->child_obj = new_obj;
-	obj->decision_done = TRUE ;
-	unlock_decision(obj);
-	pthread_cond_broadcast(&obj->decision_cond);
 	if ( new_obj ) {
+            if ( (source_type != SOURCE_DIRECT)
+                && ((new_obj->status_code == STATUS_GATEWAY_TIMEOUT)
+                     || (new_obj->status_code == STATUS_FORBIDEN)) ) {
+                /* peer was not able... */
+                printf("Switch to direct\n");
+	        SET(new_obj->flags, FLAG_DEAD);
+                leave_obj(new_obj);
+                SET(rq->flags, RQ_GO_DIRECT);
+                if ( server_so != -1 ) close(server_so);
+                server_so = -1;
+                goto retry;
+            }
+	    obj->child_obj = new_obj;
+	    obj->decision_done = TRUE ;
+	    unlock_decision(obj);
+	    pthread_cond_broadcast(&obj->decision_cond);
 	    /* increment references to new_obs, as obj refers	*/
 	    /* to it						*/
 	    INCREMENT_REFS(new_obj);
@@ -597,6 +628,9 @@ revalidate:
 	    /* old object is valid				*/
 	    /* switch to READER role, because we will use	*/
 	    /* old content					*/
+	    obj->decision_done = TRUE ;
+	    unlock_decision(obj);
+	    pthread_cond_broadcast(&obj->decision_cond);
 	    /*--------------------------------------------------*/
 	    tcp_tag = "TCP_REFRESH_HIT";
 	    IF_STRDUP(rq->tag, tcp_tag);
@@ -608,7 +642,7 @@ revalidate:
     }
 
 done:
-    my_xlog(LOG_HTTP|LOG_DBG, "send_from_mem(): From mem sended.\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_from_mem(): From mem sended.\n");
     if ( new_obj ) leave_obj(new_obj);
     if ( server_so != -1 ) CLOSE(server_so);
     gettimeofday(&stop_tv, NULL);
@@ -653,7 +687,7 @@ int		osize =  0;
 struct pollarg	pollarg;
 
     downgrade_flags = downgrade(rq, obj);
-    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Downgrade flags: %x\n", downgrade_flags);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): Downgrade flags: %x\n", downgrade_flags);
 
     if ( TEST(downgrade_flags, DOWNGRADE_ANSWER) )
 	downgrade_minor = TRUE;
@@ -663,7 +697,7 @@ struct pollarg	pollarg;
 	ungzip = TRUE;
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "send_data_from_obj(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "send_data_from_obj(): fcntl(): %m\n");
     sended = 0;
     received = obj->size;
     send_hot_buff = NULL;
@@ -712,7 +746,7 @@ send_ready:
 		char	buff[80];
 
 		partial_content = TRUE;
-		my_xlog(LOG_HTTP|LOG_DBG,"We will send partial content\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG,"We will send partial content\n");
 		attach_av_pair_to_buff("HTTP/1.0", "206 Partial Content", hdrs_to_send);
 		header = header->next;
 		/* now build Content-Range header	*/
@@ -723,7 +757,7 @@ send_ready:
 		    osize += tb->used;
 		    tb = tb->next;
 		}
-		my_xlog(LOG_HTTP|LOG_DBG,"Total obj size: %d starting from: %d\n",
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG,"Total obj size: %d starting from: %d\n",
 			osize, rq->range_from);
 		if ( rq->range_from > osize ) {
 		    /* this is VERY strange				*/
@@ -743,9 +777,10 @@ send_ready:
 	    }
 	} /* partial content */
 	while(header) {
-	    my_xlog(LOG_DBG, "send_data_from_obj(): Sending ready header `%s' -> `%s'.\n",
+	    my_xlog(OOPS_LOG_DBG, "send_data_from_obj(): Sending ready header `%s' -> `%s'.\n",
 		    header->attr, header->val);
 	    if (   !is_attr(header, "Age:") &&
+                   !is_attr(header, "Set-cookie:") &&
 		   !is_oops_internal_header(header) &&
 
 			/* we must not send Tr.-Enc. and Cont.-Len. if we convert
@@ -771,7 +806,7 @@ send_ready:
 		    }
 		    if ( s
 		    	&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
-			my_xlog(LOG_DBG, "send_data_from_obj(): Rewriten header = `%s'.\n", d);
+			my_xlog(OOPS_LOG_DBG, "send_data_from_obj(): Rewriten header = `%s'.\n", d);
 			attach_data(d, strlen(d), hdrs_to_send);
 			attach_data("\r\n", 2, hdrs_to_send);
 			xfree(d);
@@ -791,15 +826,15 @@ send_ready:
 	}
 	/* send header from memory */
 	if ( flags & MEM_OBJ_WARNING_110 ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 110 oops Stale document.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): Send Warning: 110 oops Stale document.\n");
 	    attach_av_pair_to_buff("Warning:", "110 oops Stale document", hdrs_to_send);
 	}
 	if ( flags & MEM_OBJ_WARNING_113 ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 113 oops Heuristic expiration used.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): Send Warning: 113 oops Heuristic expiration used.\n");
 	    attach_av_pair_to_buff("Warning:", "113 oops Heuristic expiration used", hdrs_to_send);
 	}
 	if ( ungzip ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 14 oops Converted from gzip.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): Send Warning: 14 oops Converted from gzip.\n");
 	    attach_av_pair_to_buff("Warning:", "14 oops Transformation from gzip applied", hdrs_to_send);
 	}
 	if ( !content_length_sent && partial_content ) {
@@ -835,7 +870,7 @@ send_ready:
 		rq->cs_to_client_table->list->string, TRUE);
 	  else
 	    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
-        my_xlog(LOG_HTTP, "send_data_from_obj(): Headers sent: %d bytes\n", hdrs_to_send->used);
+        my_xlog(OOPS_LOG_HTTP, "send_data_from_obj(): Headers sent: %d bytes\n", hdrs_to_send->used);
 	free_container(hdrs_to_send);
 	if ( !obj->container ) goto done;
 	if ( partial_content ) {
@@ -858,7 +893,7 @@ send_ready:
 	    } else {
 		/* something is VERY bad... */
 		if ( temp_pos_counter != osize )
-			my_xlog(LOG_SEVERE, "send_data_from_obj(): Something is wrong with partial content: sended = %d, osize = %d\n",
+			my_xlog(OOPS_LOG_SEVERE, "send_data_from_obj(): Something is wrong with partial content: sended = %d, osize = %d\n",
 				temp_pos_counter, osize);
 		goto done;
 	    }
@@ -881,7 +916,7 @@ send_ready:
 #endif
     }
     if ( (state == OBJ_READY) && (sended >= obj->size) ) {
-	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): obj is ready: sended(%d) >= obj->size(%d).\n", sended, obj->size);
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): obj is ready: sended(%d) >= obj->size(%d).\n", sended, obj->size);
 	goto done;
     }
     if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
@@ -899,10 +934,10 @@ send_ready:
     if ( IS_HUPED(&pollarg) )
 	goto done;
     if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
-	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %m\n");
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %m\n");
 	goto done;
     }
-    my_xlog(LOG_HTTP, "send_data_from_obj(): sended=%d, ssended=%d\n", sended, ssended);
+    my_xlog(OOPS_LOG_HTTP, "send_data_from_obj(): sended=%d, ssended=%d\n", sended, ssended);
     if ( rest_in_chunk == -1 )
 	goto done;
     if ( (state == OBJ_READY) && (sended == ssended) )
@@ -910,7 +945,7 @@ send_ready:
     if ( (state == OBJ_INPROGR) && (sended == ssended) ) {
 	/* this must not happen, log it */
 	if ( obj->url.host && obj->url.path )
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_obj(): Impossible event on `%s%s'.\n",
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_obj(): Impossible event on `%s%s'.\n",
 		    obj->url.host, obj->url.path);
 	goto done;
     }
@@ -959,7 +994,7 @@ struct	buff		*to_server_request = NULL;
 	/* ftp always must be reloaded */
 	new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
 	if ( !new_obj ) {
-	    my_xlog(LOG_SEVERE, "check_validity(): Can't create new_obj.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): Can't create new_obj.\n");
 	    goto validate_err;
 	}
 	return(new_obj);
@@ -968,18 +1003,18 @@ struct	buff		*to_server_request = NULL;
     /* prepare faked header		*/
     if ( obj->times.last_modified ) {
         if (!mk1123time(obj->times.last_modified, mk1123buff, sizeof(mk1123buff)) ) {
-	    my_xlog(LOG_SEVERE, "check_validity(): Can't mk1123time.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): Can't mk1123time.\n");
 	    goto validate_err;
 	}
     }
     else /* No Last-Modified */
     if (!mk1123time(obj->times.date, mk1123buff, sizeof(mk1123buff)) ) {
-	my_xlog(LOG_SEVERE, "check_validity(): Can't mk1123time.\n");
+	my_xlog(OOPS_LOG_SEVERE, "check_validity(): Can't mk1123time.\n");
 	goto validate_err;
     }
     fake_header = xmalloc(19 + strlen(mk1123buff) + 3, "check_validity(): for fake header");
     if ( !fake_header ) {
-	my_xlog(LOG_SEVERE, "check_validity(): Can't create fake header.\n");
+	my_xlog(OOPS_LOG_SEVERE, "check_validity(): Can't create fake header.\n");
 	goto validate_err;
     }
     sprintf(fake_header, "If-Modified-Since: %s\r\n", mk1123buff);
@@ -994,7 +1029,7 @@ struct	buff		*to_server_request = NULL;
 	goto validate_err;
     to_server_request = alloc_buff(2*CHUNK_SIZE);
     if ( !to_server_request ) {
-	my_xlog(LOG_SEVERE, "check_validity(): No mem.\n");
+	my_xlog(OOPS_LOG_SEVERE, "check_validity(): No mem.\n");
 	goto validate_err;
     }
     r = attach_data(answer, strlen(answer), to_server_request);
@@ -1015,7 +1050,7 @@ struct	buff		*to_server_request = NULL;
 
     new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
     if ( !new_obj ) {
-	my_xlog(LOG_SEVERE, "check_validity(): Can't create new_obj.\n");
+	my_xlog(OOPS_LOG_SEVERE, "check_validity(): Can't create new_obj.\n");
 	goto validate_err;
     }
 
@@ -1027,7 +1062,7 @@ struct	buff		*to_server_request = NULL;
     }
 
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "check_validity(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "check_validity(): fcntl(): %m\n");
     forever() {
 	struct pollarg pollarg;
 
@@ -1035,15 +1070,15 @@ struct	buff		*to_server_request = NULL;
 	pollarg.request = FD_POLL_RD;
 	r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 	if ( r < 0  ) {
-	    my_xlog(LOG_SEVERE, "check_validity(): select: error on new_obj.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): select: error on new_obj.\n");
 	    goto validate_err;
 	}
 	if ( r == 0 ) {
-	    my_xlog(LOG_SEVERE, "check_validity(): select: timed out on new_obj.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): select: timed out on new_obj.\n");
 	    goto validate_err;
 	}
 	if ( IS_HUPED(&pollarg) ) {
-	    my_xlog(LOG_SEVERE, "check_validity(): Server closed connection too early.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): Server closed connection too early.\n");
 	    goto validate_err;
 	}
 	if ( !IS_READABLE(&pollarg) )
@@ -1051,21 +1086,21 @@ struct	buff		*to_server_request = NULL;
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r <  0 ) {
 	    if ( ERRNO == EAGAIN ) {
-		my_xlog(LOG_SEVERE, "check_validity(): Hmm, again select say ready, but read fails.\n");
+		my_xlog(OOPS_LOG_SEVERE, "check_validity(): Hmm, again select say ready, but read fails.\n");
 		continue;
 	    }
-	    my_xlog(LOG_SEVERE, "check_validity(): select error: %m\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): select error: %m\n");
 	    goto validate_err;
 	}
 	if ( r == 0 ) {
-	    my_xlog(LOG_SEVERE, "check_validity(): Server closed connection too early.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "check_validity(): Server closed connection too early.\n");
 	    goto validate_err;
 	}
 	if ( !new_obj->container ) {
 		struct	buff *new;
 		new = alloc_buff(CHUNK_SIZE);
 		if ( !new ) {
-		    my_xlog(LOG_SEVERE, "check_validity(): Can't create container.\n");
+		    my_xlog(OOPS_LOG_SEVERE, "check_validity(): Can't create container.\n");
 		    goto validate_err;
 		}
 		new_obj->container = new;
@@ -1073,11 +1108,11 @@ struct	buff		*to_server_request = NULL;
 	if ( !(answer_stat.state & GOT_HDR) ) {
 	    new_obj->size += r;
 	    if ( attach_data(answer, r, new_obj->container) ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "check_validity(): attach_data() error.\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_validity(): attach_data() error.\n");
 		goto validate_err;
 	    }
 	    if ( check_server_headers(&answer_stat, new_obj, new_obj->container, rq) ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "check_validity(): check_server_headers().\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_validity(): check_server_headers().\n");
 		goto validate_err;
 	    }
 	    if ( answer_stat.state & GOT_HDR ) {
@@ -1085,14 +1120,20 @@ struct	buff		*to_server_request = NULL;
 		new_obj->status_code 	= answer_stat.status_code;
 		new_obj->flags	       |= answer_stat.flags;
 
+		new_obj->flags|= answer_stat.flags;
+		new_obj->times = answer_stat.times;
+
 		if ( new_obj->status_code == STATUS_NOT_MODIFIED ) {
 		    SET(new_obj->flags, FLAG_DEAD);
 		    leave_obj(new_obj);
 		    new_obj = NULL;
 		    goto validate_done;
 		}
-		new_obj->flags|= answer_stat.flags;
-		new_obj->times = answer_stat.times;
+
+		if ( (new_obj->status_code == STATUS_GATEWAY_TIMEOUT) 
+		        || (new_obj->status_code == STATUS_FORBIDEN) )
+		    goto validate_done;
+
 		if ( !new_obj->times.date ) new_obj->times.date = time(NULL);
 		check_new_object_expiration(rq, new_obj);
 		if ( new_obj->status_code == STATUS_OK ) {
@@ -1148,6 +1189,7 @@ char			*table = NULL;
 struct	av		*header = NULL;
 int			convert_charset = FALSE;
 time_t			last_read = global_sec_timer;
+hash_entry_t            *he = NULL;
 ERRBUF ;
 
     if ( rq->meth == METH_GET ) meth="GET";
@@ -1171,21 +1213,20 @@ ERRBUF ;
     }
     if ( !TEST(rq->flags, RQ_NO_ICP) && !parent_port && peers && (icp_so != -1)
 	 && (rq->meth == METH_GET)
-	 && !is_local_dom(rq->url.host) ) {
+	 && !destination_is_local(rq->url.host) ) {
 	struct icp_queue_elem *new_qe;
 	struct timeval tv = start_tv;
 	bzero((void*)&peer_sa, sizeof(peer_sa));
-	my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Sending icp requests.\n");
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Sending icp requests.\n");
 	new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"fill_mem_obj(): new_qe");
 	if ( !new_qe ) goto icp_failed;
 	bzero(new_qe, sizeof(*new_qe));
 	pthread_cond_init(&new_qe->icpr_cond, NULL);
 	pthread_mutex_init(&new_qe->icpr_mutex, NULL);
 	new_qe->waitors = 1;
-	/* XXX make rq_n generation more random */
-	new_qe->rq_n    = tv.tv_sec+tv.tv_usec;
+	new_qe->rq_n    = rand_r(&rnd_ctx);
 	pthread_mutex_lock(&new_qe->icpr_mutex);
-	if ( !send_icp_requests(rq, new_qe) ) {
+	if ( !send_icp_requests(rq, new_qe, &he) ) {
 	    /* was placed in queue	*/
 	    struct timespec  ts;
 	    tv.tv_sec  += icp_timeout/1000000;
@@ -1199,15 +1240,20 @@ ERRBUF ;
 	    /* wait for answers */
 	    if ( !new_qe->status && pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
 		/* failed */
-		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp timed out.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp timed out.\n");
 	    } else {
 		/* success */
-		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp success.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp success.\n");
 	    }
 	    new_qe->rq_n = 0;
 	    pthread_mutex_unlock(&new_qe->icpr_mutex);
+            if ( he ) {
+                rc = delete_hash_entry(icp_requests_hash, he, NULL);
+                if ( rc != 0 ) /* this must never happen */
+                    abort();
+            }
 	    if ( new_qe->status ) {
-		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
 		peer_sa = new_qe->peer_sa;
 		source_type = new_qe->type;
 		server_so = peer_connect(so, &new_qe->peer_sa, rq);
@@ -1218,7 +1264,7 @@ ERRBUF ;
 		if ( no_direct_connections ) {
 		   /* what now ? */
 		}
-		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Direct.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Direct.\n");
 	    }
 	    icp_request_destroy(new_qe);
 	    xfree(new_qe);
@@ -1233,10 +1279,15 @@ ERRBUF ;
  icp_failed:;
     } /* all icp things */
 
-    source_type = (parent_port && !is_local_dom(rq->url.host) && !TEST(rq->flags, RQ_FORCE_DIRECT))?
-	PEER_PARENT:SOURCE_DIRECT;
-    server_so = (source_type==PEER_PARENT)?parent_connect(so, parent_host, parent_port, rq):
-			    srv_connect(so, url, rq);
+retry:
+    if (parent_port && !destination_is_local(rq->url.host) && !TEST(rq->flags, RQ_GO_DIRECT)) {
+        source_type = PEER_PARENT;
+        server_so = parent_connect(so, parent_host, parent_port, rq);
+    } else {
+        source_type = SOURCE_DIRECT;
+        SET(rq->flags, RQ_SERVED_DIRECT);
+        server_so = srv_connect(so, url, rq);
+    }
 
     /*
      * if it happens that we used parent_connect and parrent_connect determine 
@@ -1339,7 +1390,7 @@ ERRBUF ;
 				rq->cs_to_server_table->list->string, TRUE);
       else
 	r = writet(server_so, to_server_request->data, to_server_request->used, READ_ANSW_TIMEOUT);
-    free_container(to_server_request);
+    free_container(to_server_request); to_server_request = NULL;
 
     if ( r < 0 ) {
 	say_bad_request(so, "Can't send", STRERROR_R(ERRNO, ERRBUFS),
@@ -1360,9 +1411,9 @@ ERRBUF ;
     bzero(&answ_state, sizeof(answ_state));
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): fcntl(): %m\n");
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "fill_mem_obj(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): fcntl(): %m\n");
     forever() {
 	struct pollarg pollarg[2];
 
@@ -1424,13 +1475,13 @@ ERRBUF ;
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
-	    my_xlog(LOG_SEVERE, "fill_mem_obj(): select: %m\n");
+	    my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): select: %m\n");
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
 	}
 	if ( r == 0 ) {
-	    my_xlog(LOG_SEVERE, "fill_mem_obj(): select: timed out.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): select: timed out.\n");
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
@@ -1447,7 +1498,7 @@ ERRBUF ;
 	    if ( rest_in_chunk == -1 ) { /* was last chunk */
 		obj->state = OBJ_READY;
 		change_state_notify(obj);
-		my_xlog(LOG_DBG, "fill_mem_obj(): was last chunk.\n");
+		my_xlog(OOPS_LOG_DBG, "fill_mem_obj(): was last chunk.\n");
 		goto done;
 	    }
 
@@ -1457,7 +1508,7 @@ ERRBUF ;
 		    goto read_s;
 		if ( global_sec_timer - last_read > READ_ANSW_TIMEOUT ) {
 		    /* server died on the fly 	*/
-		    my_xlog(LOG_SEVERE, "fill_mem_obj(): server died on the fly.\n");
+		    my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): server died on the fly.\n");
 		    change_state(obj, OBJ_READY);
 		    obj->flags |= FLAG_DEAD;
 		    goto error;
@@ -1520,7 +1571,7 @@ ERRBUF ;
     read_s:
 	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( IS_HUPED(&pollarg[0]) ) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "fill_mem_obj(): Connection closed by server.\n");
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "fill_mem_obj(): Connection closed by server.\n");
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 		change_state_notify(obj);
@@ -1528,7 +1579,7 @@ ERRBUF ;
 	    }
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
-		my_xlog(LOG_SEVERE, "fill_mem_obj(): select bug(?).\n");
+		my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): select bug(?).\n");
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 		change_state_notify(obj);
@@ -1540,10 +1591,10 @@ ERRBUF ;
 	if ( r < 0  ) {
 	    /* Error reading from server */
 	    if ( ERRNO == EAGAIN ) {
-		my_xlog(LOG_SEVERE, "fill_mem_obj(): Hmm, server_so was ready, but read failed.\n");
+		my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): Hmm, server_so was ready, but read failed.\n");
 		continue;
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): read failed: %m\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): read failed: %m\n");
 	    change_state(obj, OBJ_READY);
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
@@ -1592,7 +1643,7 @@ ERRBUF ;
 	    struct	buff *new;
 	    new = alloc_buff(CHUNK_SIZE);
 	    if ( !new ) {
-		my_xlog(LOG_SEVERE, "fill_mem_obj(): Can't create container.\n");
+		my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): Can't create container.\n");
 		change_state(obj, OBJ_READY);
 		obj->flags |= FLAG_DEAD;
 		goto error;
@@ -1603,14 +1654,14 @@ ERRBUF ;
 	    received += r;
 	    obj->size += r;
 	    if ( attach_data(answer, r, obj->container) ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "fill_mem_obj(): attach_data().\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "fill_mem_obj(): attach_data().\n");
 		obj->flags |= FLAG_DEAD;
 		change_state(obj, OBJ_READY);
 		goto error;
 	    }
 	    if ( (obj->state < OBJ_INPROGR)
 	         && check_server_headers(&answ_state, obj, obj->container, rq) ) {
-		my_xlog(LOG_DBG|LOG_INFORM, "fill_mem_obj(): check_server_headers().\n");
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "fill_mem_obj(): check_server_headers().\n");
 		/*
 		    If we can't parse server header - let client do it.
 		    This can be old server, which can send only content without
@@ -1634,6 +1685,23 @@ ERRBUF ;
 		if ( !obj->times.date ) obj->times.date = global_sec_timer;
 		check_new_object_expiration(rq, obj);
 		obj->status_code = answ_state.status_code;
+                if ( (source_type!=SOURCE_DIRECT) && !TEST(rq->flags, RQ_GO_DIRECT)
+                     && ((obj->status_code == STATUS_GATEWAY_TIMEOUT)
+                            || (obj->status_code == STATUS_FORBIDEN)) ) {
+                    /* retry direct */
+                    SET(rq->flags, RQ_GO_DIRECT);
+                    if ( server_so ) close(server_so); server_so = -1;
+                    received = 0;
+                    sended = 0;
+                    if ( obj->container) free_container(obj->container);
+                    obj->container = NULL;
+                    IF_FREE(answer); answer = NULL;
+                    if ( to_server_request ) free_container(to_server_request);
+                    to_server_request = NULL;
+                    if ( obj->headers ) free_avlist(obj->headers);
+                    obj->headers = NULL;
+                    goto retry;
+                }
 		if ( obj->status_code != STATUS_OK )
 			obj->flags |= FLAG_DEAD;
 		if (!(obj->flags & ANSW_NO_STORE) )
@@ -1645,7 +1713,7 @@ ERRBUF ;
 		    char	*vary = attr_value(obj->headers, "Vary:" ), *temp_vary;
 
 		    if ( vary && (temp_vary = strdup(vary)) ) {
-			my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
+			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
 			/* 1. skip spaces */
 			p = temp_vary;
 			while ( *p && IS_SPACE(*p) ) p++;
@@ -1656,7 +1724,7 @@ ERRBUF ;
 			    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
 
 			    t = NULL;
-			    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Chk hdr: %s\n", p);
+			    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Chk hdr: %s\n", p);
 			    value = attr_value(rq->av_pairs, p);
 			    if ( value ) {
 				/* format and attach */
@@ -1675,7 +1743,7 @@ ERRBUF ;
 			    } /* value */
 			} /* while tokens */
 			IF_FREE(temp_vary);
-			my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
+			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
 		    }
 		}
 		change_state(obj, OBJ_INPROGR);
@@ -1686,7 +1754,7 @@ ERRBUF ;
 		    else
 			body_size = 0;
 		downgrade_flags = downgrade(rq, obj);
-		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Downgrade flags: %x\n", downgrade_flags);
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Downgrade flags: %x\n", downgrade_flags);
 		hdrs_to_send = alloc_buff(512); /* most headers fit this (?) */
 		if ( !hdrs_to_send ) goto error;
 		header = obj->headers;
@@ -1697,13 +1765,14 @@ ERRBUF ;
 		    header = header->next;
 		}
 		while(header) {
-	    	my_xlog(LOG_DBG, "fill_mem_obj(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
+	    	my_xlog(OOPS_LOG_DBG, "fill_mem_obj(): Sending ready header `%s' -> `%s'.\n", header->attr, header->val);
 	    	if ( 
 			/* we must not send Tr.-Enc. and Cont.-Len. if we convert
 			 * from chunked							*/
 
 			   !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Transfer-Encoding"))
-			   && !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length")) 
+			   && !(TEST(downgrade_flags, UNCHUNK_ANSWER) && is_attr(header, "Content-Length"))
+			   && !is_attr(header, "Proxy-Authenticate:")
 			   && !is_oops_internal_header(header) ) {
 			if ( rq->src_charset[0] && rq->cs_to_client_table && is_attr(header, "Content-Type") && header->val ) {
 			    char *s = NULL, *d = NULL, ct_buf[64];
@@ -1718,7 +1787,7 @@ ERRBUF ;
 			    }
 			    if ( s
 			    	&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
-				my_xlog(LOG_DBG, "fill_mem_obj(): Rewriten header = `%s'.\n", d);
+				my_xlog(OOPS_LOG_DBG, "fill_mem_obj(): Rewriten header = `%s'.\n", d);
 				attach_data(d, strlen(d), hdrs_to_send);
 				attach_data("\r\n", 2, hdrs_to_send);
 				xfree(d);
@@ -1781,7 +1850,7 @@ ERRBUF ;
 	    body_size += r;
 	    /* store data in hot_buff */
 	    if ( store_in_chain(answer, r, obj) ) {
-		my_xlog(LOG_SEVERE, "fill_mem_obj(): Can't store.\n");
+		my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): Can't store.\n");
 		obj->flags |= FLAG_DEAD;
 		change_state(obj, OBJ_READY);
 		goto error;
@@ -1794,7 +1863,7 @@ ERRBUF ;
     }
 
 error:
-    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): load error.\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): load error.\n");
     if ( server_so != -1 ) CLOSE(server_so);
     IF_FREE(answer);
     gettimeofday(&stop_tv, NULL);
@@ -1821,7 +1890,7 @@ done:
     obj->flags |= FLAG_DEAD;
     /* if object too large remove it right now */
     if ( resident_size > maxresident ) {
-	my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Obj is too large - remove it.\n");
+	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Obj is too large - remove it.\n");
 	obj->flags |= FLAG_DEAD;
     } else {
 	obj->resident_size = resident_size;
@@ -1829,7 +1898,7 @@ done:
     }
 
 done1:
-    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Loaded successfully: received: %d\n", received);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Loaded successfully: received: %d\n", received);
     if ( server_so != -1 ) CLOSE(server_so);
     IF_FREE(answer);
     gettimeofday(&stop_tv, NULL);
@@ -1867,7 +1936,7 @@ time_t			last_read = global_sec_timer;
     send_hot_pos = 0;
 
     downgrade_flags = downgrade(rq, obj);
-    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Downgrade flags: %x\n", downgrade_flags);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "continue_load(): Downgrade flags: %x\n", downgrade_flags);
     header = obj->headers;
     if ( !header ) goto error ;
     hdrs_to_send = alloc_buff(512);
@@ -1897,7 +1966,7 @@ time_t			last_read = global_sec_timer;
 		}
 		if ( s
 			&& (d = check_rewrite_charset(s, rq, header, &convert_charset)) ) {
-		    my_xlog(LOG_DBG, "continue_load(): Rewriten header = `%s'.\n", d);
+		    my_xlog(OOPS_LOG_DBG, "continue_load(): Rewriten header = `%s'.\n", d);
 		    attach_data(d, strlen(d), hdrs_to_send);
 		    attach_data("\r\n", 2, hdrs_to_send);
 		    xfree(d);
@@ -1938,13 +2007,13 @@ time_t			last_read = global_sec_timer;
 	obj->flags &= ~ANSW_NO_CACHE;
     answer = xmalloc(ANSW_SIZE+1, "continue_load(): 1");
     if ( ! answer )  {
-	my_xlog(LOG_SEVERE, "continue_load(): no mem.\n");
+	my_xlog(OOPS_LOG_SEVERE, "continue_load(): no mem.\n");
 	change_state(obj, OBJ_READY);
 	obj->flags |= FLAG_DEAD;
 	goto error;
     }
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
-	my_xlog(LOG_SEVERE, "continue_load(): fcntl(): %m\n");
+	my_xlog(OOPS_LOG_SEVERE, "continue_load(): fcntl(): %m\n");
     forever() {
 	struct	pollarg pollarg[2];
 
@@ -2003,13 +2072,13 @@ time_t			last_read = global_sec_timer;
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
-	    my_xlog(LOG_SEVERE, "continue_load(): select: %m\n");
+	    my_xlog(OOPS_LOG_SEVERE, "continue_load(): select: %m\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
 	}
 	if ( r == 0 ) {
-	    my_xlog(LOG_SEVERE, "continue_load(): select: timed out.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "continue_load(): select: timed out.\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -2030,7 +2099,7 @@ time_t			last_read = global_sec_timer;
 		    goto read_s;
 		if ( global_sec_timer - last_read > READ_ANSW_TIMEOUT ) {
 		    /* server died on the fly 	*/
-		    my_xlog(LOG_SEVERE, "fill_mem_obj(): server died on the fly.\n");
+		    my_xlog(OOPS_LOG_SEVERE, "fill_mem_obj(): server died on the fly.\n");
 		    change_state(obj, OBJ_READY);
 		    obj->flags |= FLAG_DEAD;
 		    goto error;
@@ -2041,7 +2110,7 @@ time_t			last_read = global_sec_timer;
 		continue;
 	    }
 	    if ( rest_in_chunk == -1 ) {
-		my_xlog(LOG_DBG, "continue_load(): We sent last chunk, rec-sent = %d\n", received-sended);
+		my_xlog(OOPS_LOG_DBG, "continue_load(): We sent last chunk, rec-sent = %d\n", received-sended);
 		change_state(obj, OBJ_READY);
 		goto done;
 	    }
@@ -2061,24 +2130,24 @@ time_t			last_read = global_sec_timer;
 	if ( so == -1 ) {
 	    lock_obj(obj);
 	    if ( (obj->refs <= 1) && !FORCE_COMPLETION(obj) ) /* we are only who refers to this obj */ {
-		my_xlog(LOG_DBG, "continue_load(): We alone: %d\n", obj->refs);
+		my_xlog(OOPS_LOG_DBG, "continue_load(): We alone: %d\n", obj->refs);
 		obj->state = OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 	    }
 	    unlock_obj(obj);
-	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Send failed: %m\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "continue_load(): Send failed: %m\n");
 	    if ( obj->state == OBJ_READY ) {
 		change_state_notify(obj);
 		goto error;	/* no one heard */
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Continue to load - we are not alone.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "continue_load(): Continue to load - we are not alone.\n");
 	}
 
     read_s:;
 	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
-		my_xlog(LOG_SEVERE, "continue_load(): select bug(?).\n");
+		my_xlog(OOPS_LOG_SEVERE, "continue_load(): select bug(?).\n");
 		obj->state =  OBJ_READY;
 		obj->flags |= FLAG_DEAD;
 		change_state_notify(obj);
@@ -2089,10 +2158,10 @@ time_t			last_read = global_sec_timer;
 	r = recv(server_so, answer, ANSW_SIZE, 0);
 	if ( r < 0  ) {
 	    if ( ERRNO == EAGAIN )  {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "continue_load(): Hmm in continue load.\n");
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "continue_load(): Hmm in continue load.\n");
 		continue;
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "continue_load(): Read failed: %m\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "continue_load(): Read failed: %m\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -2133,7 +2202,7 @@ time_t			last_read = global_sec_timer;
 	last_read = global_sec_timer;
 	/* store data in hot_buff */
 	if ( store_in_chain(answer, r, obj) ) {
-	    my_xlog(LOG_SEVERE, "continue_load(): Can't store.\n");
+	    my_xlog(OOPS_LOG_SEVERE, "continue_load(): Can't store.\n");
 	    obj->flags |= FLAG_DEAD;
 	    change_state(obj, OBJ_READY);
 	    goto error;
@@ -2177,7 +2246,7 @@ do_it:
 	goto do_it;
     }
     if ( to_send < 0 ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff(): What the fuck? to_send = %d\n", to_send);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_buff(): What the fuck? to_send = %d\n", to_send);
 	return(-1);
     }
     tv.tv_sec = READ_ANSW_TIMEOUT; tv.tv_usec = 0 ;
@@ -2232,7 +2301,7 @@ send_decoded:
     if ( !*hot )
 	return(-1);
     if ( TEST(flags, RQ_CONVERT_FROM_CHUNKED) && !rest_in_chunk ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): Check yourself: sending chunked in send_data_from_buff.\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_buff_no_wait(): Check yourself: sending chunked in send_data_from_buff.\n");
 	return(-1);
     }
     if ( TEST(flags, RQ_CONVERT_FROM_CHUNKED ) )
@@ -2294,7 +2363,7 @@ do_it:
 		    tgzb = tgzb->next;
 		else {
 		    /* something wrong						*/
-		    my_xlog(LOG_SEVERE, "Something vrong in ungzip\n");
+		    my_xlog(OOPS_LOG_SEVERE, "Something vrong in ungzip\n");
 		    CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
 		    goto do_it;
 		}
@@ -2306,7 +2375,7 @@ do_it:
 	    }
 	    if ( !tgzb ) {
 		/* something wrong						*/
-		my_xlog(LOG_SEVERE, "Something vrong in ungzip\n");
+		my_xlog(OOPS_LOG_SEVERE, "Something vrong in ungzip\n");
 		CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
 		goto do_it;
 	    }
@@ -2351,7 +2420,7 @@ do_it:
 	goto do_it;
     }
     if ( to_send < 0 ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck1? to_send = %d\n", to_send);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck1? to_send = %d\n", to_send);
 	return(-1);
     }
     /** send no more than 512 bytes at once if we control bandwith
@@ -2375,7 +2444,7 @@ do_it:
 	rq->strmp->total_out = 0;
 	rc = inflate(rq->strmp, Z_SYNC_FLUSH);
 	if ( (rc != Z_OK) && (rc != Z_STREAM_END) ) {
-	    my_xlog(LOG_SEVERE, "inflate: %d\n", rc);
+	    my_xlog(OOPS_LOG_SEVERE, "inflate: %d\n", rc);
 	    return(-1);
 	}
 	if ( rc == Z_OK ) {
@@ -2428,7 +2497,7 @@ do_it:
 
     r = send(so, source, to_send, 0);
     if ( (r < 0) && (ERRNO == EWOULDBLOCK) ) {
-	my_xlog(LOG_HTTP,"send_data_from_buff_no_wait(): EWOULDBLOCK.\n");
+	my_xlog(OOPS_LOG_HTTP,"send_data_from_buff_no_wait(): EWOULDBLOCK.\n");
 	return(0);
     }
     if ( TEST(flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) && (r>0) ) {
@@ -2502,14 +2571,14 @@ do_it_chunked:
 	    }
 	}
 	if ( cz_here ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_buff_no_wait(): Got chunk size: %s\n", ch_sz);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_buff_no_wait(): Got chunk size: %s\n", ch_sz);
 	    *hot = b;
 	    *pos = cb - b->data;
 	    *sended += faked_sent;
 	    cd = ch_sz;
 	    r = sscanf(ch_sz, "%x", &chunk_size);
 	    if ( r != 1) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): No cs in %s\n", ch_sz);
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_buff_no_wait(): No cs in %s\n", ch_sz);
 		return(-1);
 	    }
 	    if ( !chunk_size ) {
@@ -2517,7 +2586,7 @@ do_it_chunked:
 		*rest_in_chunk = -1;
 		return(0);
 	    }
-	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_buff_no_wait(): Got chunk size: %d\n", chunk_size);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_buff_no_wait(): Got chunk size: %d\n", chunk_size);
 	    *rest_in_chunk = chunk_size;
 	    if ( obj ) {
 		obj->x_content_length_sum += chunk_size;
@@ -2544,7 +2613,7 @@ do_it_chunked:
 	    goto send_chunked;
  	}
    	if ( to_send < 0 ) {
-	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck2? to_send = %d\n", to_send);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck2? to_send = %d\n", to_send);
 	    return(-1);
 	}
 	if ( TEST(flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) ) to_send = MIN(to_send, 512);
@@ -2686,7 +2755,7 @@ int
 is_attr(struct av *av, char *attr)
 {
     if ( !av || !av->attr || !attr ) return(FALSE);
-    return(!strncmp(av->attr, attr, strlen(attr)));
+    return(!strncasecmp(av->attr, attr, strlen(attr)));
 }
 
 int
@@ -2711,7 +2780,7 @@ int	r;
     if ( !val ) return(-1);
     buf = xmalloc(strlen(attr) + 1 + strlen(val) + 3, "send_av_pair(): 1");
     if ( !buf ) {
-	my_xlog(LOG_SEVERE, "send_av_pair(): No mem at send_av_pair.\n");
+	my_xlog(OOPS_LOG_SEVERE, "send_av_pair(): No mem at send_av_pair.\n");
 	return(-1);
     }
     sprintf(buf, "%s %s\r\n", attr, val);
@@ -2730,7 +2799,7 @@ char	*buf;
     else
 	buf = xmalloc(3, "format_av_pair(): 2");
     if ( !buf ) {
-	my_xlog(LOG_SEVERE, "format_av_pair(): No mem at send_av_pair.\n");
+	my_xlog(OOPS_LOG_SEVERE, "format_av_pair(): No mem at send_av_pair.\n");
 	return(NULL);
     }
     if ( *attr )
@@ -2753,14 +2822,14 @@ time_t	corrected_initial_age, resident_time, current_age;
     resident_time = 		time(NULL) - obj->response_time;
     current_age = 		corrected_initial_age + resident_time;
 
-    my_xlog(LOG_DBG, "current_obj_age(): obj->times.date: %d\n", (utime_t)(obj->times.date));
-    my_xlog(LOG_DBG, "current_obj_age(): obj->response_time: %d\n", (utime_t)(obj->response_time));
-    my_xlog(LOG_DBG, "current_obj_age(): apparent_age: %d\n", apparent_age);
-    my_xlog(LOG_DBG, "current_obj_age(): corrected_received_age: %d\n", corrected_received_age);
-    my_xlog(LOG_DBG, "current_obj_age(): responce_delay: %d\n", response_delay);
-    my_xlog(LOG_DBG, "current_obj_age(): corrected_initial_age: %d\n", corrected_initial_age);
-    my_xlog(LOG_DBG, "current_obj_age(): resident_time: %d\n", resident_time);
-    my_xlog(LOG_DBG, "current_obj_age(): current_age: %d\n", current_age);
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): obj->times.date: %d\n", (utime_t)(obj->times.date));
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): obj->response_time: %d\n", (utime_t)(obj->response_time));
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): apparent_age: %d\n", apparent_age);
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): corrected_received_age: %d\n", corrected_received_age);
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): responce_delay: %d\n", response_delay);
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): corrected_initial_age: %d\n", corrected_initial_age);
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): resident_time: %d\n", resident_time);
+    my_xlog(OOPS_LOG_DBG, "current_obj_age(): current_age: %d\n", current_age);
 
     return(current_age);
 }
@@ -2949,7 +3018,7 @@ int 			server_so = -1, r;
 struct	peer		*peer;
 ERRBUF ;
 
-    my_xlog(LOG_HTTP|LOG_DBG, "Connecting to peer\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "peer_connect(): Connecting to peer...\n");
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	say_bad_request(client_so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
@@ -2983,7 +3052,7 @@ peer_connect_silent(int client_so, struct sockaddr_in *peer_sa, struct request *
 int 			server_so = -1, r;
 struct	peer		*peer;
 
-    my_xlog(LOG_HTTP|LOG_DBG, "Connecting to peer\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "peer_connect_silent(): Connecting to peer...\n");
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	return(-1);
@@ -3019,9 +3088,10 @@ int	via_inserted = FALSE;
     if ( !TEST(flags, DONT_CHANGE_HTTPVER) && force_http11) {
 	httpv = "HTTP/1.1";
 	if ( !TEST(rq->flags, RQ_HAS_HOST) ) host = rq->url.host;
-    } else
+    } else {
 	httpv = url->httpv;
-
+	if ( !TEST(rq->flags, RQ_HAS_HOST) ) host = rq->url.host;
+    }
     tmpbuff = alloc_buff(CHUNK_SIZE);
     if ( !tmpbuff ) return(NULL);
     rlen = strlen(meth) + 1/*sp*/ + strlen(url->path) + 1/*sp*/ +
@@ -3045,6 +3115,8 @@ int	via_inserted = FALSE;
     while ( av ) {
 	if ( is_attr(av, "Proxy-Connection:") )
 	    goto do_not_insert;
+	if ( is_attr(av, "Proxy-Authorization:") ) /* hop-by-hop */
+	    goto do_not_insert;
 	if ( is_attr(av, "Connection:") )
 	    goto do_not_insert;
 	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
@@ -3059,7 +3131,7 @@ int	via_inserted = FALSE;
 		    if ( buf ) *buf = 0;
 		}
 		if ( loop_detected(fav) ) {
-		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "build_direct_request(): Loop detected: %s\n", fav);
+		    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "build_direct_request(): Loop detected: %s\n", fav);
 		    goto fail;
 		}
 		/* ", host_name:port (oops ver)" */
@@ -3175,9 +3247,10 @@ int		lp_length = 0;
     if ( !TEST(flags, DONT_CHANGE_HTTPVER) && force_http11) {
 	httpv = "HTTP/1.1";
 	if ( !TEST(rq->flags, RQ_HAS_HOST) ) host = rq->url.host;
-    } else
+    } else {
 	httpv = url->httpv;
-
+	if ( !TEST(rq->flags, RQ_HAS_HOST) ) host = rq->url.host;
+    }
     tmpbuff = alloc_buff(CHUNK_SIZE);
     if ( !tmpbuff ) return(NULL);
     /* GET proto://host/path HTTP/1.x */
@@ -3217,6 +3290,7 @@ int		lp_length = 0;
     }
     if ( attach_data(answer, strlen(answer), tmpbuff) )
 	goto fail;
+    my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", answer);
     if ( headers ) { /* attach what was requested */
 	if ( attach_data(headers, strlen(headers), tmpbuff) )
 	    goto fail;
@@ -3224,6 +3298,7 @@ int		lp_length = 0;
     if ( host && (fav=format_av_pair("Host:", host)) ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
+        my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", fav);
 	xfree(fav);fav = NULL;
     }
     av = rq->av_pairs;
@@ -3232,7 +3307,7 @@ int		lp_length = 0;
 	    goto do_not_insert;
 	if ( is_attr(av, "Proxy-Connection:") ) /* hop-by-hop */
 	    goto do_not_insert;
-	if ( rq->peer_auth && is_attr(av, "Proxy-Authorization:") ) /* hop-by-hop */
+	if ( is_attr(av, "Proxy-Authorization:") ) /* hop-by-hop */
 	    goto do_not_insert;
 	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
 	    /* attach my Via: */
@@ -3245,7 +3320,7 @@ int		lp_length = 0;
 		    if ( buf ) *buf = 0;
 		}
 		if ( loop_detected(fav) ) {
-		    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "build_parent_request(): Loop detected: %s\n", fav);
+		    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "build_parent_request(): Loop detected: %s\n", fav);
 		    goto fail;
 		}
 		/* ", host_name:port (oops ver)" */
@@ -3256,6 +3331,7 @@ int		lp_length = 0;
 		    xfree(buf);
 		    goto fail;
 		}
+                my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", buf);
 		via_inserted = TRUE;
 		xfree(buf);
 		xfree(fav); fav = NULL;
@@ -3265,6 +3341,7 @@ int		lp_length = 0;
 	if ( (fav = format_av_pair(av->attr, av->val)) != 0 ) {
 	    if ( attach_data(fav, strlen(fav), tmpbuff) )
 		goto fail;
+            my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", fav);
 	    xfree(fav);fav = NULL;
 	}
   do_not_insert:
@@ -3274,11 +3351,13 @@ int		lp_length = 0;
 	&& (fav = format_av_pair("Proxy-Authorization: Basic", rq->peer_auth)) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
+        my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", fav);
 	xfree(fav);fav = NULL;
     }
     if ( (fav = format_av_pair("Connection:", "close")) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
+        my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", fav);
 	xfree(fav);fav = NULL;
     }
     if ( insert_via && !via_inserted ) {
@@ -3291,6 +3370,7 @@ int		lp_length = 0;
 	    xfree(buf);
 	    goto fail;
 	}
+        my_xlog(OOPS_LOG_DBG|OOPS_LOG_HTTP, "build_parent_request(): %s", buf);
 	xfree(buf);
 	xfree(fav);fav = NULL;
     }
@@ -3341,7 +3421,7 @@ char	*content_encoding = NULL;
 	if ( obj->headers )
 	    transfer_encoding = attr_value(obj->headers, "Transfer-Encoding");
 	if ( transfer_encoding && !strncasecmp("chunked", transfer_encoding, 7)) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "downgrade(): Turn on Chunked Gateway.\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "downgrade(): Turn on Chunked Gateway.\n");
 	    res |= UNCHUNK_ANSWER;
 	}
     }
@@ -3368,7 +3448,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 	char	*vary = attr_value(obj->headers, "Vary:" ), *temp_vary;
 
 	if ( vary && (temp_vary = strdup(vary)) ) {
-	    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
 	    /* 1. skip spaces */
 	    p = temp_vary;
 	    while ( *p && IS_SPACE(*p) ) p++;
@@ -3379,7 +3459,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 		    char	a_buf[128], pref[] ="X-oops-internal-rq-", *fav;
 
 		    t = NULL;
-		    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Chk hdr: %s\n", p);
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "process_vary_headers(): Chk hdr: %s\n", p);
 		    value = attr_value(rq->av_pairs, p);
 		    if ( value ) {
 			/* format and attach */
@@ -3397,7 +3477,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 		    } /* value */
 		} /* while tokens */
 	    IF_FREE(temp_vary);
-	    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
 	 }
     }
 }
@@ -3485,10 +3565,10 @@ int	dsize = 0;
 		goto not_text;
 	}
 	t = NULL;
-	my_xlog(LOG_DBG, "check_rewrite_charset(): Token: `%s'.\n", p);
+	my_xlog(OOPS_LOG_DBG, "check_rewrite_charset(): Token: `%s'.\n", p);
 	while ( *p && IS_SPACE(*p) ) p++;
 	if ( !strncasecmp(p, "charset=", 8) ) {
-	    my_xlog(LOG_DBG|LOG_INFORM, "check_rewrite_charset(): Alter charset from `%s' to `%s'.\n",
+	    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_rewrite_charset(): Alter charset from `%s' to `%s'.\n",
 	    	   p+8, rq->src_charset);
 	    strncat(d, "; charset=", dsize-strlen(d)-1);
 	    strncat(d, rq->src_charset, dsize-strlen(d)-1);
@@ -3511,10 +3591,10 @@ char	*cont_type;
     if ( rq && rq->av_pairs ) {
 	cont_type = attr_value(rq->av_pairs, "Content-Type:");
 	if ( cont_type ) {
-	    my_xlog(LOG_DBG|LOG_INFORM, "can_recode_rq_content(): rq->content_type = %s\n", cont_type);
+	    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "can_recode_rq_content(): rq->content_type = %s\n", cont_type);
 	    res = TRUE;
 	} else {
-	    my_xlog(LOG_DBG|LOG_INFORM, "can_recode_rq_content(): No cont type in rq.\n");
+	    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "can_recode_rq_content(): No cont type in rq.\n");
 	    res = TRUE;
 	}
     }

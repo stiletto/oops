@@ -29,7 +29,7 @@ char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 int		err(int so, char *msg, char *reason, int code, struct request* rq, int *flags);
 #else
 static	char	module_type   = MODULE_ERR  ;
@@ -37,7 +37,7 @@ static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
 static	int	mod_load();
 static	int	mod_unload();
-static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
 static	int	err(int so, char *msg, char *reason, int code, struct request* rq, int *flags);
 #endif
 
@@ -130,7 +130,7 @@ mod_unload()
 }
 
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     WRLOCK_ERR_CONFIG ;
     err_lang[0]	    = 0;
@@ -146,7 +146,7 @@ mod_config_beg()
 }
 
 int
-mod_config_end()
+mod_config_end(int i)
 {
 
     WRLOCK_ERR_CONFIG ;
@@ -162,7 +162,7 @@ mod_config_end()
 }
 
 int
-mod_config(char *config)
+mod_config(char *config, int i)
 {
 char	*p = config;
 
@@ -406,7 +406,7 @@ char	*in_mem;
 	    return;
 	if ( !err_template[0] )
 	    return;
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "reload_template(): Loading template from `%s'.\n", err_template);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_template(): Loading template from `%s'.\n", err_template);
 
 	size   = sb.st_size;
 	if ( template ) xfree(template);

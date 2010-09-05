@@ -28,6 +28,7 @@
 #define	MOD_UNLOAD(m)		(m->general.unload)
 #define	MOD_CONFIG(m)		(m->general.config)
 #define	MOD_RUN(m)		(m->general.mod_run)
+#define	MOD_TICK(m)		(m->general.mod_tick)
 #define	MOD_CONFIG_BEG(m)	(m->general.config_beg)
 #define	MOD_CONFIG_END(m)	(m->general.config_end)
 
@@ -43,13 +44,14 @@ struct	general_module {
 	char			name[MODNAMELEN];
 	int			(*load)(void);
 	int			(*unload)();
-	int			(*config_beg)();
-	int			(*config_end)();
-	int			(*config)(char*);
+	int			(*config_beg)(int);
+	int			(*config_end)(int);
+	int			(*config)(char*, int);
 	struct general_module	*next_global;
 	int			type;
-	char			info[MODINFOLEN];
+	char		info[MODINFOLEN];
 	int			(*mod_run)();
+	int			(*mod_tick)();
 };
 
 struct	log_module {
@@ -70,9 +72,9 @@ struct	auth_module {
 
 struct	redir_module {
 	struct	general_module	general;
-	int	(*redir)(int, struct group*, struct request*, int*);
-	int	(*redir_connect)(int*, struct request*, int*);
-	int	(*redir_rewrite_header)(char **, struct request*, int*);
+	int	(*redir)(int, struct group*, struct request*, int*, int);
+	int	(*redir_connect)(int*, struct request*, int*, int);
+	int	(*redir_rewrite_header)(char **, struct request*, int*, int);
 };
 
 struct	output_module {
@@ -123,6 +125,7 @@ extern	struct	log_module	log_dummy;
 extern	struct	log_module	custom_log;
 
 extern	struct	listener_module	oopsctl_mod;
+extern	struct	listener_module	wccp2_mod;
 
 extern	struct	redir_module	accel;
 extern	struct	redir_module	fastredir;
@@ -134,6 +137,7 @@ extern	struct	output_module	lang;
 extern	struct	err_module	err_mod;
 
 extern	struct	auth_module	passwd_file;
+extern	struct	auth_module	pam;
 extern	struct	auth_module	passwd_mysql;
 extern	struct	auth_module	passwd_pgsql;
 

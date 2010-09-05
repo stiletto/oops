@@ -29,16 +29,18 @@ char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO;
 int		mod_load();
 int		mod_unload();
-int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 void*		process_call(void *arg);
+#define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_LISTENER ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
 static  int     mod_load();
 static  int     mod_unload();
-static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
 static	void*	process_call(void *arg);
+#define		MODULE_STATIC	static
 #endif
 
 struct	listener_module	oopsctl_mod = {
@@ -95,6 +97,7 @@ typedef	struct	rq_op_ {
 	struct  rq_op_ *next;
 } rq_op_t;
 
+MODULE_STATIC
 int
 mod_load()
 {
@@ -104,6 +107,7 @@ mod_load()
     html_refresh = 0;
     return(MOD_CODE_OK);
 }
+MODULE_STATIC
 int
 mod_unload()
 {
@@ -112,8 +116,9 @@ mod_unload()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config_beg()
+mod_config_beg(int i)
 {
     WRLOCK_OOPSCTL_CONFIG ;
     oopsctl_so = -1;		/* was closed in core */
@@ -123,6 +128,7 @@ mod_config_beg()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
 mod_run()
 {
@@ -136,14 +142,16 @@ mod_run()
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config_end()
+mod_config_end(int i)
 {
     return(MOD_CODE_OK);
 }
 
+MODULE_STATIC
 int
-mod_config(char *config)
+mod_config(char *config, int i)
 {
 char	*p = config;
 
@@ -257,8 +265,8 @@ char			ctime_buf[30] = "";
     write(so, buf, strlen(buf));
     sprintf(buf, "Total hits   : %d\n", (int)oops_stat.hits);
     write(so, buf, strlen(buf));
-    if ( current_workers ) {
-	sprintf(buf, "Thread pool  : %d ready to serve (out of %d max)\n", current_workers, max_workers);
+    if ( max_workers ) {
+	sprintf(buf, "Thread pool  : %d ready to serve (out of %d max)\n", wq.counter, wq.parallelism);
 	write(so, buf, strlen(buf));
     }
     sprintf(buf, "Curr.req.rate: %.2f req/sec (max: %.2f)\n",
@@ -506,8 +514,8 @@ char			ctime_buf[30];
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Total hits<td>%d\n", (int)oops_stat.hits);
     write(so, buf, strlen(buf));
-    if ( current_workers ) {
-	sprintf(buf, "<tr><td>Thread pool<td>%d ready to serve (out of %d max)\n", current_workers, max_workers);
+    if ( max_workers ) {
+	sprintf(buf, "<tr><td>Thread pool<td>%d ready to serve (out of %d max)\n", wq.counter, wq.parallelism);
 	write(so, buf, strlen(buf));
     }
     sprintf(buf, "<tr><td>Curr.req.rate<td>%.2f req/sec (max: %.2f)\n",
@@ -706,54 +714,54 @@ char	vbuf[80], *v = vbuf;
 			new_verbosity_level = -1;
 			break;
 		case 'A':
-			new_verbosity_level = LOG_SEVERE | LOG_PRINT;
+			new_verbosity_level = OOPS_LOG_SEVERE | OOPS_LOG_PRINT;
 			break;
 		case 'c':
-			new_verbosity_level |= LOG_NOTICE;
+			new_verbosity_level |= OOPS_LOG_NOTICE;
 			break;
 		case 'C':
-			new_verbosity_level &= ~ LOG_NOTICE;
+			new_verbosity_level &= ~ OOPS_LOG_NOTICE;
 			break;
 		case 'd':
-			new_verbosity_level |= LOG_DBG;
+			new_verbosity_level |= OOPS_LOG_DBG;
 			break;
 		case 'D':
-			new_verbosity_level &= ~ LOG_DBG;
+			new_verbosity_level &= ~ OOPS_LOG_DBG;
 			break;
 
 		case 'f':
-			new_verbosity_level |= LOG_FTP;
+			new_verbosity_level |= OOPS_LOG_FTP;
 			break;
 		case 'F':
-			new_verbosity_level &= ~ LOG_FTP;
+			new_verbosity_level &= ~ OOPS_LOG_FTP;
 			break;
 
 			case 'h':
-			new_verbosity_level |= LOG_HTTP;
+			new_verbosity_level |= OOPS_LOG_HTTP;
 			break;
 		case 'H':
-			new_verbosity_level &= ~ LOG_HTTP;
+			new_verbosity_level &= ~ OOPS_LOG_HTTP;
 			break;
 
 		case 'i':
-			new_verbosity_level |= LOG_INFORM;
+			new_verbosity_level |= OOPS_LOG_INFORM;
 			break;
 		case 'I':
-			new_verbosity_level &= ~ LOG_INFORM;
+			new_verbosity_level &= ~ OOPS_LOG_INFORM;
 			break;
 
 		case 'n':
-			new_verbosity_level |= LOG_DNS;
+			new_verbosity_level |= OOPS_LOG_DNS;
 			break;
 		case 'N':
-			new_verbosity_level &= ~ LOG_DNS;
+			new_verbosity_level &= ~ OOPS_LOG_DNS;
 			break;
 
 		case 's':
-			new_verbosity_level |= LOG_STOR;
+			new_verbosity_level |= OOPS_LOG_STOR;
 			break;
 		case 'S':
-			new_verbosity_level &= ~ LOG_STOR;
+			new_verbosity_level &= ~ OOPS_LOG_STOR;
 			break;
 	}
 	command++;
@@ -761,28 +769,28 @@ char	vbuf[80], *v = vbuf;
     verbosity_level = new_verbosity_level;
     write(so, "OK, now verbosity is: ", 22);
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_NOTICE ) {*v = 'c'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_NOTICE ) {*v = 'c'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_DBG ) {*v = 'd'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_DBG ) {*v = 'd'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_FTP ) {*v = 'f'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_FTP ) {*v = 'f'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_HTTP ) {*v = 'h'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_HTTP ) {*v = 'h'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_INFORM ) {*v = 'i'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_INFORM ) {*v = 'i'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_DNS ) {*v = 'n'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_DNS ) {*v = 'n'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_STOR ) {*v = 's'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_STOR ) {*v = 's'; v++ ; *v = 0;}
     }
     if ( v - vbuf < sizeof vbuf ) {
-	if ( verbosity_level & LOG_SEVERE ) {*v = 'E'; v++ ; *v = 0;}
+	if ( verbosity_level & OOPS_LOG_SEVERE ) {*v = 'E'; v++ ; *v = 0;}
     }
     write(so, vbuf, strlen(vbuf));
     write(so, "\n", 1);
@@ -874,7 +882,7 @@ char		*t, *tok, *lasts;
 	    new_op = calloc(sizeof(*new_op),1);
 	    new_op->op       = RQ_OP_SRC;
 	    if ( str_to_sa(tok+4, (struct sockaddr *)&new_op->data.ADR) ) {
-		my_xlog(LOG_SEVERE, "Failed to resolve %s\n", tok+4);
+		my_xlog(OOPS_LOG_SEVERE, "Failed to resolve %s\n", tok+4);
 	    }
 	    if ( last_op ) {
 		last_op->next = new_op;
@@ -1019,6 +1027,7 @@ process_command(int so, char *command)
     return(0);
 }
 
+MODULE_STATIC
 void*
 process_call(void *arg)
 {
@@ -1030,7 +1039,7 @@ char	command[128];
     work = arg;
     so = work->so;
     free(work);
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "process_call(): Accept called on %d\n", so);
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "process_call(): Accept called on %d\n", so);
     /* done */
     while( read_command(so, command, sizeof(command)) &&
            process_command(so, command) );
@@ -1062,7 +1071,7 @@ int			rc;
     }
     chmod(socket_path, 0600);
     listen(oopsctl_so, 5);
-    add_socket_to_listen_list(oopsctl_so, 0, 0, &process_call);
+    add_socket_to_listen_list(oopsctl_so, 0, 0, 0, &process_call);
 
 /*
 int			so, one = -1;

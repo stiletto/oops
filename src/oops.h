@@ -36,13 +36,30 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	REGEX_H
 #endif
 
+/* libpcre3/libpcre2/libpcre1 backward compatibility: */
+
+#if     !defined(REG_EXTENDED)
+#define REG_EXTENDED 0
+#endif
+
+#if     !defined(REG_NOSUB)
+#define REG_NOSUB 0
+#endif
+
+/* :libpcre3/libpcre2/libpcre1 backward compatibility */
+
 #include "llt.h"
 #include "hash.h"
+#include "workq.h"
 
 typedef struct	tm	tm_t;
 
 #if	!defined(HAVE_UINT32_T)
 typedef	unsigned	uint32_t;
+#endif
+
+#if	!defined(HAVE_UINT16_T)
+typedef	unsigned short	uint16_t;
 #endif
 
 #if   defined(BSDOS) || defined(LINUX) || defined(FREEBSD) || defined(OSF)
@@ -228,27 +245,30 @@ typedef	unsigned	uint32_t;
 
 #define	STATUS_OK		200
 #define	STATUS_NOT_MODIFIED	304
+#define STATUS_FORBIDEN		403
+#define STATUS_GATEWAY_TIMEOUT  504
 
-#define	RQ_HAS_CONTENT_LEN	1
-#define	RQ_HAS_IF_MOD_SINCE	(1<<1)
-#define	RQ_HAS_NO_STORE		(1<<2)
-#define	RQ_HAS_NO_CACHE		(1<<3)
-#define	RQ_HAS_MAX_AGE		(1<<4)
-#define	RQ_HAS_MAX_STALE	(1<<5)
-#define	RQ_HAS_MIN_FRESH	(1<<6)
-#define	RQ_HAS_NO_TRANSFORM	(1<<7)
+#define	RQ_HAS_CONTENT_LEN	    1
+#define	RQ_HAS_IF_MOD_SINCE	    (1<<1)
+#define	RQ_HAS_NO_STORE		    (1<<2)
+#define	RQ_HAS_NO_CACHE		    (1<<3)
+#define	RQ_HAS_MAX_AGE		    (1<<4)
+#define	RQ_HAS_MAX_STALE	    (1<<5)
+#define	RQ_HAS_MIN_FRESH	    (1<<6)
+#define	RQ_HAS_NO_TRANSFORM	    (1<<7)
 #define	RQ_HAS_ONLY_IF_CACHED	(1<<8)
 #define	RQ_HAS_AUTHORIZATION	(1<<9)
-#define RQ_GO_DIRECT		(1<<10)
+#define RQ_GO_DIRECT		    (1<<10)
 #define	RQ_HAS_CLOSE_CONNECTION (1<<11)
-#define	RQ_HAS_BANDWIDTH	(1<<12)
+#define	RQ_HAS_BANDWIDTH	    (1<<12)
 #define	RQ_CONVERT_FROM_CHUNKED (1<<13)
-#define RQ_NO_ICP		(1<<15)
-#define RQ_FORCE_DIRECT		(1<<16)
-#define RQ_HAS_HOST		(1<<17)
-#define RQ_HAVE_RANGE		(1<<18)
-#define RQ_HAVE_PER_IP_BW	(1<<19)
+#define RQ_NO_ICP		        (1<<15)
+#define RQ_FORCE_DIRECT		    (1<<16)
+#define RQ_HAS_HOST		        (1<<17)
+#define RQ_HAVE_RANGE		    (1<<18)
+#define RQ_HAVE_PER_IP_BW	    (1<<19)
 #define	RQ_CONVERT_FROM_GZIPPED (1<<20)
+#define	RQ_SERVED_DIRECT        (1<<21)
 
 #define	DOWNGRADE_ANSWER	1
 #define	UNCHUNK_ANSWER		2
@@ -292,15 +312,15 @@ typedef	unsigned	uint32_t;
 #define	ERR_TRANSFER		7
 #define	ERR_ACL_DENIED		8
 
-#define	LOG_STOR		1
-#define	LOG_FTP			2
-#define	LOG_HTTP		4
-#define	LOG_DNS			8
-#define	LOG_DBG			16
-#define	LOG_PRINT		32
-#define	LOG_INFORM		4096
-#define	LOG_NOTICE		8192
-#define	LOG_SEVERE		16384
+#define	OOPS_LOG_STOR		1
+#define	OOPS_LOG_FTP		2
+#define	OOPS_LOG_HTTP		4
+#define	OOPS_LOG_DNS		8
+#define	OOPS_LOG_DBG		16
+#define	OOPS_LOG_PRINT		32
+#define	OOPS_LOG_INFORM		4096
+#define	OOPS_LOG_NOTICE		8192
+#define	OOPS_LOG_SEVERE		16384
 
 #define	SET(a,b)		(a|=(b))
 #define	CLR(a,b)		(a&=~b)
@@ -402,6 +422,20 @@ struct	bind_acl {
 	acl_chk_list_hdr_t	*acl_list;
 };
 
+typedef  struct  mod_call_ {
+        struct  mod_call_               *next;
+        char                            mod_name[16];
+        int                             mod_instance;
+} mod_call_t;
+
+typedef struct l_mod_call_list_ {
+        mod_call_t                      *list;
+        int                             refs;
+        pthread_mutex_t                 lock;
+} l_mod_call_list_t;
+
+
+
 typedef struct bind_acl bind_acl_t;
 #define	PROTO_HTTP	0
 #define	PROTO_FTP	1
@@ -427,7 +461,7 @@ struct	request {
 	int			min_fresh;
 	struct	av		*av_pairs;
 	struct	buff		*data;		/* for POST				*/
-	struct	l_string_list	*redir_mods;	/* redir modules			*/
+        l_mod_call_list_t       *redir_mods;	/* redir modules			*/
 	refresh_pattern_t	refresh_pattern;/* result of refresh_pattern		*/
 	char			*original_host;	/* original value of Host: if redir-ed	*/
 	char			src_charset[16];
@@ -452,6 +486,7 @@ struct	request {
 	time_t			last_writing;	/* second of last_writing		*/
 	int			s0_sent;	/* data size sent during last second	*/
 	int			so;		/* socket				*/
+	struct	sockaddr_in	conn_from_sa;	/* connect from address			*/
 	struct	request		*next;		/* next in hash				*/
 	struct	request		*prev;		/* prev in hash				*/
 	int			doc_size;	/* corr. document size			*/
@@ -695,6 +730,7 @@ struct	group_ops_struct {
 #define	OP_PER_SESS_BW	13
 #define	OP_PER_IP_BW	14
 #define	OP_PER_IP_CONN	15
+#define	OP_CONN_FROM	16
 	int				op;
 	void				*val;
 	struct	group_ops_struct	*next;
@@ -764,7 +800,6 @@ struct	group_stat {
 };
 
 struct  dstdomain_cache_entry {
-	char	*host;			/* hostname 		*/
 #define	DSTDCACHE_NOTFOUND	0
 #define	DSTDCACHE_ALLOW		1
 #define	DSTDCACHE_DENY		2
@@ -782,7 +817,7 @@ struct	group	{
 	int			bandwidth;
 	int			miss_deny;		/* TRUE if deny		*/
 	struct	l_string_list	*auth_mods;		/* auth modules		*/
-	struct	l_string_list	*redir_mods;		/* redir modules	*/
+	l_mod_call_list_t	*redir_mods;		/* redir modules	*/
 	pthread_mutex_t		group_mutex;
 	struct	group_stat	cs0;			/* current		*/
 	struct	group_stat	cs1;			/* prev second		*/
@@ -794,8 +829,9 @@ struct	group	{
 	acl_chk_list_hdr_t	*networks_acl;
 	int			maxreqrate;		/* max request rate	*/
 	int			per_sess_bw;		/* max bandw per session */
-	int			per_ip_bw;		/* bandw per ip address (or client)	*/
-	int			per_ip_conn;		/* max number of conns per ip		*/
+	int			per_ip_bw;		/* bandw per ip address (or client) */
+	int			per_ip_conn;		/* max number of conns per ip	*/
+	struct	sockaddr_in	conn_from_sa;		/* connect from address	*/
 };
 
 struct	domain {
@@ -855,7 +891,6 @@ struct	peer	{
 };
 
 struct	icp_queue_elem {
-	ll_t			ll;
 	/* this part is from requestor		*/
 	/* ---------------------------- 	*/
 	/* url in icp format			*/
@@ -898,13 +933,17 @@ typedef	struct	work {
 	int	accepted_so;	/* on which socket connection was accepted	*/
 } work_t;
 
+#define LISTEN_AND_NO_ACCEPT    1
+#define LISTEN_AND_DO_SYNC      2
+
 struct	listen_so_list	{
-	int			so;		/* socket number				*/
-	u_short			port;		/* port we listen on				*/
-	struct	in_addr		addr;		/* address we listen on				*/
-	void			*(*process_call)(void*);/* this will be called after accept()	*/
+	int                     so;		/* socket number				*/
+	u_short                 port;		/* port we listen on				*/
+	struct	in_addr         addr;		/* address we listen on				*/
+	void                    *(*process_call)(void*);/* this will be called after accept()	*/
 	struct	listen_so_list	*next;		/* link to next					*/
-	int			requests;	/* requests we accepted during curr. second	*/
+	int                     requests;	/* requests we accepted during curr. second	*/
+    int                     flags;      /* do we need accept or not on this fd  */
 };
 
 #define	LOCK_STATISTICS(s)	pthread_mutex_lock(&s.s_lock)
@@ -938,7 +977,7 @@ struct	oops_stat {
 	int		drops;		/* drops total			*/
 };
 
-#define	MAXPOLLFD	(64)
+#define	MAXPOLLFD	(8)
 #define	FD_POLL_RD	(1)
 #define	FD_POLL_WR	(2)
 #define	FD_POLL_HU	(4)
@@ -995,3 +1034,10 @@ typedef	struct	eraser_data_ {
 #include	"extern.h"
 
 
+typedef struct  icp_job_tag {
+        struct  sockaddr_in     my_icp_sa;
+        struct  sockaddr_in     icp_sa;
+        int                     icp_so;
+        char                    *icp_buf;
+        int                     icp_buf_len;
+} icp_job_t;

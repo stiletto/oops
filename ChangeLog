@@ -1,3 +1,33 @@
+version 1.5.18
+		 - method CONNECT ignored connect_from.
+version 1.5.17
+	26.04.01 - connect_from for groups. (ai)
+	12.04.01 - acces_log now htmlize path.
+		   accel.c: host from absolute uri have precedence over
+			Host:
+		   ssl works with parent
+        05.04.01 - configure.in fix for SUN Forte Workshop 6. (ai)
+	05.03.01 - Cookies, Parent Authentication.
+	03.03.01 - 'allow' rules for redir.c, fastredir.c
+	13.02.01 - Fixed memory-corruption bug in ftp_utils.c
+		   Fixed error (Host: was not inserted if need in requests
+		   when force_http11 option commented out).
+		   Fixed bug: Proxy-Authorization now is hop-by-hop
+version 1.5.9
+	30.01.01 - redir and fastredir can use different configs
+		   like redir/1 redir/2 ...
+		   local_networls was not handled properly if ICP is used - one
+		   more fix.
+	28.01.01 - icp processing use hash now.
+		   rand_r used in request numbers in icp requests.
+		   hash.c rewriten (dst_domain_acl used this interface)
+version 1.5.8
+	23.01.01 - icp requests now processed in workers.
+	20.01.01 - fixed bug in call to pread.
+		   worker threads returns after timeout.
+	12.01.01 - fixed bug in acl.c (several networks_acl for group didn't work
+		   moved to new workq - workers should live with timeouts -
+		   will not run lot of processes under linux.
 version 1.5.6
 	29.12.00 - username acl
 	28.12.00 - \n removed ftom some acl's when read from file

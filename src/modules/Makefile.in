@@ -33,6 +33,7 @@ PGSQL_LIB=@PGSQL_LIB@
 all:	log_dummy.@MOD_EXT@ \
 	err.@MOD_EXT@ \
 	passwd_file.@MOD_EXT@ \
+	pam.@MOD_EXT@ \
 	passwd_mysql.@MOD_EXT@ \
 	passwd_pgsql.@MOD_EXT@ \
 	lang.@MOD_EXT@ \
@@ -48,6 +49,7 @@ all:	log_dummy.@MOD_EXT@ \
 	gigabase_db_api.@MOD_EXT@ \
 	passwd_mysql.@MOD_EXT@ \
 	passwd_pgsql.@MOD_EXT@ \
+	wccp2.@MOD_EXT@ \
 	$(OPT_MODS)
 
 log_dummy.@MOD_EXT@:	log_dummy.c ../modules.h ../oops.h
@@ -58,7 +60,11 @@ lang.@MOD_EXT@:		lang.c ../modules.h ../oops.h
 
 oopsctl_mod.@MOD_EXT@:	oopsctl_mod.c ../modules.h ../oops.h
 
+wccp2.@MOD_EXT@:	wccp2.c ../modules.h ../oops.h
+
 passwd_file.@MOD_EXT@:	passwd_file.c ../modules.h ../oops.h
+
+pam.@MOD_EXT@:	pam.c ../modules.h ../oops.h
 
 redir.@MOD_EXT@:	redir.c ../modules.h ../oops.h
 

@@ -116,7 +116,7 @@ rotate_logs(void *arg)
 struct stat	statb;
 int		r;
 
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): Log rotator started.\n");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): Log rotator started.\n");
     if ( arg ) return (void *)0;
     forever() {
 	RDLOCK_CONFIG ;
@@ -125,13 +125,13 @@ int		r;
 	    if ( !r && (statb.st_mode & S_IFREG)
 	    	    && log_size
 	    	    && (lseek(logbuff.fd,0,SEEK_END) > log_size) ) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
 	    		r, statb.st_mode, log_size, lseek(logbuff.fd,0,SEEK_END));
 		rotate_logbuff();
 	    } else {
-		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
 	    		r, statb.st_mode, log_size, lseek(logbuff.fd,0,SEEK_END));
-		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): No need to rotate %s\n", logfile);
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): No need to rotate %s\n", logfile);
 	    }
 	}
 	if ( accesslog_num && (accesslogbuff.fd != -1) ) {
@@ -139,13 +139,13 @@ int		r;
 	    if ( !r && (statb.st_mode & S_IFREG)
 		    && accesslog_size
 		    && (lseek(accesslogbuff.fd,0,SEEK_END) > accesslog_size) ) {
-		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
 	    		r, statb.st_mode, accesslog_size, lseek(accesslogbuff.fd,0,SEEK_END));
 		rotate_accesslogbuff();
 	    } else {
-		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
 	    		r, statb.st_mode, accesslog_size, lseek(accesslogbuff.fd,0,SEEK_END));
-		my_xlog(LOG_DBG|LOG_INFORM, "rotate_logs(): No need to rotate %s\n", accesslog);
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): No need to rotate %s\n", accesslog);
 	    }
 	}
 	UNLOCK_CONFIG ;

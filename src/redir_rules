@@ -1,5 +1,24 @@
+#
+# This line allow anything that match this regex
+#
+
+http://.*topping.com.ua/	allow
+
+#
+# Thess lines send internal (compiled in) content in responce
+# to request
+#
+
 http://.*/.*banner.*		internal:nospam1x1
 http://.*/.*reklama.*		internal:nospam468x60
-xxx			http://www.northernlight.com/
+
+#
+# These lines "redirects" to URL in right side
+#
+xxx				http://www.northernlight.com/
 127.0.0.1/aaa			http://127.0.0.1/bbb
+
+#
+# This line send redir_template file as answer
+
 127.0.0.1/bbb

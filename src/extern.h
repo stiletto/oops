@@ -109,12 +109,13 @@ extern struct	obj_hash_entry	hash_table[HASH_SIZE];
 extern struct	rq_hash_entry	rq_hash[RQ_HASH_SIZE];
 extern struct	ip_hash_head	ip_hash[IP_HASH_SIZE];
 extern struct	dns_hash_head	dns_hash[DNS_HASH_SIZE];
-extern list_t		icp_requests_list;
+extern hash_t		*icp_requests_hash;
 extern list_t		blacklist;
 extern char		domain_name[MAXHOSTNAMELEN+1];
 extern char		host_name[MAXHOSTNAMELEN+1];
 extern char		*oops_user;
 extern char		*oops_chroot;
+extern uid_t    oops_uid;
 extern int             insert_via;
 extern int             insert_x_forwarded_for;
 extern named_acl_t	*named_acls;
@@ -223,6 +224,7 @@ extern	int		load_obj_from_disk(struct mem_obj *, struct disk_ref *);
 extern	struct storage_st *locate_storage_by_id(uint32_t);
 extern	int		erase_from_disk(char *, struct disk_ref*);
 extern	void		process_icp_msg(int so, char *buf, int len, struct sockaddr_in *, struct sockaddr_in *);
+extern  void            icp_processor(void*);
 extern	void		my_sleep(int);
 extern	void		my_msleep(int);
 extern	int		calculate_resident_size(struct mem_obj *);
@@ -241,7 +243,7 @@ extern	int		bind_server_so(int, struct request*);
 extern	int		is_local_dom(char*);
 extern	int		is_local_net(struct sockaddr_in*);
 extern	void		send_not_cached(int, struct request*, char*);
-extern	int		send_icp_requests(struct request *, struct icp_queue_elem*);
+extern	int		send_icp_requests(struct request *, struct icp_queue_elem*, hash_entry_t **he);
 extern	void		icp_request_destroy(struct icp_queue_elem*);
 extern	int		is_domain_allowed(char*, struct acls *);
 extern	struct string_list *add_to_string_list(struct string_list **, char *);
@@ -269,7 +271,7 @@ extern	int		poll_descriptors(int, struct pollarg*, int);
 #if	defined(FREEBSD)
 extern	int		poll_descriptors_S(int, struct pollarg*, int);
 #endif /* FREEBSD */
-extern	int		add_socket_to_listen_list(int, u_short, struct in_addr*, void* (*f)(void*));
+extern	int		add_socket_to_listen_list(int, u_short, struct in_addr*, int, void* (*f)(void*));
 extern	char		daybit(char*);
 extern	int		denytime_check(struct denytime*);
 extern	int             send_data_from_buff_no_wait(int, struct buff **, int *, unsigned int *, int*, int, struct mem_obj*, char*, struct request *);
@@ -282,6 +284,7 @@ extern	void		init_domain_name(void);
 extern	char		*fetch_internal_rq_header(struct mem_obj*,char*);
 extern	l_string_list_t *lock_l_string_list(struct l_string_list*);
 extern	l_string_list_t *alloc_l_string_list(void);
+extern  l_mod_call_list_t *lock_l_mod_call_list(l_mod_call_list_t*);
 extern	void		leave_string_list(struct l_string_list*);
 extern	int		parse_named_acl_data(named_acl_t*, char*);
 extern	void		free_named_acl(named_acl_t *);
@@ -337,6 +340,12 @@ extern	int		use_peer(struct request *, struct peer*);
 extern	internal_doc_t	*find_internal(char* name, internal_doc_t *ia);
 extern	int		peer_connect_silent(int client_so, struct sockaddr_in *peer_sa, struct request *rq);
 extern	int		rq_match_named_acl(struct request *rq, named_acl_t *acl);
+extern	int		destination_is_local(char* host);
+extern	void		leave_l_mod_call_list(l_mod_call_list_t *l_list);
+extern	int		word_vector(char *string, char *delim, char** res, int size);
+extern	void		free_word_vector(char** vector, int size);
+extern	int		parent_connect_silent(int, char *, int, struct request *);
+extern	void		tick_modules(void);
 
 #if	defined(WITH_LARGE_FILES) && !defined(HAVE_ATOLL) && !defined(HAVE_STRTOLL)
 extern	long long	atoll(const char *);
@@ -350,6 +359,8 @@ extern	int		strerror_r(int, char *, size_t);
 #endif	/* !HAVE_STRERROR_R */
 
 extern	dataq_t	eraser_queue;
+extern  workq_t icp_workq;
+extern  workq_t wq;
 
 extern	void	run_modules(void);
 extern	int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
