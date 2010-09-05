@@ -51,6 +51,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define PTHREAD_PROCESS_SHARED		1
 #endif
 
+#if	!defined(PTHREAD_RWLOCK_INITIALIZER)
 #define	PTHREAD_RWLOCK_INITIALIZER	NULL
 
 struct	pthread_rwlock {
@@ -86,4 +87,5 @@ int	pthread_rwlockattr_destroy	(pthread_rwlockattr_t *);
 
 #if	defined(__cplusplus)
 }
+#endif
 #endif

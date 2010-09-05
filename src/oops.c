@@ -68,6 +68,7 @@ int			reserved_fd[RESERVED_FD];
 int			accesslog_num, accesslog_size;
 int			log_num, log_size;
 unsigned int		maxresident;
+unsigned int		minresident;
 int			icp_so;
 int			server_so;
 int			peer_down_interval;
@@ -116,6 +117,8 @@ int			verbose_startup;
 int			verbosity_level;
 int			check_config_only;
 int			skip_check;
+unsigned            negative_cache;
+
 pthread_mutex_t		obj_chain;
 pthread_mutex_t		malloc_mutex;
 pthread_mutex_t		clients_lock;
@@ -149,6 +152,7 @@ list_t		blacklist;
 char		domain_name[MAXHOSTNAMELEN+1];
 char		host_name[MAXHOSTNAMELEN+1];
 char		*oops_user;
+char            *ftp_passw;
 char		*oops_chroot;
 uid_t           oops_uid = -1;
 int             insert_via;
@@ -156,6 +160,7 @@ int             insert_x_forwarded_for;
 int		dont_cache_without_last_modified;
 int		storages_ready;
 int             fetch_with_client_speed;
+int             dst_ip_acl_present;
 
 named_acl_t	*named_acls;
 struct charset	*charsets;
@@ -369,9 +374,9 @@ usage(void)
     printf("-V            - show version info.\n");
     printf("-w number     - use thread pool. number define initial size of the pool.\n");
     printf("-W number     - limit thread pool size to number.\n");
-    printf("-x[acdfhins]  - log level (a-all, c-notice, d-debug, f-ftp, h-http,\n");
+    printf("-x[abcdfhins] - log level (a-all, b-cache, c-notice, d-debug, f-ftp, h-http,\n");
     printf("                           i-information, n-dns, s-storages).\n");
-    printf("-x[ACDFHINS]  - negative log level.\n");
+    printf("-x[ABCDFHINS]  - negative log level.\n");
     printf("-z|Z          - format storages.\n");
     return(0);
 }
@@ -627,6 +632,7 @@ int	format_storages = 0;
     always_check_freshness_acl = NULL;
     stop_cache_acl = NULL;
     oops_user = NULL;
+    ftp_passw = NULL;
     oops_chroot = NULL;
     bind_acl_list = NULL;
     one_second_proxy_requests = 0;
@@ -693,6 +699,7 @@ run:
     disk_low_free	= DEFAULT_LOW_FREE;
     disk_hi_free	= DEFAULT_HI_FREE;
     maxresident		= DEFAULT_MAXRESIDENT;
+    minresident		= DEFAULT_MINRESIDENT;
     dns_ttl		= DEFAULT_DNS_TTL;
     icp_timeout		= DEFAULT_ICP_TIMEOUT;
     accesslog_buffered	= FALSE;
@@ -702,6 +709,8 @@ run:
     dont_cache_without_last_modified = FALSE;
     storages_ready = FALSE;
     fetch_with_client_speed = TRUE;
+    dst_ip_acl_present = FALSE;
+    negative_cache = 0;
     if ( stop_cache )
 	free_stop_cache();
 
@@ -737,6 +746,10 @@ run:
     if ( oops_user ) {
 	free(oops_user);
 	oops_user = NULL;
+    }
+    if ( ftp_passw ) {
+	free(ftp_passw);
+	ftp_passw = NULL;
     }
     if ( oops_chroot ) {
 	free(oops_chroot);

@@ -62,6 +62,10 @@ typedef	unsigned	uint32_t;
 typedef	unsigned short	uint16_t;
 #endif
 
+#if     !defined(HAVE_UINT8_T)
+typedef unsigned char	uint8_t;
+#endif
+
 #if   defined(BSDOS) || defined(LINUX) || defined(FREEBSD) || defined(OSF) || defined(OPENBSD)
 #define       flock_t struct flock
 #endif
@@ -194,7 +198,7 @@ typedef	unsigned short	uint16_t;
 #define	CHUNK_SIZE	(64)
 #define	ROUND_CHUNKS(s)	((((s) / CHUNK_SIZE) + 1) * CHUNK_SIZE)
 
-#define	HASH_SIZE	(512)
+#define	HASH_SIZE	(1024)
 #define	HASH_MASK	(HASH_SIZE-1)
 
 #define	DNS_HASH_SIZE	(512)
@@ -202,28 +206,31 @@ typedef	unsigned short	uint16_t;
 
 #define	OOPS_DB_PAGE_SIZE	(4*1024)
 
-#define	METH_GET	0
-#define	METH_HEAD	1
-#define	METH_POST	2
-#define	METH_PUT	3
-#define	METH_CONNECT	4
-#define	METH_TRACE	5
-#define	METH_PROPFIND	6
-#define	METH_PROPPATCH	7
-#define	METH_DELETE	8
-#define	METH_MKCOL	9
-#define	METH_COPY	10
-#define	METH_MOVE	11
-#define	METH_LOCK	12
-#define	METH_UNLOCK	13
-#define	METH_PURGE	14
-#define	METH_OPTIONS	15
+#define	METH_GET                0
+#define	METH_HEAD               1
+#define	METH_POST               2
+#define	METH_PUT                3
+#define	METH_CONNECT            4
+#define	METH_TRACE              5
+#define	METH_PROPFIND           6
+#define	METH_PROPPATCH          7
+#define	METH_DELETE             8
+#define	METH_MKCOL              9
+#define	METH_COPY               10
+#define	METH_MOVE               11
+#define	METH_LOCK               12
+#define	METH_UNLOCK             13
+#define	METH_PURGE              14
+#define	METH_OPTIONS            15
+#define	METH_PURGE_SITE         16
+#define METH_PURGE_SITE_R       17
 
-#define	AND_PUT		1
-#define	AND_USE		2
-#define	PUT_NEW_ANYWAY	4
-#define	NO_DISK_LOOKUP	8
-#define	READY_ONLY	16
+#define	AND_PUT		            1
+#define	AND_USE		            2
+#define	PUT_NEW_ANYWAY	        4
+#define	NO_DISK_LOOKUP	        8
+#define	READY_ONLY	            16
+#define NULL_REQUEST            32
 
 #define	OBJ_EMPTY	0
 #define	OBJ_INPROGR	2
@@ -243,9 +250,10 @@ typedef	unsigned short	uint16_t;
 #define	ANSW_HDR_CHANGED	(1<<11)	/* if some server headers was changed		*/
 #define	ANSW_EXPIRES_ALTERED	(1<<12)	/* if expires was altered because of refr_patt	*/
 
-#define	STATUS_OK		200
-#define	STATUS_NOT_MODIFIED	304
-#define STATUS_FORBIDEN		403
+#define	STATUS_OK               200
+#define	STATUS_NOT_MODIFIED     304
+#define STATUS_FORBIDEN         403
+#define STATUS_NOT_FOUND        404
 #define STATUS_GATEWAY_TIMEOUT  504
 
 #define	RQ_HAS_CONTENT_LEN	    1
@@ -285,7 +293,7 @@ typedef	unsigned short	uint16_t;
 #define	CRLF			"\r\n"
 
 #define	ANSW_SIZE		(2*1024)
-#define	READ_ANSW_TIMEOUT	(10*60)		/* 10 minutes	*/
+#define	READ_ANSW_TIMEOUT	(5*60)		/* 5 minutes	*/
 
 #define	DEFAULT_EXPIRE_VALUE	(7*24*3600)	/* 7 days	*/
 #define	DEFAULT_EXPIRE_INTERVAL	(1*3600)	/* each hour	*/
@@ -294,6 +302,7 @@ typedef	unsigned short	uint16_t;
 #define	DEFAULT_LOW_FREE	(5)		/* these values for BIG storages */
 #define	DEFAULT_HI_FREE		(6)
 #define	DEFAULT_MAXRESIDENT	(1024*1024)	/* 1MB		*/
+#define	DEFAULT_MINRESIDENT	(0)	        /* no limit	*/
 #define	DEFAULT_DNS_TTL		(30*60)		/* 30 min's	*/
 #define	DEFAULT_ICP_TIMEOUT	(1000000)	/* 1 sec	*/
 
@@ -498,11 +507,14 @@ struct	request {
 	ip_hash_entry_t		*ip_hash_ptr;
 	char			*decoding_buff;	/* for inflate or any other content decoding */
 	char			*decoded_beg, *decoded_end;
+	struct			sockaddr_in dst_sa; /* if we have to use dst_ip acl */
+        time_t                  site_purged;    /* if we go through accel/map with 'purged' */
 #if	defined(HAVE_ZLIB)
 	z_streamp		strmp;
 	z_stream		strm;
 	char			inflate_started;
 #endif
+    int         source_port;    /* for access_log */
 };
 
 #define	RQ_HASH_SIZE	(256)
@@ -787,6 +799,7 @@ struct	acl_ip_data {
 #define	ACL_CONTENT_TYPE	14
 #define	ACL_USERNAME        15
 #define ACL_HEADER_SUBSTR   16
+#define	ACL_DST_IP          17
 
 struct	acl {
 #define	ACL_DOMAINDST		1
@@ -873,8 +886,9 @@ struct	dns_cache {
 	struct dns_cache_item *items;
 };
 #define	SOURCE_DIRECT	0
-#define	PEER_PARENT	1
+#define	PEER_PARENT	    1
 #define	PEER_SIBLING	2
+#define SOURCE_NONE     3
 
 #define	PEER_UP		0
 #define	PEER_DOWN	1

@@ -286,7 +286,7 @@ int i;
 	redir_configs[i].nmyports = 
 	        parse_myports(redir_configs[i].myports_string, 
 	        &redir_configs[i].myports[0], NMYPORTS);
-	verb_printf("%s will use %d ports\n", module_name, redir_configs[i].nmyports);
+	verb_printf("%s will use %d ports\n", MODULE_NAME, redir_configs[i].nmyports);
     }
     UNLOCK_REDIR_CONFIG;
     return(MOD_CODE_OK);

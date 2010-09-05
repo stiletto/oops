@@ -118,7 +118,7 @@ static	pthread_rwlock_t	sql_lock;
 
 static	char	*authreq = NULL;
 static	int	 authreqlen;
-static	char	*authreqfmt = "%s realm=%s";
+static	char	*authreqfmt = "%s realm=\"%s\"";
 static	char	*std_template = 
               "\n<body>Authorization to proxy-server failed.<p><hr>\n"
               "<i><font size=-1>by \'passwd_pgsql\' module to Oops.";
@@ -128,7 +128,7 @@ static	int	badschlen;
 static	char	*badsch=NULL;
 static	char	*badschfmt =
                "HTTP/1.0 407 Proxy Authentication required\n"
-               "Proxy-Authenticate: %s realm=%s\n\n"
+               "Proxy-Authenticate: %s realm=\"%s\"\n\n"
                "<body>Authorization to proxy-server failed.<p>\n"
                "Your browser proposed unsupported scheme\n"
                "<hr>\n"

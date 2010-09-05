@@ -41,6 +41,7 @@
 #undef HAVE_IPF
 #undef HAVE_SOCKLEN_T
 #undef HAVE_STRUCT_TIMESPEC
+#undef HAVE_UINT8_T
 #undef HAVE_UINT16_T
 #undef HAVE_UINT32_T
 #undef HAVE__GMTOFF__
@@ -83,6 +84,9 @@
 
 /* Define if you have the `gmtime_r' function. */
 #undef HAVE_GMTIME_R
+
+/* Define if you have the <inttypes.h> header file. */
+#undef HAVE_INTTYPES_H
 
 /* Define if you have the `pam' library (-lpam). */
 #undef HAVE_LIBPAM

@@ -1,6 +1,6 @@
 oops - http caching proxy server written with performance as primary goal
 
-It's main fetures
+It's main features
 
 1) fast start. It is ready to serve requests immediately after start.
    On-disk storages are checked in background, while serving requests

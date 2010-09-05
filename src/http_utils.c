@@ -60,16 +60,11 @@ static  unsigned int rnd_ctx = 1;
 
 static	char	*build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags);
 static	char	*build_parent_request(char*, struct url*, char *, struct request *, int);
-static	int	can_recode_rq_content(struct request*);
-static	void	change_state(struct mem_obj*, int);
 static	void	check_new_object_expiration(struct request*, struct mem_obj*);
 static	char	*check_rewrite_charset(char *, struct request *, struct av *, int*);
-static	int	content_chunked(struct mem_obj *);
 static	int	continue_load(struct request*, int, int, struct mem_obj *);
 static	int	downgrade(struct request *, struct mem_obj *);
-static	int	loop_detected(char*);
 static	struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
-static	void	process_vary_headers(struct mem_obj*, struct request*);
 static	void	pump_data(struct mem_obj*, struct request *, int, int);
 static	void	send_data_from_obj(struct request*, int, struct mem_obj *, int);
 static	int	srv_connect(int, struct url *url, struct request*);
@@ -77,9 +72,14 @@ static	int	srv_connect_silent(int, struct url *url, struct request*);
 
 inline	static	int	add_header_av(char* avtext, struct mem_obj *obj);
 inline	static	void	analyze_header(char *p, struct server_answ *a);
+inline	static	int	can_recode_rq_content(struct request*);
+inline	static	void	change_state(struct mem_obj*, int);
 inline	static	void	change_state_notify(struct mem_obj *obj);
+inline	static	int	content_chunked(struct mem_obj *);
 inline	static	int	is_attr(struct av*, char*);
 inline	static	int	is_oops_internal_header(struct av *);
+inline	static	int	loop_detected(char*);
+inline	static	void	process_vary_headers(struct mem_obj*, struct request*);
 inline	static	void	lock_obj_state(struct mem_obj *);
 inline	static	void	unlock_obj_state(struct mem_obj *);
 inline	static	void	lock_decision(struct mem_obj *);
@@ -421,7 +421,7 @@ char			*tcp_tag = "TCP_HIT", *meth;
 #define			ROLE_WRITER	2
 #define			ROLE_VALIDATOR	3
 int			role, no_more_logs = FALSE, source_type;
-char			*origin;
+char			origin[MAXHOSTNAMELEN], *source;
 struct	sockaddr_in	peer_sa;
 hash_entry_t            *he = NULL;
 
@@ -438,11 +438,14 @@ hash_entry_t            *he = NULL;
     if ( !(rq->flags & RQ_HAS_IF_MOD_SINCE) ) goto prepare_send_mem;
 
     now = time(NULL);
-    if ( ( obj->flags & ANSW_HAS_EXPIRES ) &&
+    if ( obj->times.expires &&
          	( now < obj->times.expires ) ) {
 	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_from_mem(): Document not expired, send from mem.\n");
 	goto prepare_send_mem;
     }
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_from_mem(): have expires: %d, now-obj->times.expires: %d\n",
+        obj->flags & ANSW_HAS_EXPIRES, now-obj->times.expires);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_from_mem(): go to revalidate\n");
     goto revalidate;
 
 prepare_send_mem:
@@ -451,6 +454,7 @@ prepare_send_mem:
     IF_STRDUP(rq->tag, tcp_tag);
     send_data_from_obj(rq, so, obj, flags);
     DECR_READERS(obj);
+    source_type = SOURCE_NONE;
     goto done;
 
 revalidate:
@@ -525,10 +529,10 @@ revalidate:
 		/* wait for answers */
 		if ( !new_qe->status && pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
 		    /* failed */
-		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp timed out.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp timed out: %s.\n", inet_ntoa(new_qe->peer_sa.sin_addr));
 		} else {
 		    /* success */
-		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp success.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp success: %s.\n", inet_ntoa(new_qe->peer_sa.sin_addr));
 		}
 		new_qe->rq_n = 0;
 		pthread_mutex_unlock(&new_qe->icpr_mutex);
@@ -538,7 +542,7 @@ revalidate:
                         abort();
                 }
 		if ( new_qe->status ) {
-		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
+		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Fetch from neighbour: %s.\n", inet_ntoa(new_qe->peer_sa.sin_addr));
 		    peer_sa = new_qe->peer_sa;
 		    source_type = new_qe->type;
 		    server_so = peer_connect_silent(so, &new_qe->peer_sa, rq);
@@ -649,13 +653,61 @@ done:
 	else		    have_code = 555;
     if ( new_obj ) received = new_obj->size;
          else	   received =     obj->size;
-    if ( parent_port && !TEST(rq->flags, RQ_GO_DIRECT) )
-    		origin = parent_host;
-	else
-		origin = obj->url.host;
 
+    switch(source_type) {
+    struct peer *peer;
+
+    case SOURCE_NONE:
+        source = "NONE";
+	strncpy(origin, "-", sizeof(origin)-1);
+        break;        
+    case SOURCE_DIRECT:
+	source="DIRECT";
+	strncpy(origin, obj->url.host, sizeof(origin)-1);
+	origin[sizeof(origin)-1] = 0;
+	break;
+    case PEER_PARENT:
+	source="PARENT";
+	if ( parent_port ) {
+	    RDLOCK_CONFIG ;
+	    strncpy(origin, parent_host, sizeof(origin)-1);
+	    origin[sizeof(origin)-1] = 0;
+	    IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
+	    if ( parent_auth ) rq->peer_auth = strdup(parent_auth);
+	    UNLOCK_CONFIG ;
+	} else {
+	    RDLOCK_CONFIG ;
+	    peer = peer_by_http_addr(&peer_sa);
+	    if ( peer ) {
+		if ( peer->name )
+		    strncpy(origin, peer->name, sizeof(origin)-1);
+		else
+		    strncpy(origin, "unknown_peer", sizeof(origin)-1);
+		origin[sizeof(origin)-1] = 0;
+	    }
+	    UNLOCK_CONFIG ;
+	}
+	break;
+    case PEER_SIBLING:
+	source="SIBLING";
+	RDLOCK_CONFIG ;
+	peer = peer_by_http_addr(&peer_sa);
+	if ( peer ) {
+	    if ( peer->name )
+		strncpy(origin, peer->name, sizeof(origin)-1);
+	    else
+		strncpy(origin, "unknown_peer", sizeof(origin)-1);
+	    origin[sizeof(origin)-1] = 0;
+	}
+	UNLOCK_CONFIG ;
+	break;
+    default:
+	source="UNKNOWN";
+	strncpy(origin, "UNKNOWN", sizeof(origin));
+	break;
+    }
     if ( !no_more_logs ) {
-	IF_STRDUP(rq->hierarchy, "NONE");
+	IF_STRDUP(rq->hierarchy, source);
 	IF_STRDUP(rq->source, origin);
 	rq->code = have_code;
 	rq->received = received;
@@ -677,7 +729,7 @@ struct	buff	*send_hot_buff;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
 char		ungzip = FALSE;
 int		convert_charset = FALSE;
-int		partial_content = FALSE;
+int		partial_content = FALSE, part_length = -1;
 int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
 char		*table = NULL;
 int		osize =  0;
@@ -703,20 +755,37 @@ struct pollarg	pollarg;
 go_again:
     lock_obj_state(obj);
     forever() {
+	int			rc;
+	struct	timespec	ts;
+
 	state = obj->state;
 	switch(state) {
 	  case OBJ_READY:
 	    unlock_obj_state(obj);
 	    goto send_ready;
 	  case OBJ_EMPTY:
-	    pthread_cond_wait(&obj->state_cond, &obj->state_lock);
+	    ts.tv_sec = global_sec_timer + READ_ANSW_TIMEOUT;
+            ts.tv_nsec = 0;
+	    rc = pthread_cond_timedwait(&obj->state_cond, &obj->state_lock, &ts);
+            if ( rc ) {
+                my_xlog(OOPS_LOG_SEVERE, "send_data_from_obj(): cond_timedwait: %d in state %d\n", rc, state);
+                unlock_obj_state(obj);
+                return;
+            }
 	    continue;
 	  case OBJ_INPROGR:
 	    if ( sended < obj->size ) {
 		unlock_obj_state(obj);
 		goto send_ready;
 	    }
-	    pthread_cond_wait(&obj->state_cond, &obj->state_lock);
+	    ts.tv_sec = global_sec_timer + READ_ANSW_TIMEOUT;
+            ts.tv_nsec = 0;
+	    rc = pthread_cond_timedwait(&obj->state_cond, &obj->state_lock, &ts);
+            if ( rc ) {
+                my_xlog(OOPS_LOG_SEVERE, "send_data_from_obj(): cond_timedwait: %d in state %d\n", rc, state);
+                unlock_obj_state(obj);
+                return;
+            }
 	    continue;
 	}
     }
@@ -732,12 +801,13 @@ send_ready:
 	/* we pay attention to 'Range:' iff
 	   1) object is ready (it is all here)
 	   2) doc have no chunked content
-	   3) range is like 'nnn-'
+	  -3) range is like 'nnn-'
 	 */
 	if ( TEST(rq->flags, RQ_HAVE_RANGE)
 	     &&  (obj->state == OBJ_READY)
 	     &&  !content_chunked(obj)
-	     &&  ((rq->range_from >= 0) && (rq->range_to == -1))) {
+	     /*&&  ((rq->range_from >= 0) && (rq->range_to == -1))*/
+	     ) {
 
 		struct buff *tb = NULL;
 		char	buff[80];
@@ -764,7 +834,13 @@ send_ready:
 		    /* any valid document. So we simply ajust values	*/
 		    rq->range_from = osize;
 		}
-		snprintf(buff, sizeof(buff)-1, "bytes %d-%d/%d", rq->range_from, osize, osize);
+                if ( rq->range_to != -1 && rq->range_to < osize ) {
+		    snprintf(buff, sizeof(buff)-1, "bytes %d-%d/%d",
+		        rq->range_from, rq->range_to, osize);
+                    part_length = rq->range_to - rq->range_from + 1;
+                } else
+		    snprintf(buff, sizeof(buff)-1, "bytes %d-%d/%d",
+		        rq->range_from, osize, osize);
 		attach_av_pair_to_buff("Content-Range:", buff, hdrs_to_send);
 	} else {
 	    /* first must be "HTTP/1.x 200 ..." */
@@ -836,7 +912,10 @@ send_ready:
 	}
 	if ( !content_length_sent && partial_content ) {
 	    char clbuf[32];
-	    snprintf(clbuf, sizeof(clbuf)-1,"%d", osize-rq->range_from);
+            if ( part_length == -1 )
+	        snprintf(clbuf, sizeof(clbuf)-1,"%d", osize-rq->range_from);
+              else
+	        snprintf(clbuf, sizeof(clbuf)-1,"%d", part_length);
 	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
 	    content_length_sent = TRUE;
 	}
@@ -930,7 +1009,7 @@ send_ready:
 	sf |= RQ_CONVERT_FROM_CHUNKED;
     if ( IS_HUPED(&pollarg) )
 	goto done;
-    if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
+    if ( (r = send_data_from_buff_no_wait(so, part_length, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
 	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %m\n");
 	goto done;
     }
@@ -945,6 +1024,10 @@ send_ready:
 	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_data_from_obj(): Impossible event on `%s%s'.\n",
 		    obj->url.host, obj->url.path);
 	goto done;
+    }
+    if ( part_length != -1 ) {
+        part_length -= sended-ssended;
+        if ( part_length < 0 ) goto done;
     }
     if ( !r && convert_from_chunked && !rest_in_chunk ) {
 	/* we sent nothing... this can be because we convert from chunked
@@ -1121,16 +1204,50 @@ struct	buff		*to_server_request = NULL;
 		new_obj->times = answer_stat.times;
 
 		if ( new_obj->status_code == STATUS_NOT_MODIFIED ) {
+                    struct av *header;
+                    /*
+                     * copy end-to-end info from new_obj to old obj
+                     */
+                    obj->times = new_obj->times;
+                    obj->response_time = global_sec_timer;
+                    obj->request_time = new_obj->request_time;
+                    header = obj->headers->next;
+                    while ( header ) {
+                        if ( is_attr(header, "Date:") ) {
+                            char *new_val = attr_value(new_obj->headers->next, header->attr);
+                            if ( new_val ) {
+                                IF_FREE(header->val);
+                                header->val = strdup(new_val);
+                            }
+                        } else
+                        if ( is_attr(header, "Age:") ) {
+                            char *new_val = attr_value(new_obj->headers->next, header->attr);
+                            if ( new_val ) {
+                                IF_FREE(header->val);
+                                header->val = strdup(new_val);
+                            }
+                        } else
+                        if ( is_attr(header, "Last-Modified:") ) {
+                            char *new_val = attr_value(new_obj->headers->next, header->attr);
+                            if ( new_val ) {
+                                IF_FREE(header->val);
+                                header->val = strdup(new_val);
+                            }
+                        }
+                        header = header->next;
+                    }
 		    SET(new_obj->flags, FLAG_DEAD);
 		    leave_obj(new_obj);
 		    new_obj = NULL;
+		    check_new_object_expiration(rq, obj);
 		    goto validate_done;
 		}
 
 		if ( (new_obj->status_code == STATUS_GATEWAY_TIMEOUT) 
-		        || (new_obj->status_code == STATUS_FORBIDEN) )
+		        || (new_obj->status_code == STATUS_FORBIDEN) ) {
+                    SET(new_obj->flags, FLAG_DEAD);
 		    goto validate_done;
-
+                }
 		if ( !new_obj->times.date ) new_obj->times.date = time(NULL);
 		check_new_object_expiration(rq, new_obj);
 		if ( new_obj->status_code == STATUS_OK ) {
@@ -1189,6 +1306,8 @@ time_t			last_read = global_sec_timer;
 hash_entry_t            *he = NULL;
 ERRBUF ;
 
+    obj->response_time	= time(NULL);
+
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
     else if ( rq->meth == METH_POST ) meth="POST";
@@ -1237,10 +1356,10 @@ ERRBUF ;
 	    /* wait for answers */
 	    if ( !new_qe->status && pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
 		/* failed */
-		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp timed out.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp timed out: %s.\n", inet_ntoa(new_qe->peer_sa.sin_addr));
 	    } else {
 		/* success */
-		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp success.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): icp success: %s.\n", inet_ntoa(new_qe->peer_sa.sin_addr));
 	    }
 	    new_qe->rq_n = 0;
 	    pthread_mutex_unlock(&new_qe->icpr_mutex);
@@ -1250,7 +1369,7 @@ ERRBUF ;
                     abort();
             }
 	    if ( new_qe->status ) {
-		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Fetch from neighbour: %s.\n", inet_ntoa(new_qe->peer_sa.sin_addr));
 		peer_sa = new_qe->peer_sa;
 		source_type = new_qe->type;
 		server_so = peer_connect(so, &new_qe->peer_sa, rq);
@@ -1344,7 +1463,7 @@ retry:
     default:
 	source="UNKNOWN";
 	strncpy(origin, "UNKNOWN", sizeof(origin));
-	break;
+        break;
     }
 
     if ( server_so == -1 ) {
@@ -1510,7 +1629,7 @@ retry:
 		so = -1;
 		goto client_so_closed;
 	    }
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
+	    if ( (rc = send_data_from_buff_no_wait(so, -1, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
 		so = -1;
 	    if ( rest_in_chunk == -1 ) { /* was last chunk */
 		obj->state = OBJ_READY;
@@ -1645,7 +1764,7 @@ retry:
 		if ( IS_HUPED(&pollarg) )
 		    goto done;
 		ssended = sended;
-		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
+		if ( (rc = send_data_from_buff_no_wait(so, -1, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
 		    so = -1;
 		if ( ssended == sended )
 			goto done;
@@ -1708,8 +1827,8 @@ retry:
 		obj->flags|= answ_state.flags;
 		obj->times = answ_state.times;
 		if ( !obj->times.date ) obj->times.date = global_sec_timer;
-		check_new_object_expiration(rq, obj);
 		obj->status_code = answ_state.status_code;
+		check_new_object_expiration(rq, obj);
                 if ( (source_type!=SOURCE_DIRECT) && !TEST(rq->flags, RQ_GO_DIRECT)
                      && ((obj->status_code == STATUS_GATEWAY_TIMEOUT)
                             || (obj->status_code == STATUS_FORBIDEN)) ) {
@@ -1727,7 +1846,8 @@ retry:
                     obj->headers = NULL;
                     goto retry;
                 }
-		if ( obj->status_code != STATUS_OK )
+		if ( obj->status_code != STATUS_OK &&
+             !(negative_cache && is_negative_status(obj->status_code)) )
 			obj->flags |= FLAG_DEAD;
 		if (!(obj->flags & ANSW_NO_STORE) )
 			obj->flags &= ~ANSW_NO_CACHE;
@@ -1913,8 +2033,8 @@ done:
     if ( !obj->content_length && !content_chunked(obj) )
 	/* we don't know size */
     obj->flags |= FLAG_DEAD;
-    /* if object too large remove it right now */
-    if ( resident_size > maxresident ) {
+    /* if object too large (or small) remove it right now */
+    if ( (resident_size > maxresident) || (resident_size<minresident) ) {
 	my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "fill_mem_obj(): Obj is too large - remove it.\n");
 	obj->flags |= FLAG_DEAD;
     } else {
@@ -2156,7 +2276,7 @@ time_t			last_read = global_sec_timer;
 		goto are_we_alone;
 	    }
 	    ssended = sended;
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
+	    if ( (rc = send_data_from_buff_no_wait(so, -1, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
 		so = -1;
 		goto are_we_alone;
 	    }
@@ -2257,7 +2377,7 @@ time_t			last_read = global_sec_timer;
 		if ( IS_HUPED(&pollarg) )
 		    goto done;
 		ssended = sended;
-		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
+		if ( (rc = send_data_from_buff_no_wait(so, -1, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
 		    so = -1;
 		if ( ssended == sended )
 		    goto done;
@@ -2334,6 +2454,8 @@ do_it:
 
 /* send data from memory buffs
    so 		 - socket to client
+   lim           - send max lim bytes (for the partial contents)
+                   ignored if lim == -1
    hot		 - current buff
    pos		 - offset in buff data
    sended	 - address of 'sended' variable (updated in accordance with progress)
@@ -2343,7 +2465,7 @@ do_it:
    recode	 - recode table if we do charset conversion on the fly
 */
 int
-send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, unsigned int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table, struct request *rq)
+send_data_from_buff_no_wait(int so, int lim, struct buff **hot, int *pos, unsigned int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table, struct request *rq)
 {
 int		r, to_send, cz_here, faked_sent, chunk_size, ss, sp;
 struct	buff	*b = *hot;
@@ -2480,6 +2602,7 @@ do_it:
     }
 #endif
     to_send = b->used - *pos;
+    if ( lim != -1 ) to_send = MIN(to_send, lim);
     if ( !to_send ) {
 	if ( !b->next ) return(0);
 	*hot = b->next;
@@ -2575,6 +2698,7 @@ do_it:
     if ( r < 0 )
 	return(r);
     *pos += r; *sended += r;
+    if ( lim != -1 ) lim -= r;
     if ( r < to_send ) {/* it can't accept more data now */
 	return(0);
     }
@@ -2673,7 +2797,7 @@ do_it_chunked:
 	/* send from current position till the minimum(chunksize,b->used) */
 	to_send = MIN(b->used - *pos, (uint32_t)*rest_in_chunk);
 	if ( !to_send ) {
-	    /* this canbe only end of buffer */
+	    /* this can be only end of buffer */
 	    if ( !b->next ) return(0);
 	    *hot = b->next;
 	    b = b->next;
@@ -2765,7 +2889,8 @@ unlock_decision(struct mem_obj *obj)
     pthread_mutex_unlock(&obj->decision_lock);
 }
 
-void
+inline
+static void
 change_state(struct mem_obj *obj, int new_state)
 {
     lock_obj_state(obj);
@@ -2945,6 +3070,7 @@ ERRBUF ;
 
     int			flags = 0;
 
+    rq->source_port = htons(url->port);
     r = check_redir_connect(&server_so, rq, &flags);
     if ( server_so != -1 )
 	return(server_so);
@@ -2983,6 +3109,7 @@ int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
     int			flags = 0;
 
+    rq->source_port = htons(url->port);
     r = check_redir_connect(&server_so, rq, &flags);
     if ( server_so != -1 )
 	return(server_so);
@@ -3016,6 +3143,7 @@ struct	sockaddr_in 	server_sa;
 struct	sockaddr_in	dst_sa;
 ERRBUF ;
 
+    rq->source_port = parent_port;
     if ( !TEST(rq->flags, RQ_GO_DIRECT) ) {
         bzero(&dst_sa, sizeof(dst_sa));
 	if ( local_networks_sorted && local_networks_sorted_counter ) {
@@ -3056,6 +3184,7 @@ int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
 struct	sockaddr_in	dst_sa;
 
+    rq->source_port = parent_port;
     if ( !TEST(rq->flags, RQ_GO_DIRECT) ) {
         bzero(&dst_sa, sizeof(dst_sa));
 	if ( local_networks_sorted && local_networks_sorted_counter ) {
@@ -3092,7 +3221,8 @@ int 			server_so = -1, r;
 struct	peer		*peer;
 ERRBUF ;
 
-    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "peer_connect(): Connecting to peer...\n");
+    rq->source_port = htons(peer_sa->sin_port);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "peer_connect(): Connecting to peer: %s...\n", inet_ntoa(peer_sa->sin_addr));
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	say_bad_request(client_so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
@@ -3126,7 +3256,8 @@ peer_connect_silent(int client_so, struct sockaddr_in *peer_sa, struct request *
 int 			server_so = -1, r;
 struct	peer		*peer;
 
-    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "peer_connect_silent(): Connecting to peer...\n");
+    rq->source_port = htons(peer_sa->sin_port);
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "peer_connect_silent(): Connecting to peer: %s...\n", inet_ntoa(peer_sa->sin_addr));
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	return(-1);
@@ -3192,6 +3323,8 @@ int	via_inserted = FALSE;
 	if ( is_attr(av, "Proxy-Authorization:") ) /* hop-by-hop */
 	    goto do_not_insert;
 	if ( is_attr(av, "Connection:") )
+	    goto do_not_insert;
+	if ( is_attr(av, "If-Modified-Since:") )
 	    goto do_not_insert;
 	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
 	    /* attach my Via: */
@@ -3467,6 +3600,7 @@ fail:
     return NULL;
 }
 
+inline
 static int
 content_chunked(struct mem_obj *obj)
 {
@@ -3512,7 +3646,8 @@ char	*content_encoding = NULL;
     return(res);
 }
 
-void
+inline
+static void
 process_vary_headers(struct mem_obj *obj, struct request *rq)
 {
     if ( !rq || !obj ) return;
@@ -3560,6 +3695,10 @@ static void
 check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 {
 	if ( !rq || !obj ) return;
+    if ( (negative_cache > 0) && is_negative_status(obj->status_code) ) {
+        SET(obj->flags, ANSW_EXPIRES_ALTERED);
+        obj->times.expires = global_sec_timer + negative_cache;
+    } else
 	if ( rq->refresh_pattern.valid ) {
 	    int	min,max,lmt, tmpexpires, expires_altered = FALSE;
 
@@ -3603,12 +3742,12 @@ check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 	    }
 	    if ( expires_altered == TRUE )
 		SET(obj->flags, ANSW_EXPIRES_ALTERED);
-	    if ( obj->times.expires < obj->times.date ) {
+	    if ( obj->times.expires <= obj->times.date ) {
 		obj->flags |= ANSW_NO_STORE;
 	    }
 	}
 	else if ( obj->flags & ANSW_HAS_EXPIRES ) {
-	    if ( obj->times.expires < obj->times.date ) {
+	    if ( obj->times.expires <= obj->times.date ) {
 		obj->flags |= ANSW_NO_STORE;
 	    }
 	}
@@ -3657,6 +3796,7 @@ not_text:
     return(d);
 }
 
+inline
 static int
 can_recode_rq_content(struct request *rq)
 {
@@ -3742,6 +3882,7 @@ done:
 }
 
 /* form out Via: value and check if it is already in request via */
+inline
 static int
 loop_detected(char *rq_via)
 {
@@ -3879,8 +4020,10 @@ char	*t;
 		a->flags |= ANSW_MUST_REVALIDATE;
 	if ( !strncasecmp(x, "proxy-revalidate", 15) )
 		a->flags |= ANSW_PROXY_REVALIDATE;
-	if ( sscanf(x, "max-age = %d", (int*)&a->times.max_age) == 1 )
+	if ( sscanf(x, "max-age = %d", (int*)&a->times.max_age) == 1 ) {
 		a->flags |= ANSW_HAS_MAX_AGE;
+		a->times.expires = a->times.date + a->times.max_age;
+        }
     }
     if ( !strncasecmp(p, "Connection: ", 12) ) {
 	char        *x;
@@ -3892,7 +4035,7 @@ char	*t;
 	if ( !strncasecmp(x, "close", 5) )
 		a->flags &= ~ANSW_KEEP_ALIVE;
     }
-    if (    !TEST(a->flags, ANSW_HAS_EXPIRES) 
+    if (    !TEST(a->flags, ANSW_HAS_EXPIRES) && !TEST(a->flags, ANSW_HAS_MAX_AGE)
          && !strncasecmp(p, "Expires: ", 9) ) {
 	char        *x;
 	/* length */
@@ -4039,7 +4182,7 @@ go:
 	}
 	/* allocate data storage */
 	if ( a->content_len ) {
-	    if ( a->content_len > maxresident ) {
+	    if ( (a->content_len > maxresident) || (a->content_len < minresident) ) {
 		/*
 		 -  This object will not be stored, we will receive it in
 		 -  small parts, in syncronous mode
@@ -4109,4 +4252,11 @@ go:
 	goto go;
     }
     return(0);
+}
+
+int
+is_negative_status(int code) {
+    if ( code == STATUS_NOT_FOUND )
+        return(TRUE);
+    return(FALSE);
 }

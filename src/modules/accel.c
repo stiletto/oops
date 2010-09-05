@@ -20,164 +20,179 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-#define	MODULE_NAME	"accel"
-#define	MODULE_INFO	"WWW-accelerator"
+#define	MODULE_NAME "accel"
+#define	MODULE_INFO "WWW-accelerator"
 
 #if	defined(MODULES)
-char		module_type   = MODULE_REDIR ;
-char		module_name[] = MODULE_NAME ;
-char		module_info[] = MODULE_INFO ;
-int		mod_load(void);
-int		mod_unload(void);
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run(void);
-int		redir(int, struct group*, struct request*, int*, int);
-int		redir_connect(int*, struct request*, int*, int);
-int		redir_rewrite_header(char **, struct request*, int*, int);
-#define		MODULE_STATIC
+char            module_type   = MODULE_REDIR ;
+char            module_name[] = MODULE_NAME ;
+char            module_info[] = MODULE_INFO ;
+int             mod_load(void);
+int             mod_unload(void);
+int             mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run(void);
+int             redir(int, struct group*, struct request*, int*, int);
+int             redir_connect(int*, struct request*, int*, int);
+int             redir_rewrite_header(char **, struct request*, int*, int);
+int             redir_control_request(int, struct group*, struct request*, int*, int);
+#define         MODULE_STATIC
 #else
-static	char	module_type   = MODULE_REDIR ;
-static	char	module_name[] = MODULE_NAME ;
-static	char	module_info[] = MODULE_INFO ;
-static	int	mod_load();
-static	int	mod_unload();
-static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
-static	int	redir(int, struct group*, struct request*, int*, int);
-static	int	redir_connect(int*, struct request*, int*, int);
-static	int	redir_rewrite_header(char **, struct request*, int*, int);
-#define		MODULE_STATIC	static
+static  char    module_type   = MODULE_REDIR ;
+static  char    module_name[] = MODULE_NAME ;
+static  char    module_info[] = MODULE_INFO ;
+static  int     mod_load();
+static  int     mod_unload();
+static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+static  int     redir(int, struct group*, struct request*, int*, int);
+static  int     redir_connect(int*, struct request*, int*, int);
+static  int     redir_rewrite_header(char **, struct request*, int*, int);
+static  int     redir_control_request(int, struct group*, struct request*, int*, int);
+#define         MODULE_STATIC   static
 #endif
 
 struct	redir_module	accel = {
-	{
-	NULL, NULL,
-	MODULE_NAME,
-	mod_load,
-	mod_unload,
-	mod_config_beg,
-	mod_config_end,
-	mod_config,
-	NULL,
-	MODULE_REDIR,
-	MODULE_INFO,
-	mod_run
-	},
-	redir,
-	redir_connect,
-	redir_rewrite_header
+        {
+        NULL, NULL,
+        MODULE_NAME,
+        mod_load,
+        mod_unload,
+        mod_config_beg,
+        mod_config_end,
+        mod_config,
+        NULL,
+        MODULE_REDIR,
+        MODULE_INFO,
+        mod_run
+        },
+        redir,
+        redir_connect,
+        redir_rewrite_header,
+        redir_control_request
 };
 
-static	pthread_rwlock_t	accel_lock;
-#define	RDLOCK_ACCEL_CONFIG	pthread_rwlock_rdlock(&accel_lock)
-#define	WRLOCK_ACCEL_CONFIG	pthread_rwlock_wrlock(&accel_lock)
-#define	UNLOCK_ACCEL_CONFIG	pthread_rwlock_unlock(&accel_lock)
+static  pthread_rwlock_t	accel_lock;
+#define RDLOCK_ACCEL_CONFIG     pthread_rwlock_rdlock(&accel_lock)
+#define WRLOCK_ACCEL_CONFIG     pthread_rwlock_wrlock(&accel_lock)
+#define UNLOCK_ACCEL_CONFIG     pthread_rwlock_unlock(&accel_lock)
 
-#define	MAP_STRING		1
-#define	MAP_REGEX		2
-#define	MAP_STRING_CS		3
-#define	MAP_REGEX_CS		4
-#define	MAP_ACL			5
-#define	MAP_EXTERNAL            6
-#define	MAP_EXTERNAL_REGEX      7
+#define MAP_STRING              1
+#define MAP_REGEX               2
+#define MAP_STRING_CS           3
+#define MAP_REGEX_CS            4
+#define MAP_ACL                 5
+#define MAP_EXTERNAL            6
+#define MAP_EXTERNAL_REGEX      7
 
 char	*mapnames[9] = {
-	"?",
-	"string",
-	"regex",
-	"string+charset",
-	"regex+charset",
-	"acl",
+        "?",
+        "string",
+        "regex",
+        "string+charset",
+        "regex+charset",
+        "acl",
         "external",
         "external+regex"
-	"?"};
+        "?"};
 
-#define	MAXMATCH		10
-#define	INIT_PMATCH(p)		do {\
-				int i;\
-				    for(i=0;i<MAXMATCH;i++)\
-					p[i].rm_so = p[i].rm_eo = -1;\
-				} while(0)
-#define	NMYPORTS	8
-static	myport_t	myports[NMYPORTS];	/* my ports		*/
-static	int		nmyports;		/* actual number	*/
-static	char		*myports_string = NULL;
-static	char		*access_string	= NULL;
+#define MAXMATCH                10
+#define INIT_PMATCH(p)          do {\
+                                int i;\
+                                        for(i=0;i<MAXMATCH;i++)\
+                                        p[i].rm_so = p[i].rm_eo = -1;\
+                                } while(0)
+#define NMYPORTS        8
+static  myport_t        myports[NMYPORTS];      /* my ports             */
+static  int             nmyports;               /* actual number        */
+static  char            *myports_string = NULL;
+static  char            *access_string	= NULL;
 
 static	refresh_pattern_t	*refr_patts;
 
 struct	to_host {
-	struct	to_host	*next;
-	char		*name;
-	u_short		port;
-	char		*path;		/* if we have to prepend path	*/
-	char		failed;		/* TRUE or FALSE 		*/
-	time_t		last_failed;	/* when failed to connect 	*/
+        struct	to_host	*next;
+        char		*name;
+        u_short		port;
+        char		*path;		/* if we have to prepend path	*/
+        char		failed;		/* TRUE or FALSE 		*/
+        time_t		last_failed;	/* when failed to connect 	*/
 };
 
-#define	MAP_REVERSE	1
+#define MAP_REVERSE     1
+#define MAP_CANPURGE    2
+#define MAP_CANPURGE_R  4
 
 struct	map {
-	struct	map	*next;
-	int		type;
-	char		*from_host;
-	regex_t		preg;			/* regex if MAP_REGEX			*/
-	int		acl_index;		/* acl index if type MAP_ACL		*/
-	u_short		from_port;
-	int		hosts;
-	pthread_mutex_t	last_lock;
-	struct	to_host	*to_hosts;
-	struct	to_host	*last_used;
-	l_string_list_t	*cs_to_server_table;	/* translation from client to server	*/
-	l_string_list_t	*cs_to_client_table;	/* translation from server to client	*/
-	char		*src_cs_name;		/* source charset name			*/
-	struct	map	*next_in_hash;		/* link in hash	table for usual maps,
-						   next map for acl, regex maps		*/
-	int		ortho;			/* something orthogonal to hash function*/
-	char		*config_line;		/* original config line			*/
-	int		flags;			/* flags like 'reverse'			*/
+    struct map              *next;
+    int                     type;
+    char                    *from_host;
+    regex_t                 preg;                   /* regex if MAP_REGEX                   */
+    int                     acl_index;              /* acl index if type MAP_ACL            */
+    u_short                 from_port;
+    int                     hosts;
+    pthread_mutex_t         last_lock;
+    struct      to_host     *to_hosts;
+    struct      to_host     *last_used;
+    l_string_list_t         *cs_to_server_table;    /* translation from client to server    */
+    l_string_list_t         *cs_to_client_table;    /* translation from server to client    */
+    char                    *src_cs_name;           /* source charset name                  */
+    struct map              *next_in_hash;          /* link in hash     table for usual maps,
+                                                       next map for acl, regex maps         */
+    struct map              *next_in_reverse_hash;  /* link in reverse_hash                 */
+    int                     ortho;                  /* something orthogonal to hash function*/
+    int                     reverse_ortho;          /* something orthogonal to hash function*/
+    char                    *config_line;           /* original config line                 */
+    int                     flags;                  /* flags like 'reverse'                 */
+    time_t                  site_purged;            /* when site was purged                 */
 };
 
-typedef	struct	rewrite_location_ {
-	struct  rewrite_location_	*next;
-	int				acl_index;
-	regex_t				preg;
-	char				*dst;
+typedef struct	rewrite_location_ {
+    struct  rewrite_location_   *next;
+    int                         acl_index;
+    regex_t                     preg;
+    char                        *dst;
 } rewrite_location_t ;
 
-typedef	struct	map_hash_ {
-	struct	map	*next;
+typedef struct  map_hash_ {
+        struct  map     *next;
 } map_hash_t;
 
-static	struct	map	*maps, *default_map, *new_map(void), *last_map;
-static	struct	map	*find_map(struct request*, size_t, regmatch_t*, char*);
-static	struct	map	*other_maps_chain;
-static	map_hash_t	*map_hash_table;
-static	struct	to_host	*new_to_host(void);
-static	int		rewrite_host;
-static	int		use_host_hash;
-static	void		free_maps(struct map *);
-static	int		parse_access(char *string, myport_t *ports, int number);
-static	void		parse_map(char*);
-static	void		parse_map_acl(char*);
-static	void		parse_map_external(char*);
-static	void		parse_map_external_regex(char*);
-static	void		parse_map_regex(char*);
-static	void		parse_map_regex_charset(char*);
-static	void		parse_map_charset(char*);
-static	void		parse_map_file(char*);
-static  void		check_map_file_age(void);
-static	void		reload_map_file(void);
-static  int		on_my_port(struct request *);
-static	int		sleep_timeout, dead_timeout;
-static	char		*build_destination(char*,regmatch_t*, char*);
-static	char		*build_src(struct request *);
-static	rewrite_location_t	*rewrite_location;
-static	void		insert_rewrite_location(char*);
-static	void		free_rewrite_location(rewrite_location_t*);
+static  struct  map         *maps, *default_map, *new_map(void), *last_map;
+static  struct  map         *find_map(struct request*, size_t, regmatch_t*, char*);
+static  struct  map         *lookup_map(size_t, regmatch_t*, char*, u_short);
+static  int                 set_purge_date_r(size_t, regmatch_t*, char*, u_short, time_t);
+static  struct  map         *other_maps_chain;
+static  map_hash_t          *map_hash_table;
+static  map_hash_t          *reverse_hash_table;
+static  struct to_host      *new_to_host(void);
+static  int                 rewrite_host;
+static  int                 use_host_hash;
+static  void                free_maps(struct map *);
+static  void                place_map_in_hash(struct map*);
+static  void                place_map_in_reverse_hash(struct map*);
+static  int                 parse_access(char *string, myport_t *ports, int number);
+static  void                parse_map(char*);
+static  void                parse_map_acl(char*);
+static  void                parse_map_external(char*);
+static  void                parse_map_external_regex(char*);
+static  void                parse_map_regex(char*);
+static  void                parse_map_regex_charset(char*);
+static  void                parse_map_charset(char*);
+static  void                parse_map_file(char*);
+static  void                check_map_file_age(void);
+static  void                reload_map_file(void);
+static  void                set_canpurge(char*);
+static  void                set_canpurge_r(char*);
+static  int                 on_my_port(struct request *);
+static  int                 sleep_timeout, dead_timeout;
+static  char                *build_destination(char*,regmatch_t*, char*);
+static  char                *build_src(struct request *);
+static  rewrite_location_t  *rewrite_location;
+static  void                insert_rewrite_location(char*);
+static  void                free_rewrite_location(rewrite_location_t*);
 
-static	char		map_file[MAXPATHLEN];
-static	time_t		map_file_mtime = 0, map_file_check_time = 0;
-static	int		deny_proxy_requests;
-static	int		ip_lookup;
+static  char            map_file[MAXPATHLEN];
+static  time_t          map_file_mtime = 0, map_file_check_time = 0;
+static  int             deny_proxy_requests;
+static  int             ip_lookup;
 
 
 
@@ -188,36 +203,36 @@ static	int		ip_lookup;
 static int
 parse_access(char *string, myport_t *ports, int number)
 {
-char		buf[20], *p, *d, *t;
-u_short		port;
-myport_t	*pptr=ports;
-int		nres=0, rc, one=-1, so;
-struct		sockaddr_in	sin_addr;
+char            buf[20], *p, *d, *t;
+u_short         port;
+myport_t        *pptr=ports;
+int             nres=0, rc, one=-1, so;
+struct          sockaddr_in     sin_addr;
 
     if ( !ports || !string ) return(0);
     while( string && *string && (nres < number) ) {
-	p = string;
-	while ( *p && IS_SPACE(*p) ) p++;
-	if ( !*p ) return(nres);
-	d = buf;
-	while ( *p && !IS_SPACE(*p) ) {
-	    *d++ = *p++;
-	}
-	*d = 0;
-	string = p;
-	if ( (t = (char*)strchr(buf, ':')) != 0 ) {
-	    *t = 0;
-	    port = (u_short)atoi(t+1);
-	    bzero(&sin_addr, sizeof(sin_addr));
-	    str_to_sa(buf, (struct sockaddr*)&sin_addr);
-	} else {
-	    port = (u_short)atoi(buf);
-	    bzero(&sin_addr, sizeof(sin_addr));
-	}
-	nres++;
-	pptr->port = port;
-	pptr->in_addr = sin_addr.sin_addr;
-	pptr++;
+        p = string;
+        while ( *p && IS_SPACE(*p) ) p++;
+        if ( !*p ) return(nres);
+        d = buf;
+        while ( *p && !IS_SPACE(*p) ) {
+            *d++ = *p++;
+        }
+        *d = 0;
+        string = p;
+        if ( (t = (char*)strchr(buf, ':')) != 0 ) {
+            *t = 0;
+            port = (u_short)atoi(t+1);
+            bzero(&sin_addr, sizeof(sin_addr));
+            str_to_sa(buf, (struct sockaddr*)&sin_addr);
+        } else {
+            port = (u_short)atoi(buf);
+            bzero(&sin_addr, sizeof(sin_addr));
+        }
+        nres++;
+        pptr->port = port;
+        pptr->in_addr = sin_addr.sin_addr;
+        pptr++;
     }
     return(nres);
 }
@@ -264,33 +279,60 @@ struct map	*this;
 char		host_tmp[MAXHOSTNAMELEN], *s, *d;
 
     if ( !map || !map_hash_table ) return;
-
+    
     switch (map->type) {
  case MAP_STRING:
  case MAP_STRING_CS:
-	if ( !map->from_host ) goto other;
-	d = host_tmp; s = map->from_host;
-	while ( *s && (d - host_tmp < MAXHOSTNAMELEN) ) *d++ = tolower(*s++);
-	*d = 0;
-	b = hash_function(host_tmp);
-	o = ortho_hash_function(host_tmp);
-	map->ortho = o;
-	if ( !map_hash_table[b].next ) map_hash_table[b].next = map;
-	  else {
-	    this = map_hash_table[b].next;
-	    while ( this->next_in_hash ) this = this->next_in_hash;
-	    this->next_in_hash = map;
-	}
-	break;
+        if ( !map->from_host ) goto other;
+        d = host_tmp; s = map->from_host;
+        while ( *s && (d - host_tmp < MAXHOSTNAMELEN) ) *d++ = tolower(*s++);
+        *d = 0;
+        b = hash_function(host_tmp);
+        o = ortho_hash_function(host_tmp);
+        map->ortho = o;
+        if ( !map_hash_table[b].next ) map_hash_table[b].next = map;
+          else {
+            this = map_hash_table[b].next;
+            while ( this->next_in_hash ) this = this->next_in_hash;
+            this->next_in_hash = map;
+        }
+        break;
  default:
    other:
-	if ( !other_maps_chain ) other_maps_chain = map;
-	  else {
-	    this = other_maps_chain;
-	    while ( this->next_in_hash ) this = this->next_in_hash;
-	    this->next_in_hash = map;
-	}
-	break;
+        if ( !other_maps_chain ) other_maps_chain = map;
+          else {
+            this = other_maps_chain;
+            while ( this->next_in_hash ) this = this->next_in_hash;
+            this->next_in_hash = map;
+        }
+        break;
+    }
+    /* also place in reverse hash */
+    place_map_in_reverse_hash(map);
+}
+
+static void
+place_map_in_reverse_hash(struct map *map)
+{
+unsigned        b, o;
+struct map      *this;
+char            host_tmp[MAXHOSTNAMELEN], *s, *d;
+
+    if ( !map || !reverse_hash_table ) return;
+
+    if ( !map->to_hosts || !map->to_hosts->name ) return;
+    d = host_tmp; s = map->to_hosts->name;
+    while ( *s && (d - host_tmp < MAXHOSTNAMELEN) ) *d++ = tolower(*s++);
+    *d = 0;
+    b = hash_function(host_tmp);
+    o = ortho_hash_function(host_tmp);
+    map->reverse_ortho = o;
+
+    if ( !reverse_hash_table[b].next ) reverse_hash_table[b].next = map;
+      else {
+        this = reverse_hash_table[b].next;
+        while ( this->next_in_reverse_hash ) this = this->next_in_reverse_hash;
+        this->next_in_reverse_hash = map;
     }
 }
 
@@ -309,6 +351,7 @@ mod_load(void)
     map_file[0] = 0;
     use_host_hash = 0;
     map_hash_table = NULL;
+    reverse_hash_table = NULL;
     other_maps_chain = NULL;
     myports_string = NULL;
     access_string  = NULL;
@@ -333,27 +376,28 @@ mod_config_beg(int i)
     WRLOCK_ACCEL_CONFIG ;
     nmyports = 0;
     if ( maps ) {
-	free_maps(maps);
-	maps = NULL;
+        free_maps(maps);
+        maps = NULL;
     }
     if ( default_map ) {
-	free_maps(default_map);
-	default_map = NULL;
+        free_maps(default_map);
+        default_map = NULL;
     }
     if ( refr_patts ) {
-	free_refresh_patterns(refr_patts);
-	refr_patts = NULL;
+        free_refresh_patterns(refr_patts);
+        refr_patts = NULL;
     }
     if ( rewrite_location ) {
-	free_rewrite_location(rewrite_location);
-	rewrite_location = NULL;
+        free_rewrite_location(rewrite_location);
+        rewrite_location = NULL;
     }
     map_file[0] = 0;
     rewrite_host = TRUE;
     use_host_hash = 0;
     if ( map_hash_table ) {
-	free(map_hash_table);
-	map_hash_table = NULL;
+        free(map_hash_table);
+        free(reverse_hash_table);
+        map_hash_table = NULL;
     }
     other_maps_chain = NULL;
     sleep_timeout = 600;
@@ -377,15 +421,14 @@ mod_run(void)
 {
     WRLOCK_ACCEL_CONFIG ;
     if ( myports_string ) {
-	nmyports = parse_myports(myports_string, &myports[0], NMYPORTS);
-	verb_printf("%s will use %d ports\n", module_name, nmyports);
+        nmyports = parse_myports(myports_string, &myports[0], NMYPORTS);
+        verb_printf("%s will use %d ports\n", MODULE_NAME, nmyports);
     }
     UNLOCK_ACCEL_CONFIG ;
 
     if ( access_string != NULL ){     
-	nmyports = parse_access(access_string, &myports[0], NMYPORTS);
-	verb_printf("%s will use %d ports for access\n", module_name, nmyports);
-	
+        nmyports = parse_access(access_string, &myports[0], NMYPORTS);
+        verb_printf("%s will use %d ports for access\n", MODULE_NAME, nmyports);
     }
 
     return(MOD_CODE_OK);
@@ -395,71 +438,72 @@ int
 mod_config_end(int i)
 {
     if ( use_host_hash > 0 ) {
-	map_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
+        map_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
+        reverse_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
     }
     if ( map_file )
-	reload_map_file();
+        reload_map_file();
     return(MOD_CODE_OK);
 }
 
 int
 mod_config(char *config, int i)
 {
-char		*p = config;
+char    *p = config;
 
     WRLOCK_ACCEL_CONFIG ;
     while( *p && IS_SPACE(*p) ) p++;
 
     if ( !strncasecmp(p, "myport", 6) ) {
-	p += 6;
-	while (*p && IS_SPACE(*p) ) p++;
-	myports_string = strdup(p);
-	/*nmyports = parse_myports(p, &myports, NMYPORTS);*/
-	verb_printf("%s will use %d ports\n", module_name, nmyports);
+        p += 6;
+        while (*p && IS_SPACE(*p) ) p++;
+        myports_string = strdup(p);
+        /*nmyports = parse_myports(p, &myports, NMYPORTS);*/
+        verb_printf("%s will use %d ports\n", MODULE_NAME, nmyports);
     } else
     if ( !strncasecmp(p, "access", 6) ) {
-	p += 6;
-	while (*p && IS_SPACE(*p) ) p++;
-	access_string = strdup(p);
-	verb_printf("%s will use %d ports for access\n", module_name, nmyports);
+        p += 6;
+        while (*p && IS_SPACE(*p) ) p++;
+        access_string = strdup(p);
+        verb_printf("%s will use %d ports for access\n", MODULE_NAME, nmyports);
     } else
     if ( !strncasecmp(p, "rewrite_host", 12) ) {
-	p += 12; while (*p && IS_SPACE(*p) ) p++;
-	if ( !strcasecmp(p, "yes") ) {
-	    rewrite_host = TRUE;
-	    verb_printf("%s will rewrite 'Host:' header\n", module_name);
-	} else {
-	    rewrite_host = FALSE;
-	    verb_printf("%s won't rewrite 'Host:' header\n", module_name);
-	}
+        p += 12; while (*p && IS_SPACE(*p) ) p++;
+        if ( !strcasecmp(p, "yes") ) {
+            rewrite_host = TRUE;
+            verb_printf("%s will rewrite 'Host:' header\n", MODULE_NAME);
+        } else {
+            rewrite_host = FALSE;
+            verb_printf("%s won't rewrite 'Host:' header\n", MODULE_NAME);
+        }
     } else
     if ( !strncasecmp(p, "dead_timeout", 12) ) {
-	p += 12;
-	while (*p && IS_SPACE(*p) ) p++;
-	dead_timeout = atoi(p);
+        p += 12;
+        while (*p && IS_SPACE(*p) ) p++;
+        dead_timeout = atoi(p);
     } else
     if ( !strncasecmp(p, "use_host_hash", 13) ) {
-	p += 13;
-	while (*p && IS_SPACE(*p) ) p++;
-	use_host_hash = atoi(p);
+        p += 13;
+        while (*p && IS_SPACE(*p) ) p++;
+        use_host_hash = atoi(p);
     } else
     if ( !strncasecmp(p, "proxy_requests", 14) ) {
-	p += 14;
-	while (*p && IS_SPACE(*p) ) p++;
-	deny_proxy_requests = !strncasecmp(p, "deny", 4);
+        p += 14;
+        while (*p && IS_SPACE(*p) ) p++;
+        deny_proxy_requests = !strncasecmp(p, "deny", 4);
     } else
     if ( !strncasecmp(p, "ip_lookup", 9) ) {
-	p += 9;
-	while (*p && IS_SPACE(*p) ) p++;
-	ip_lookup = strncasecmp(p, "no", 2);
+        p += 9;
+        while (*p && IS_SPACE(*p) ) p++;
+        ip_lookup = strncasecmp(p, "no", 2);
     } else
     if ( !strncasecmp(p, "sleep_timeout", 13) ) {
-	p += 13;
-	while (*p && IS_SPACE(*p) ) p++;
-	sleep_timeout = atoi(p);
+        p += 13;
+        while (*p && IS_SPACE(*p) ) p++;
+        sleep_timeout = atoi(p);
     } else
     if ( !strncasecmp(p, "file", 4) )
-	parse_map_file(p);
+        parse_map_file(p);
     UNLOCK_ACCEL_CONFIG ;
 
 
@@ -496,41 +540,41 @@ struct	map	*next_map;
 struct	to_host	*host, *next_host;
 
     while (map) {
-	next_map = map->next;
-	if ( map->from_host ) free(map->from_host);
-	if ( (map->type == MAP_REGEX)
-	     || (map->type == MAP_ACL)
-	     || (map->type == MAP_REGEX_CS) ) {
-		regfree(&map->preg);
-	}
-	if ( map->cs_to_client_table )
-	    leave_l_string_list(map->cs_to_client_table);
-	if ( map->cs_to_server_table )
-	    leave_l_string_list(map->cs_to_server_table);
-	if ( map->src_cs_name ) free(map->src_cs_name);
-	host = map->to_hosts;
-	while ( host ) {
-	    next_host = host->next;
-	    if ( host->name ) free(host->name);
-	    if ( host->path ) free(host->path);
-	    free(host);
-	    host = next_host;
-	}
-	pthread_mutex_destroy(&map->last_lock);
-	if ( map->config_line ) free(map->config_line);
-	free(map);
-	map = next_map;
+        next_map = map->next;
+        if ( map->from_host ) free(map->from_host);
+        if ( (map->type == MAP_REGEX)
+             || (map->type == MAP_ACL)
+             || (map->type == MAP_REGEX_CS) ) {
+            regfree(&map->preg);
+        }
+        if ( map->cs_to_client_table )
+            leave_l_string_list(map->cs_to_client_table);
+        if ( map->cs_to_server_table )
+            leave_l_string_list(map->cs_to_server_table);
+        if ( map->src_cs_name ) free(map->src_cs_name);
+        host = map->to_hosts;
+        while ( host ) {
+            next_host = host->next;
+            if ( host->name ) free(host->name);
+            if ( host->path ) free(host->path);
+            free(host);
+            host = next_host;
+        }
+        pthread_mutex_destroy(&map->last_lock);
+        if ( map->config_line ) free(map->config_line);
+        free(map);
+        map = next_map;
     }
 }
 
 int
 redir_rewrite_header(char **hdr, struct request *rq, int *flags, int instance)
 {
-struct	map		*map;
-struct	url		url, new_url;
-char			*p, *new_location = NULL, *src = NULL, *new_l_val = NULL;
-regmatch_t		pmatch[MAXMATCH];
-rewrite_location_t	*rl;
+struct  map         *map;
+struct  url         url, new_url;
+char                *p, *new_location = NULL, *src = NULL, *new_l_val = NULL;
+regmatch_t          pmatch[MAXMATCH];
+rewrite_location_t  *rl;
 
     if ( !rewrite_location
          || !hdr || !*hdr || !rq ) return(MOD_CODE_OK);
@@ -540,7 +584,7 @@ rewrite_location_t	*rl;
     p = (*hdr) + 9;
     while ( *p && IS_SPACE(*p) ) p++;
     if ( !*p )
-	return(MOD_CODE_OK);
+        return(MOD_CODE_OK);
 
     RDLOCK_ACCEL_CONFIG ;
 
@@ -554,21 +598,21 @@ rewrite_location_t	*rl;
     map = find_map(rq, MAXMATCH, pmatch, src);
 
     if ( !map )
-	goto done;
+        goto done;
 
     rl = rewrite_location;
     while ( rl ) {
-	/* if the source match acl	*/
-	if ( rl->acl_index && url_match_named_acl_by_index(src, rl->acl_index) ) {
-	    /* if 'Location:' value match rl->preg	*/
-	    INIT_PMATCH(pmatch);
-	    if ( !regexec(&rl->preg, p, MAXMATCH, (regmatch_t*)&pmatch, 0) ) {
-		/* here it is 		*/
-		new_l_val = build_destination(p, pmatch, rl->dst);
-		break;
-	    }
-	}
-	rl = rl->next;
+        /* if the source match acl	*/
+        if ( rl->acl_index && url_match_named_acl_by_index(src, rl->acl_index) ) {
+            /* if 'Location:' value match rl->preg	*/
+            INIT_PMATCH(pmatch);
+            if ( !regexec(&rl->preg, p, MAXMATCH, (regmatch_t*)&pmatch, 0) ) {
+                /* here it is  */
+                new_l_val = build_destination(p, pmatch, rl->dst);
+                break;
+            }
+        }
+        rl = rl->next;
     }
 
     if ( !new_l_val ) goto done;
@@ -578,25 +622,25 @@ rewrite_location_t	*rl;
     if ( !new_url.port ) new_url.port = 80;
 
     if ( new_url.proto && new_url.host ) {
-	int	len = strlen(new_url.proto) +
-		      strlen(new_url.host);
-	if ( new_url.path ) len += strlen(new_url.path);
-	if (     url.path ) len += strlen(url.path+1);	/* we don't need leading / here */
-	len += 10 /* Location: */ + 3 /* :// */
-		 + 10 /* possible port */ + 1 /* \0 */ ;
-	new_location = malloc(len);
-	if ( !new_location ) goto done;
-	if ( new_url.port != 80 )
-	    sprintf(new_location, "Location: %s://%s:%d%s%s", new_url.proto,
-				new_url.host, new_url.port, 
-				new_url.path?new_url.path:"",
-				    url.path?(url.path+1):"");
-	   else
-	    sprintf(new_location, "Location: %s://%s%s%s", new_url.proto,
-				new_url.host, 
-				new_url.path?new_url.path:"",
-				    url.path?(url.path+1):"");
-	free(*hdr); *hdr = new_location;
+        int	len = strlen(new_url.proto) +
+        	      strlen(new_url.host);
+        if ( new_url.path ) len += strlen(new_url.path);
+        if (     url.path ) len += strlen(url.path+1);	/* we don't need leading / here */
+        len += 10 /* Location: */ + 3 /* :// */
+                 + 10 /* possible port */ + 1 /* \0 */ ;
+        new_location = malloc(len);
+        if ( !new_location ) goto done;
+        if ( new_url.port != 80 )
+            sprintf(new_location, "Location: %s://%s:%d%s%s", new_url.proto,
+                new_url.host, new_url.port,
+                new_url.path?new_url.path:"",
+                url.path?(url.path+1):"");
+           else
+            sprintf(new_location, "Location: %s://%s%s%s", new_url.proto,
+                        new_url.host,
+                        new_url.path?new_url.path:"",
+                        url.path?(url.path+1):"");
+        free(*hdr); *hdr = new_location;
     }
 
 done:
@@ -619,13 +663,13 @@ done:
 int
 redir_connect(int *resulting_so, struct request *rq, int *flags, int instance)
 {
-struct	map		*map;
-struct	to_host		*host;
-int			max_attempts, so = -1, rc;
-struct	sockaddr_in	server_sa;
-regmatch_t		pmatch[MAXMATCH];
-char			*src = NULL, *destination = NULL;
-struct	url		tmp_url;
+struct	map             *map;
+struct	to_host         *host;
+int                     max_attempts, so = -1, rc;
+struct	sockaddr_in     server_sa;
+regmatch_t              pmatch[MAXMATCH];
+char                    *src = NULL, *destination = NULL;
+struct  url             tmp_url;
 
     /* this lock can be long (if we can't connect immediately) */
     bzero(&tmp_url, sizeof(tmp_url));
@@ -640,99 +684,104 @@ struct	url		tmp_url;
     /* connect using next server */
     max_attempts = map->hosts;
     if ( max_attempts > 1 ) /* we skip firsh host (dst) */
-	max_attempts--;
+        max_attempts--;
     pthread_mutex_lock(&map->last_lock);
     host = map->last_used;
     if ( !host ) {
-	if ( (map->hosts > 1) && map->to_hosts->next ) {
-	    /* skip dst - we use only backups to connect to destination */
-	    host = map->to_hosts->next;
-	} else
-	host = map->to_hosts;
+        if ( (map->hosts > 1) && map->to_hosts->next ) {
+            /* skip dst - we use only backups to connect to destination */
+            host = map->to_hosts->next;
+        } else
+        host = map->to_hosts;
     }
     map->last_used = host->next;
     /* if host marked as failed and sleep_timeout passed - try it */
     if ( host->failed && (global_sec_timer - host->last_failed > sleep_timeout) )
-	host->failed = FALSE;
+        host->failed = FALSE;
     pthread_mutex_unlock(&map->last_lock);
     if ( !host ) goto done;	/* something wrong */
 
     so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( so < 0 )
-	goto done;
+        goto done;
+
+    if ( bind(so,(struct sockaddr*)&rq->conn_from_sa,sizeof(struct sockaddr)) == -1 ) {
+      my_xlog(OOPS_LOG_SEVERE,"redir_connect(): bind: can't bind to connect_from IP in accel module\n");
+      goto done;
+    }
 
     while ( max_attempts ) {
-	if ( !host->failed ) {
-	    char 	*use_name;
-	    u_short	use_port;
-	    /* we can try this */
-	    /* if map is regex then first record can be regex			*/
-	    /* in this case we can use host and port from rewritten request	*/
-	    if ( ((map->type == MAP_REGEX)
-	        ||(map->type==MAP_ACL)
-	        ||(map->type==MAP_REGEX_CS))
-	    	  && (host == map->to_hosts) ) {
-		destination = build_destination(src,pmatch, map->to_hosts->name);
-		parse_raw_url(destination, &tmp_url);
-		IF_FREE(destination); destination = NULL;
-		use_name = tmp_url.host;
-		use_port = tmp_url.port;
-		if ( !use_port ) use_port = 80;
-	    } else {
-		use_name = host->name;
-		use_port = host->port;
-		/* Added by Tolyar */
-		if ( !map->from_port || !use_port ) use_port = rq->url.port;
-	    }
-	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Connecting to %s:%d\n", use_name, use_port);
-	    rc = str_to_sa(use_name, (struct sockaddr*)&server_sa);
-	    server_sa.sin_port = htons(use_port);
-	    if ( rc ) /* have no name */
-		goto try_next_host;
-	    fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0) | O_NONBLOCK );
-	    rc = connect(so, (struct sockaddr*)&server_sa, sizeof(server_sa));
-	    if ( rc == 0 ) {
-		/* this is ok */
-		*resulting_so = so;
-		goto done;
-	    }
-	    if ( ERRNO == EINPROGRESS ) {
-	      /* do timed wait */
-	      struct pollarg pollarg;
+        if ( !host->failed ) {
+            char        *use_name;
+            u_short     use_port;
+            /* we can try this */
+            /* if map is regex then first record can be regex			*/
+            /* in this case we can use host and port from rewritten request	*/
+            if ( ((map->type == MAP_REGEX)
+                ||(map->type==MAP_ACL)
+                ||(map->type==MAP_REGEX_CS))
+                  && (host == map->to_hosts) ) {
+                destination = build_destination(src,pmatch, map->to_hosts->name);
+                parse_raw_url(destination, &tmp_url);
+                IF_FREE(destination); destination = NULL;
+                use_name = tmp_url.host;
+                use_port = tmp_url.port;
+                if ( !use_port ) use_port = 80;
+            } else {
+                use_name = host->name;
+                use_port = host->port;
+                /* Added by Tolyar */
+                if ( !map->from_port || !use_port ) use_port = rq->url.port;
+            }
+            my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Connecting to %s:%d\n", use_name, use_port);
+            rc = str_to_sa(use_name, (struct sockaddr*)&server_sa);
+            server_sa.sin_port = htons(use_port);
+            if ( rc ) /* have no name */
+                goto try_next_host;
+            fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0) | O_NONBLOCK );
+            rc = connect(so, (struct sockaddr*)&server_sa, sizeof(server_sa));
+            if ( rc == 0 ) {
+                /* this is ok */
+                *resulting_so = so;
+                goto done;
+            }
+            if ( ERRNO == EINPROGRESS ) {
+              /* do timed wait */
+              struct pollarg pollarg;
 
-		pollarg.fd = so;
-		pollarg.request = FD_POLL_WR|FD_POLL_HU;
-		rc = poll_descriptors(1, &pollarg, dead_timeout*1000);
-		if ( (rc > 0) && !IS_HUPED(&pollarg) ) {
-		    /* connected */
-		    *resulting_so = so;
-		    goto done;
-		}
-		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Connect failed.\n");
-	    }
-	    if ( so != -1 ) {
-		close(so);
-		so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if ( so < 0 )
-		    goto done;
-	    }
-	    host->failed = TRUE;
-	    host->last_failed = global_sec_timer;
-	} else {
-	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Host %s failed %d ago. Sleep_timeout=%d\n",
-		host->name?host->name:"???", 
-		global_sec_timer-host->last_failed,
-		sleep_timeout);
-	}
+                pollarg.fd = so;
+                pollarg.request = FD_POLL_WR|FD_POLL_HU;
+                rc = poll_descriptors(1, &pollarg, dead_timeout*1000);
+                if ( (rc > 0) && !IS_HUPED(&pollarg) ) {
+                    /* connected */
+                    *resulting_so = so;
+                    goto done;
+                }
+                my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Connect failed.\n");
+            }
+            if ( so != -1 ) {
+                close(so);
+                so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+                if ( so < 0 )
+                    goto done;
+            }
+            host->failed = TRUE;
+            host->last_failed = global_sec_timer;
+        } else {
+            my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir_connect(): Host %s failed %d ago. Sleep_timeout=%d\n",
+                host->name?host->name:"???", 
+                global_sec_timer-host->last_failed,
+                sleep_timeout);
+        }
   try_next_host:
         free_url(&tmp_url); bzero(&tmp_url, sizeof(tmp_url));
-	host = host->next;
-	if ( !host ) host = map->to_hosts;
-	max_attempts--;
+        host = host->next;
+        if ( !host ) host = map->to_hosts;
+        max_attempts--;
     }
     UNLOCK_ACCEL_CONFIG ;
     if ( so >= 0 )
-	close(so);
+        close(so);
     IF_FREE(src);
     IF_FREE(destination);
     free_url(&tmp_url);
@@ -750,8 +799,12 @@ redir(int so, struct group *group, struct request *rq, int *flags, int instance)
 {
 struct	map		*map;
 regmatch_t		pmatch[MAXMATCH];
-char			*destination = NULL, *src = NULL, *ohost;
+char            *destination = NULL, *src = NULL, *ohost;
 struct	av		*host_av;
+
+    if ( (rq->meth == METH_PURGE_SITE) || (rq->meth == METH_PURGE_SITE_R) ) {
+        return(redir_control_request(so, group, rq, flags, instance));
+    };
 
     check_map_file_age();
 
@@ -763,36 +816,28 @@ struct	av		*host_av;
     INIT_PMATCH(pmatch);
     map = find_map(rq, MAXMATCH, pmatch, src);
     if ( map && map->to_hosts)
-	goto map_found;
+        goto map_found;
 
     if ( deny_proxy_requests ) {
-	if ( rq && on_my_port(rq) && rq->url.host ) {
-	    struct	output_object	*output;
-	    UNLOCK_ACCEL_CONFIG ;
-	    output = malloc(sizeof(*output));
-	    if ( output ) {
-		char	proxy_deny[] = "<body>Proxy access denied<br></body>";
-		bzero(output, sizeof(*output));
-		output->body = alloc_buff(128);
-		put_av_pair(&output->headers,"HTTP/1.0", "400 Access denied");
-		put_av_pair(&output->headers,"Expires:", "Thu, 01 Jan 1970 00:00:01 GMT");
-		put_av_pair(&output->headers,"Content-Type:", "text/html");
-
-		if ( output->body ) {
-		    attach_data(proxy_deny, sizeof(proxy_deny), output->body);
-		}
-		process_output_object(so, output, rq);
-		free_output_obj(output);
-		if ( flags ) *flags |= MOD_AFLAG_OUT;
-	    }
-	    return(MOD_CODE_ERR);
-	}
+        if ( rq && on_my_port(rq) && rq->url.host ) {
+            struct	output_object	*output;
+            UNLOCK_ACCEL_CONFIG ;
+            say_bad_request(so, "Access denied", "No proxy requests allowed", ERR_ACC_DENIED, rq);
+            if ( flags ) *flags |= MOD_AFLAG_OUT;
+            return(MOD_CODE_ERR);
+        }
     }
     goto done;
 map_found:
-    if ( map->config_line ) my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "accel/redir(): request matched to %s map `%s'.\n",
-	mapnames[map->type], map->config_line);
 
+    if ( map->config_line ) my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "accel/redir(): request matched to %s map `%s'.\n",
+        mapnames[map->type], map->config_line);
+
+    if ( map->site_purged != 0 )
+        my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "accel/redir(): map->site_purged != 0\n");
+
+    rq->site_purged = map->site_purged;
+    
     IF_FREE ( rq->original_host );
     rq->original_host = NULL;
     IF_FREE ( rq->original_path );
@@ -868,7 +913,7 @@ case MAP_EXTERNAL:
 	    struct	output_object	*output;
 	    output = malloc(sizeof(*output));
 	    if ( output ) {
-                char redirected[] = "redirected by accel";
+                char redirected[] = "redirected by accel\n";
                 char *new_location;
                 int  location_len = 0;
 
@@ -932,7 +977,6 @@ case MAP_EXTERNAL:
                    else 
                         snprintf(new_location,location_len - 1, "%s://%s%s",rq->url.proto,
                                                        rq->url.host,
-                                                       rq->url.port,
                                                        rq->url.path);
 
                 put_av_pair(&output->headers,"Location:", new_location);
@@ -1047,6 +1091,52 @@ done:
     return(MOD_CODE_OK);
 }
 
+int
+redir_control_request(int so, struct group *group, struct request *rq, int *flags, int instance)
+{
+char                    *host;
+struct  map             *m = 0;
+regmatch_t              pmatch[MAXMATCH];
+
+    if ( (rq->meth != METH_PURGE_SITE) && (rq->meth != METH_PURGE_SITE_R) )
+        return(MOD_CODE_OK);
+    if ( !rq->url.host ) {
+        say_bad_request(so, "Access denied", "Site not allowed for PURGE_SITE", ERR_ACC_DENIED, rq);
+        if ( flags ) SET(*flags, MOD_AFLAG_BRK|MOD_AFLAG_OUT);
+        return(MOD_CODE_ERR);
+    }
+    /* lookup proper map */
+    if ( rq->meth == METH_PURGE_SITE ) {
+        m = lookup_map(0, NULL, rq->url.host, rq->url.port);
+        if ( !m ) {
+            say_bad_request(so, "Access denied", "Site not allowed for PURGE_SITE", ERR_ACC_DENIED, rq);
+            if ( flags ) SET(*flags, MOD_AFLAG_BRK|MOD_AFLAG_OUT);
+            return(MOD_CODE_ERR);
+        }
+        if ( !TEST(m->flags, MAP_CANPURGE) ) {
+            say_bad_request(so, "Access denied", "Site not allowed for PURGE_SITE", ERR_ACC_DENIED, rq);
+            if ( flags ) SET(*flags, MOD_AFLAG_BRK|MOD_AFLAG_OUT);
+            return(MOD_CODE_ERR);
+        }
+        m->site_purged = global_sec_timer;
+        if ( flags ) SET(*flags, MOD_AFLAG_OUT);
+        write(so, "HTTP/1.0 200 PURGED OK\n\n", 24);
+        return(MOD_CODE_OK);
+    }
+    if ( rq->meth == METH_PURGE_SITE_R ) {
+        /* we must set new date on EVERY map which have given destination */
+        int res = set_purge_date_r(0, NULL, rq->url.host, rq->url.port, global_sec_timer);
+        if ( flags ) SET(*flags, MOD_AFLAG_OUT);
+        if ( res == 0 ) {
+            write(so, "HTTP/1.0 200 PURGED NOT OK\n\n", 28);
+        } else {
+            write(so, "HTTP/1.0 200 PURGED OK\n\n", 24);
+        }
+        return(MOD_CODE_OK);
+    }
+    return(MOD_CODE_OK);
+}
+
 static int
 on_my_port(struct request *rq)
 {
@@ -1086,149 +1176,301 @@ u_short			port;
 
     port = ntohs(rq->my_sa.sin_port);
     if ( nmyports > 0 ) {
-	int     n = nmyports;
-	myport_t *mp = myports;
-	/* if this is not on my port */
-	while( n ) {
-	    /* if ports are equal and addresseses are equal (unless wildcard myport) */
-	    if (    ( mp->port == port)
-	         && (   (mp->in_addr.s_addr == INADDR_ANY) 
-	             || (mp->in_addr.s_addr == rq->my_sa.sin_addr.s_addr)) )
-	         break;
-	    n--;mp++;
-	}
-	if ( !n ) {
-	    goto done;  /* not my */
-	}
+        int     n = nmyports;
+        myport_t *mp = myports;
+        /* if this is not on my port */
+        while( n ) {
+            /* if ports are equal and addresseses are equal (unless wildcard myport) */
+            if (    ( mp->port == port)
+                 && (   (mp->in_addr.s_addr == INADDR_ANY)
+                     || (mp->in_addr.s_addr == rq->my_sa.sin_addr.s_addr)) )
+                 break;
+            n--;mp++;
+        }
+        if ( !n ) {
+            goto done;  /* not my */
+        }
     } else
-	return(NULL);
+        return(NULL);
 
     my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): it's my.\n");
     /* first - take destination from 'Host:'		*/
     if ( rq->original_host ) {
-	host = rq->original_host;
+        host = rq->original_host;
     } else
-	host = attr_value(rq->av_pairs, "host");
+        host = attr_value(rq->av_pairs, "host");
     if ( host ) {
-	char	host_buf[MAXHOSTNAMELEN], *o;
+        char	host_buf[MAXHOSTNAMELEN], *o;
 
-	strncpy(host_buf, host, sizeof(host_buf) - 1);
-	host_buf[sizeof(host_buf) - 1] = 0;
-	if ( (o = strchr(host_buf, ':')) ) {
-	    *o = 0;
-	    port = (u_short)atoi(o+1);
-	} else
-	    port = 80;
-	/* now host_buf contain host part	*/
-	if ( (use_host_hash) > 0 && map_hash_table ) {
-	    char	*t;
-	    unsigned 	b,o;
-	    struct map	*this;
+        strncpy(host_buf, host, sizeof(host_buf) - 1);
+        host_buf[sizeof(host_buf) - 1] = 0;
+        if ( (o = strchr(host_buf, ':')) ) {
+            *o = 0;
+            port = (u_short)atoi(o+1);
+        } else
+            port = 80;
+        /* now host_buf contain host part	*/
+        if ( (use_host_hash) > 0 && map_hash_table ) {
+            char	*t;
+            unsigned 	b,o;
+            struct map	*this;
 
-	    /* lowercase host			*/
-	    t = host_buf; while ( *t ) { *t = tolower(*t); t++; }
-	    b = hash_function(host_buf);
-	    o = ortho_hash_function(host_buf);
+            /* lowercase host			*/
+            t = host_buf; while ( *t ) { *t = tolower(*t); t++; }
+            b = hash_function(host_buf);
+            o = ortho_hash_function(host_buf);
 
-	    if ( map_hash_table[b].next ) {
-		/* check this line of hash table */
-		this = map_hash_table[b].next;
-		while ( this ) {
-		    if ( this->ortho != o ) {
-			this = this->next_in_hash;
-			continue;
-		    }
-		    if (    !strcasecmp(host_buf, this->from_host)
-			 && (port == this->from_port) ) {
-			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Found in hash.\n");
-			goto hash_found;
-		    }
-		    this = this->next_in_hash;
-		}
-		/* not found, try with other maps */
-	    }
-	    this = other_maps_chain;
-	    while ( this ) {
-		/* if rq match this map */
-		switch ( this->type ) {
-		case MAP_REGEX_CS:
-		case MAP_REGEX:
-		    if ( src && !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
-			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
-			goto hash_found;
-		    }
-		    break;
-		case MAP_ACL:
-		    if ( rq_match_named_acl_by_index(rq, this->acl_index)
-			&& !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
-			my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
-			goto hash_found;
-		    }
-		    break;
-		}
-		this = this->next_in_hash;
-	    }
-	hash_found:
-	    if ( this ) return(this);
-	    goto try_addresses;
-	}
-	while(map) {
-	    switch( map->type ) {
+            if ( map_hash_table[b].next ) {
+        	/* check this line of hash table */
+        	this = map_hash_table[b].next;
+        	while ( this ) {
+        	    if ( this->ortho != o ) {
+        		this = this->next_in_hash;
+        		continue;
+        	    }
+        	    if (    !strcasecmp(host_buf, this->from_host)
+        		 && (port == this->from_port) ) {
+        		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Found in hash.\n");
+        		goto hash_found;
+        	    }
+        	    this = this->next_in_hash;
+        	}
+        	/* not found, try with other maps */
+            }
+            this = other_maps_chain;
+            while ( this ) {
+        	/* if rq match this map */
+        	switch ( this->type ) {
+        	case MAP_EXTERNAL:
+                case MAP_STRING_CS:
+                case MAP_STRING:
+        	    if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
+        	        my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in string map.\n", host);
+        	        return(map);
+        	    }
+        	    break;
+
+        	case MAP_REGEX_CS:
+        	case MAP_REGEX:
+        	    if ( src && !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
+        		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
+        		goto hash_found;
+        	    }
+        	    break;
+        	case MAP_ACL:
+        	    if ( rq_match_named_acl_by_index(rq, this->acl_index)
+        		&& !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
+        		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
+        		goto hash_found;
+        	    }
+        	    break;
+        	}
+        	this = this->next_in_hash;
+            }
+        hash_found:
+            if ( this ) return(this);
+            goto try_addresses;
+        }
+        while(map) {
+            switch( map->type ) {
         case MAP_EXTERNAL:
-	case MAP_STRING_CS:
-	case MAP_STRING:
-		if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
-		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in string map.\n", host);
-		    return(map);
-		}
-		break;
-	case MAP_REGEX_CS:
-	case MAP_REGEX:
-		if ( src && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
-		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
-		    return(map);
-		}
-		break;
-	case MAP_ACL:
-		if ( rq_match_named_acl_by_index(rq, map->acl_index)
-		    && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
-		    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
-		    return(map);
-		}
-		break;
-	default:
-		my_xlog(OOPS_LOG_SEVERE, "find_map(): Here is unknown map type %d\n", map->type);
-		break;
-	    }
-	    map = map->next;
-	}
+        case MAP_STRING_CS:
+        case MAP_STRING:
+        	if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
+        	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in string map.\n", host);
+        	    return(map);
+        	}
+        	break;
+        case MAP_REGEX_CS:
+        case MAP_REGEX:
+        	if ( src && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
+        	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host);
+        	    return(map);
+        	}
+        	break;
+        case MAP_ACL:
+        	if ( rq_match_named_acl_by_index(rq, map->acl_index)
+        	    && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
+        	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in acl map.\n", host);
+        	    return(map);
+        	}
+        	break;
+        default:
+        	my_xlog(OOPS_LOG_SEVERE, "find_map(): Here is unknown map type %d\n", map->type);
+        	break;
+            }
+            map = map->next;
+        }
     }
-try_addresses:
+ try_addresses:
     if ( ip_lookup == FALSE )
-	goto done;
+        goto try_default;
     /* If we didn't find hostname from host - try addresses   */
     map = maps;
     while ( map ) {
-	if ( map->from_host ) {
-	    str_to_sa(map->from_host, (struct sockaddr*)&map_sa);
-	    if ( (map_sa.sin_addr.s_addr == rq->my_sa.sin_addr.s_addr) &&
-		(!map->from_port || (map->from_port == ntohs(rq->my_sa.sin_port)) ) ) {
-		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): Map found: %s\n", map->from_host);
-		break;
-	    }
-	}
-	map = map->next;
+        if ( map->from_host ) {
+            str_to_sa(map->from_host, (struct sockaddr*)&map_sa);
+            if ( (map_sa.sin_addr.s_addr == rq->my_sa.sin_addr.s_addr) &&
+        	(!map->from_port || (map->from_port == ntohs(rq->my_sa.sin_port)) ) ) {
+        	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): Map found by addr: %s\n", map->from_host);
+        	break;
+            }
+        }
+        map = map->next;
     }
-
+ try_default:
     if ( !map ) {
-	if ( !default_map ) goto done;
-	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): Default used.\n");
-	map = default_map;
+        if ( !default_map ) goto done;
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "find_map(): Default used.\n");
+        map = default_map;
     }
     res = map;
-done:
+ done:
     return(res);
 }
+
+static int
+set_purge_date_r(size_t nmatch, regmatch_t pmatch[], char *src, u_short port, time_t date)
+{
+char    *host;
+char    host_buf[MAXHOSTNAMELEN], *o;
+int     res = 0;
+
+    strncpy(host_buf, src, sizeof(host_buf) - 1);
+
+    host_buf[sizeof(host_buf) - 1] = 0;
+
+    /* now host_buf contain host part	*/
+    if ( (use_host_hash) > 0 && reverse_hash_table ) {
+        char            *t;
+        unsigned        b,o;
+        struct map      *this;
+
+        /* lowercase host                       */
+        t = host_buf;
+        while ( *t ) {
+            *t = tolower(*t); t++;
+        }
+        b = hash_function(host_buf);
+        o = ortho_hash_function(host_buf);
+        if ( reverse_hash_table[b].next ) {
+            /* check this line of hash table */
+            this = reverse_hash_table[b].next;
+            while ( this ) {
+                if ( this->reverse_ortho != o ) {
+                    this = this->next_in_hash;
+                    continue;
+                }
+                if ( !strcmp(host_buf, this->to_hosts->name)
+                     && (port == this->to_hosts->port)
+                     && TEST(this->flags, MAP_CANPURGE_R) ) {
+                    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "lookup_map(): Found in reverse hash.\n");
+                    this->site_purged = date;
+                    res++;
+                }
+                this = this->next_in_reverse_hash;
+            }
+        }
+        return(res);
+    }
+    return(0);
+}
+
+static struct map *
+lookup_map(size_t nmatch, regmatch_t pmatch[], char *src, u_short port)
+{
+struct  map             *res = NULL, *map = maps;
+char                    *host;
+char    host_buf[MAXHOSTNAMELEN], *o;
+
+    strncpy(host_buf, src, sizeof(host_buf) - 1);
+
+    host_buf[sizeof(host_buf) - 1] = 0;
+
+    /* now host_buf contain host part	*/
+    if ( (use_host_hash) > 0 && map_hash_table ) {
+        char            *t;
+        unsigned        b,o;
+        struct map      *this;
+
+        /* lowercase host                       */
+        t = host_buf;
+        while ( *t ) {
+            *t = tolower(*t); t++;
+        }
+        b = hash_function(host_buf);
+        o = ortho_hash_function(host_buf);
+
+        if ( map_hash_table[b].next ) {
+        /* check this line of hash table */
+                this = map_hash_table[b].next;
+                while ( this ) {
+                    if ( this->ortho != o ) {
+                        this = this->next_in_hash;
+                        continue;
+                    }
+                    if (    !strcasecmp(host_buf, this->from_host)
+                         && (port == this->from_port) ) {
+                        my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "lookup_map(): Found in hash.\n");
+                        goto hash_found;
+                    }
+                    this = this->next_in_hash;
+                }
+                /* not found, try with other maps */
+        }
+        this = other_maps_chain;
+        while ( this ) {
+          /* if rq match this map */
+          switch ( this->type ) {
+            case MAP_EXTERNAL:
+            case MAP_STRING_CS:
+            case MAP_STRING:
+                if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
+                    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "lookup_map(): Host %s found in string map.\n", host_buf);
+                    return(map);
+                }
+                break;
+
+            case MAP_REGEX_CS:
+            case MAP_REGEX:
+                if ( src && !regexec(&this->preg, src, nmatch, pmatch, 0) ) {
+                    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "lookup_map(): Host %s found in regex map.\n", host_buf);
+                    goto hash_found;
+                }
+                break;
+            }
+            this = this->next_in_hash;
+        }
+    hash_found:
+        return(this);
+    }
+    while(map) {
+        switch( map->type ) {
+    case MAP_EXTERNAL:
+    case MAP_STRING_CS:
+    case MAP_STRING:
+    	if ( !strcasecmp(host_buf, map->from_host) && (port == map->from_port) ) {
+    	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in string map.\n", host_buf);
+    	    return(map);
+    	}
+    	break;
+    case MAP_REGEX_CS:
+    case MAP_REGEX:
+    	if ( src && !regexec(&map->preg, src, nmatch, pmatch, 0) ) {
+    	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "find_map(): Host %s found in regex map.\n", host_buf);
+    	    return(map);
+    	}
+    	break;
+    default:
+    	my_xlog(OOPS_LOG_SEVERE, "find_map(): Here is unknown map type %d\n", map->type);
+    	break;
+        }
+        map = map->next;
+    }
+    res = map;
+ done:
+    return(res);
+ }
 
 static void
 parse_map_file(char *p)
@@ -1241,7 +1483,87 @@ parse_map_file(char *p)
     verb_printf("parse_map_file(): Use %s as mapfile.\n", map_file);
 }
 
-static void
+static  void
+set_canpurge(char *p)
+{
+/* "canpurge line"
+   look up map to which line can be matched, then set
+   flag in this map that it can contain time for site_purge
+*/
+struct  map *m;
+char        *pptr;
+u_short     port = 80;
+
+    p+=8;
+    while (*p && IS_SPACE(*p) ) p++;
+    if ( *p == 0 ) return;
+    if ( pptr = strchr(p, ':') ) {
+        *pptr = 0;
+        port = atoi(pptr+1);
+    }
+    m = lookup_map(0, NULL, p, port);
+    if ( m ) {
+        m->flags |= MAP_CANPURGE;
+    }
+}
+
+static  void
+set_canpurge_r(char *p)
+{
+/* "canpurge line"
+   look up map to which line can be matched, then set
+   flag in this map that it can contain time for site_purge
+*/
+struct  map *m;
+char        *pptr;
+u_short     port = 80;
+char        host_buf[MAXHOSTNAMELEN];
+
+    p+=10;
+    while (*p && IS_SPACE(*p) ) p++;
+    if ( *p == 0 ) return;
+    if ( pptr = strchr(p, ':') ) {
+        *pptr = 0;
+        port = atoi(pptr+1);
+    }
+
+    strncpy(host_buf, p, sizeof(host_buf) - 1);
+
+    host_buf[sizeof(host_buf) - 1] = 0;
+
+    /* now host_buf contain host part	*/
+    if ( (use_host_hash) > 0 && reverse_hash_table ) {
+        char            *t;
+        unsigned        b,o;
+        struct map      *this;
+
+        /* lowercase host                       */
+        t = host_buf;
+        while ( *t ) {
+            *t = tolower(*t); t++;
+        }
+        b = hash_function(host_buf);
+        o = ortho_hash_function(host_buf);
+        if ( reverse_hash_table[b].next ) {
+            /* check this line of hash table */
+            this = reverse_hash_table[b].next;
+            while ( this ) {
+                if ( this->reverse_ortho != o ) {
+                    this = this->next_in_hash;
+                    continue;
+                }
+                if ( !strcmp(host_buf, this->to_hosts->name)
+                     && (port == this->to_hosts->port) ) {
+                    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "lookup_map(): Found in reverse hash.\n");
+                    this->flags |= MAP_CANPURGE_R;
+                }
+                this = this->next_in_reverse_hash;
+            }
+        }
+    }
+}
+
+static  void
 parse_map(char *p)
 {
 char		*s, *d, *o;
@@ -1253,11 +1575,11 @@ int		flags = 0;
     /* map from[:port] to1[:port1] to2[:port2] ... */
     p += 3;
     if ( *p == '/' ) {
-	p++;
-	/* switch */
-	if ( tolower(*p) == 'r' )
-	    flags |= MAP_REVERSE;
-	while (*p && !IS_SPACE(*p) ) p++;
+        p++;
+        /* switch */
+        if ( tolower(*p) == 'r' )
+            flags |= MAP_REVERSE;
+        while (*p && !IS_SPACE(*p) ) p++;
     }
     while (*p && IS_SPACE(*p) ) p++;
     config_line = strdup(p);
@@ -1580,17 +1902,17 @@ int		flags = 0;
     while ( *s && !IS_SPACE(*s) ) s++;
     p = s;
     if ( strlen(buf) ) {
-	map = new_map();
-	if ( !map ) goto done;
-	bzero(map, sizeof(*map));
+        map = new_map();
+        if ( !map ) goto done;
+        bzero(map, sizeof(*map));
         map->config_line = config_line; config_line = NULL;
-	map->type = MAP_REGEX;
-	map->flags |= flags;
-	if (regcomp(&map->preg, buf, REG_EXTENDED|REG_ICASE)) {
-	    verb_printf("parse_map_regex(): Cant regcomp %s\n", buf);
-	    free(map);
-	    goto done;
-	}
+        map->type = MAP_REGEX;
+        map->flags |= flags;
+        if (regcomp(&map->preg, buf, REG_EXTENDED|REG_ICASE)) {
+            verb_printf("parse_map_regex(): Cant regcomp %s\n", buf);
+            free(map);
+            goto done;
+        }
 do_next_host:
 	while (*p && IS_SPACE(*p) ) p++;
 	if ( !*p ) {
@@ -2322,7 +2644,7 @@ struct	map	*map;
     mf = fopen(map_file, "r");
     if ( !mf ) {
 	verb_printf("reload_map_file(): Can't fopen %s: %m", map_file);
-        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_map_file(): Can't fopen %s: %m", map_file);
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_map_file(): Can't fopen %s: %m\n", map_file);
 	goto done;
     }
     map_file_mtime = sb.st_mtime;
@@ -2348,6 +2670,7 @@ struct	map	*map;
     }
     if ( use_host_hash ) {
 	map_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
+        reverse_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
     }
     other_maps_chain = NULL;
 
@@ -2370,11 +2693,11 @@ struct	map	*map;
 	} else
 	if ( !strncasecmp(p, "refresh_pattern", 15) ) {
 	    p += 15;
-	    verb_printf("reload_map_file(): %s will use refresh pattern.\n", module_name);
+	    verb_printf("reload_map_file(): %s will use refresh pattern.\n", MODULE_NAME);
 	    parse_refresh_pattern(&refr_patts, p);
 	} else
 	if ( !strncasecmp(p, "rewrite_location", 16) ) {
-	    verb_printf("reload_map_file(): %s will rewrite 'Location:' host.\n", module_name);
+	    verb_printf("reload_map_file(): %s will rewrite 'Location:' host.\n", MODULE_NAME);
 	    p += 16;
 	    insert_rewrite_location(p);
 	} else
@@ -2386,16 +2709,24 @@ struct	map	*map;
 		if ( map_hash_table )
 		    free(map_hash_table);
 		map_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
+		if ( reverse_hash_table )
+		    free(reverse_hash_table);
+		reverse_hash_table = calloc(use_host_hash, sizeof(*map_hash_table));
 	    }
 	} else
+        if ( !strncasecmp(p, "ip_lookup", 9) ) {
+            p += 9;
+            while (*p && IS_SPACE(*p) ) p++;
+            ip_lookup = strncasecmp(p, "no", 2);
+        } else
 	if ( !strncasecmp(p, "rewrite_host", 12) ) {
 	    p += 12; while (*p && IS_SPACE(*p) ) p++;
 	    if ( !strcasecmp(p, "yes") ) {
 		rewrite_host = TRUE;
-		verb_printf("reload_map_file(): %s will rewrite 'Host:' header.\n", module_name);
+		verb_printf("reload_map_file(): %s will rewrite 'Host:' header.\n", MODULE_NAME);
 	    } else {
 		rewrite_host = FALSE;
-		verb_printf("reload_map_file(): %s won't rewrite 'Host:' header.\n", module_name);
+		verb_printf("reload_map_file(): %s won't rewrite 'Host:' header.\n", MODULE_NAME);
 	    }
 	} else
 	if ( !strncasecmp(p, "default", 7) ) {
@@ -2455,8 +2786,14 @@ struct	map	*map;
 	if ( !strncasecmp(p, "map_external_regex", 18) )
 	    parse_map_external_regex(p);
 	else
-	if ( !strncasecmp(p, "map", 3) )
-	    parse_map(p);
+        if ( !strncasecmp(p, "canpurge/r", 10) )
+            set_canpurge_r(p);
+        else
+        if ( !strncasecmp(p, "canpurge", 8) )
+            set_canpurge(p);
+        else
+        if ( !strncasecmp(p, "map", 3) )
+            parse_map(p);
     }
     if ( mf ) fclose(mf);
 done:

@@ -89,9 +89,11 @@ ssize_t	res, rnbyte;
     }
     res = pread(fd,rounded_data,rnbyte,off);
     if ( res <= 0 ) {
+        free(rounded_data);
         return(res);
     }
     memcpy(buf, rounded_data, MIN(res,nbyte));
+    free(rounded_data);
     return(MIN(res,nbyte));
 }
 
@@ -132,7 +134,7 @@ ssize_t	res, rnbyte;
 	if ( res > 0 ) {
 	    return(MIN(nbyte, res));
         }
-	my_xlog(OOPS_LOG_SEVERE, "st_pread(%d, %d): %m\n", fd, nbyte);
+	my_xlog(OOPS_LOG_SEVERE, "st_pwrite(%d, %d): %m\n", fd, nbyte);
 	return(res);
     }
     rnbyte = (nbyte/512)*512;
@@ -1426,7 +1428,7 @@ pthread_t	pid;
 pthread_attr_t	attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-#if	!defined(FREEBSD) && !defined(_WIN32)
+#if defined(PTHREAD_SCOPE_SYSTEM)
     pthread_attr_setscope(&attr, PTHREAD_SCOPE_SYSTEM);
 #endif
     pthread_create(&pid, &attr, &prep_storages, NULL);

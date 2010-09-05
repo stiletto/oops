@@ -8,7 +8,10 @@ SOFLAGS = @SOFLAGS@
 OPT_MODS = @OPT_MODS@
 CXXCOMPFLAGS = @LIBGB_INCL@ @CXXCOMPFLAGS@
 CXXSOFLAGS = @LIBGB_INCL@ @CXXSOFLAGS@
+LIBGB_NAME = @LIBGB_NAME@
 LIBDB_INCL = @LIBDB_INCL@
+LIBDB_PATH = @LIBDB_PATH@
+LIBDB_NAME = @LIBDB_NAME@
 MYSQL_LIB = @MYSQL_LIB@
 PGSQL_LIB = @PGSQL_LIB@
 EXTRASRC = @EXTRASRC@
@@ -32,7 +35,7 @@ EXTRAOBJS = $(EXTRASRC:%c=../%o)
 	mv $*.a $*.o
 
 .cpp.so:
-	${CXX} ${CFLAGS} ${CXXSOFLAGS} ${CDEFS} $< $(LDFLAGS) @LIBGB_PATH@ @LIBGB_NAME@ $(LIBS) -o $@
+	${CXX} ${CFLAGS} ${CXXSOFLAGS} ${CDEFS} $< @LIBGB_PATH@ @LIBGB_NAME@ $(LIBS) -o $@
 
 all:	log_dummy.@MOD_EXT@ \
 	err.@MOD_EXT@ \
@@ -54,9 +57,12 @@ all:	log_dummy.@MOD_EXT@ \
 	passwd_mysql.@MOD_EXT@ \
 	passwd_pgsql.@MOD_EXT@ \
 	wccp2.@MOD_EXT@ \
+	netflow.@MOD_EXT@ \
 	$(OPT_MODS)
 
 log_dummy.@MOD_EXT@:	log_dummy.c ../modules.h ../oops.h
+
+netflow.@MOD_EXT@:	netflow.c ../modules.h ../oops.h
 
 err.@MOD_EXT@:		err.c ../modules.h ../oops.h
 
@@ -82,12 +88,19 @@ transparent.@MOD_EXT@:	transparent.c ../modules.h ../oops.h
 
 custom_log.@MOD_EXT@:	custom_log.c ../modules.h ../oops.h
 
-berkeley_db_api.@MOD_EXT@:	berkeley_db_api.c ../modules.h ../oops.h
+#berkeley_db_api.@MOD_EXT@:	berkeley_db_api.c ../modules.h ../oops.h
+
+berkeley_db_api.o:	berkeley_db_api.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} ${LIBDB_INCL} -c berkeley_db_api.c -o berkeley_db_api.o
+
+berkeley_db_api.so: berkeley_db_api.c ../modules.h ../oops.h
+	${CC} ${CFLAGS} ${CDEFS} ${LIBDB_INCL} -c berkeley_db_api.c -o berkeley_db_api.o
+	${LD} $(SOFLAGS) $(LDFLAGS) -L $(LIBDB_PATH)/lib berkeley_db_api.o -o berkeley_db_api.so $(LIBS) $(LIBDB_NAME) 
 
 gigabase_db_api.@MOD_EXT@:	gigabase_db_api.cpp ../modules.h ../oops.h
 
 oopsctl: oopsctl.c ../modules.h ../config.h  ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} oopsctl.c ${EXTRAOBJS} ${LDFLAGS} ${LIBS} -o oopsctl
+	${CC} ${CFLAGS} ${CDEFS} oopsctl.c ${EXTRAOBJS} ${LIBS} -o oopsctl
 
 passwd_pgsql.so: passwd_sql.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -D__PGSQL -c passwd_sql.c -o passwd_pgsql.o

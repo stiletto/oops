@@ -1,3 +1,9 @@
+What you will need:
+
+BerkeleyDB (www.sleepycat.com)
+flex (ftp.gnu.org/pub/gnu/non-gnu/flex)
+
+
 General procedure:
 
 1) ./configure
@@ -53,7 +59,7 @@ modules in /usr/local/etc/oops,
 in /usr/local/oops you will have directories logs/, storages/, DB/
 
 
-Config for wccp2.
+Config for WCCP2.
 ----------------
 
 1. Set up oops for transparent operation.
@@ -70,6 +76,11 @@ Config for wccp2.
 	}
 
 	module transparent {
+	#
+	#       myport must be consistent with rules for ipfilter
+	#	i.e. all packets must be forwarded by firewall to this
+	#	"myport"
+	#
 		myport	80
 	}
 	module wccp2 {
@@ -134,3 +145,36 @@ Config for wccp2.
 Useful links:
 http://www.cisco.com/univercd/cc/td/doc/product/software/ios121/121cgcr/fun_c/fcprt3/fcd305.htm
 http://www.cisco.com/univercd/cc/td/doc/product/iaabu/webcache/ce20/ver20/wc20wcc2.htm#xtocid508575
+
+Config for NETFLOW.
+------------------
+
+Setup for netflow is easy. You have to set up collector (cflow, flowtools,
+any other), set it to collect netflow version 5 records.
+
+If you need ASNs in your records then you have to supply netflow module
+with special file which contain route prefixes and ASNs
+This file looks like this
+
+3.0.0.0/24 80
+4.0.0.0/24 3356
+4.17.225.0/24 6496
+4.17.226.0/23 6496
+...
+221.228.0.0/14 4134
+221.232.0.0/14 4134
+221.240.0.0/12 17506
+222.0.0.0/16 2516
+222.1.0.0/16 4732
+222.16.0.0/16 4538
+222.17.0.0/16 4538
+
+This file at the time of writing (Nov 2003) contain near 128000 lines.
+
+To build such file you have to have full internet routing table on your
+router.
+
+You can periodically update this file as routing change. The only important
+thing - updates visible to the module must be atomic. Module must see
+complete file, not updates in progress. You have to create complete new
+file, then remove old file then rename new file to proper name.

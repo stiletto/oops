@@ -122,7 +122,7 @@ struct	pollarg		*pollarg;
 	return;
     }
 
-    if ( listen(server_so, 128) ) {
+    if ( listen(server_so, 8196) ) {
 	my_xlog(OOPS_LOG_SEVERE, "run(): Server can't listen: %n\n");
 	my_sleep(5);
 	CLOSE(server_so); server_so = -1;

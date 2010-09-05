@@ -59,7 +59,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define     WCCP2_PACKET_RETURN_METHOD_GRE 0x00000001
 #define     WCCP2_PACKET_RETURN_METHOD_L2  0x00000002
 
-#define     PortsDefined                   (0x0010)
+#define     PortsDefined                   (0x0011)
 
 #define     MAX_ROUTERNAME_LEN              64
 
@@ -202,6 +202,9 @@ typedef struct  wccp2_service_group_ {
     uint16_t                        port[8];
     int                             security_option;
     char                            password[9];
+    uint8_t                         protocol;
+    uint8_t                         priority;
+    uint32_t                        flags;
 
     /* routers in group         */
     int                             n_routers;
@@ -406,6 +409,10 @@ char    *vector[10], *orig = NULL;
             u_short     port[8] = {0,0,0,0,0,0,0,0};
             int         group_id = 0;
             int         index;
+	    uint8_t	prio=0;
+	    uint8_t	prot=6;
+	    uint32_t	flag=PortsDefined;
+
 
             if ( config_service_group != 0 ) {
                 /* insert configured service group in list  */
@@ -475,6 +482,9 @@ char    *vector[10], *orig = NULL;
             config_service_group->n_routers = 0;
             config_service_group->ChangeNumber = 1;
             config_service_group->n_caches = 1;
+            config_service_group->priority = prio;
+	    config_service_group->protocol = prot;
+	    config_service_group->flags    = flag;
             pthread_mutex_init(&config_service_group->view_lock, NULL);
             bzero(&config_service_group->password[0], 9);
             strncpy(&config_service_group->password[0], password, 8);
@@ -502,10 +512,10 @@ char    *vector[10], *orig = NULL;
             /* use L2 forwarding by default             */
             /* that is Cache must be directly reachable */
             /* from router (same Ethernet segment?)     */
-            router->forwarding_method = WCCP2_FORWARDING_METHOD_L2;
+            router->forwarding_method = WCCP2_FORWARDING_METHOD_GRE;
             /* we never returnpackets, but something    */
             /* must be used                             */
-            router->return_method = WCCP2_PACKET_RETURN_METHOD_L2;
+            router->return_method = WCCP2_PACKET_RETURN_METHOD_GRE;
             /* to next                      */
             config_router_index++;
             config_service_group->n_routers++;
@@ -616,12 +626,12 @@ uint32_t    my_ip;
     if ( g->view.caches.n_caches == 1 )
         return(TRUE);
 
-    my_ip = ntohs(cache_engine.ip_identity.sin_addr.s_addr);
+    my_ip = ntohl(cache_engine.ip_identity.sin_addr.s_addr);
 
     for(i=1; i < g->view.caches.n_caches; i++ ) {
         if (g->view.caches.c_views[i].Cache.WC_Address == 0)
             continue;   /* this is empty */
-        if ( ntohs(g->view.caches.c_views[i].Cache.WC_Address) < my_ip )
+        if ( ntohl(g->view.caches.c_views[i].Cache.WC_Address) < my_ip )
             return(FALSE);
     }
     return(TRUE);
@@ -927,7 +937,7 @@ web_cache_identity_element_t *scache, *dcache;
     } else {
         send_service_info_component.Service_Type = WCCP2_SERVICE_DYNAMIC;
         send_service_info_component.Service_ID = g->group_id;
-        send_service_info_component.Service_Flags |=  htons(PortsDefined);
+        send_service_info_component.Service_Flags |=  htonl(PortsDefined);
         send_service_info_component.Protocol = 6; /* TCP */
         send_service_info_component.Port[0] = htons(g->port[0]);
         send_service_info_component.Port[1] = htons(g->port[1]);
@@ -1081,7 +1091,7 @@ u_char                  *bucket;
     } else {
         send_service_info_component.Service_Type = WCCP2_SERVICE_DYNAMIC;
         send_service_info_component.Service_ID = g->group_id;
-        send_service_info_component.Service_Flags |=  htons(PortsDefined);
+        send_service_info_component.Service_Flags |=  htonl(PortsDefined);
         send_service_info_component.Protocol = 6; /* TCP */
         send_service_info_component.Port[0] = htons(g->port[0]);
         send_service_info_component.Port[1] = htons(g->port[1]);

@@ -65,7 +65,7 @@ static	pthread_rwlock_t	oopsctl_config_lock;
 static	char		socket_path[MAXPATHLEN];
 static	int		html_refresh;
 
-int	oopsctl_so	= -1;
+static  int	oopsctl_so	= -1;
 
 #define	WRLOCK_OOPSCTL_CONFIG	pthread_rwlock_wrlock(&oopsctl_config_lock)
 #define	RDLOCK_OOPSCTL_CONFIG	pthread_rwlock_rdlock(&oopsctl_config_lock)

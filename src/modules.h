@@ -75,6 +75,7 @@ struct	redir_module {
 	int	(*redir)(int, struct group*, struct request*, int*, int);
 	int	(*redir_connect)(int*, struct request*, int*, int);
 	int	(*redir_rewrite_header)(char **, struct request*, int*, int);
+        int     (*redir_control_request)(int, struct group*, struct request*, int*, int);
 };
 
 struct	output_module {
@@ -123,6 +124,7 @@ int	Compare_Agents(char *, char *);
 
 extern	struct	log_module	log_dummy;
 extern	struct	log_module	custom_log;
+extern	struct	log_module	netflow;
 
 extern	struct	listener_module	oopsctl_mod;
 extern	struct	listener_module	wccp2_mod;

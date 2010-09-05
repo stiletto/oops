@@ -1,4 +1,10 @@
 ##
+## You can insert include statement at top level config, so that config can
+## be combined from several files. 'include' can be nested (maximum depth 10)
+##
+#include	<filename>
+
+##
 #  nameservers. Use your own, not our.
 ## 
 
@@ -96,6 +102,11 @@ default-expire-value    7
 ftp-expire-value	7
 
 ##
+#  While connecting to public FTP resource, use this string as password
+##
+#anon_ftp_passw oops@localhost
+
+##
 #  if you want expirestart and run only at some time intervals,
 #  then use next instruction
 ##
@@ -124,6 +135,11 @@ last-modified-factor	5
 #  run expire every ( in hours )
 ##
 default-expire-interval 1
+
+##
+# negative_cache - how long cache 404 answer from server
+##
+#negative_cache 0
 
 ##
 #  icp_timeout - how long to wait icp reply from peer (in ms, e.g 1000 = 1sec)
@@ -168,8 +184,19 @@ force_completion 75
 ##
 maxresident	1m
 
+##
+#  minimum size of the object we will cache
+##
+#minresident	0
+
 insert_x_forwarded_for	yes
 insert_via		yes
+##
+# Load documents as fast as we can, or as fast as client can download
+# First method will save number of opened sockets
+# Second - save your bandwidth and memory.
+# Use "yes".
+##
 fetch_with_client_speed yes
 
 ##
@@ -198,6 +225,10 @@ fetch_with_client_speed yes
 #acl	BADDOMREGEX	dstdom_regex	baddomain\.((com)|(org))
 #acl	LOCAL_NETWORKS	src_ip		include:@OOPS_SYSCONFDIR@/acl_local_networks
 #acl	BADNETWORKS	src_ip		192.168.10/24
+## WARNING: acl dst_ip is applyed to destination hostname BEFORE
+## any redirection used.
+#acl	LOCALDST	dst_ip		192.168.10/24
+##
 #acl	WORKTIME	time		Mon,Tue:Fri 0900:1800
 #acl	HTMLS		content_type	text/html
 #acl	USERS		username	joe
@@ -549,6 +580,12 @@ module redir {
 ##	with new location. Values are 'rewrite' or 'bounce'
 #	mode		rewrite
 
+	# myport can have next form:
+	# myport [{hostname|ip_addr}:]port ...
+	#	myport	3128
+	# it configure redir module to process requests on
+        # given port
+	myport 3128
 	# This module can process requests which come on http_port
 	# and/or on different port. For example, you wish oops
 	# bind on two ports - 3128 and 3129, and all requests which come on
@@ -720,7 +757,7 @@ module	berkeley_db {
 #
 # Service group.
 # Look Cisco documentation what service group is.
-# I two words - this is group of caches and routers which handle transparently
+# In two words - this is group of caches and routers which handle transparently
 # some kind of traffic. To intercept www requests from your users use
 # next 'service-group' definition
 #
@@ -734,4 +771,26 @@ module	berkeley_db {
 #
 #        router  10.10.10.1
 #
+#}
+
+#module netflow {
+#
+# This module exports netflow v5 records to flow collector(s)
+# Each record consists of source (document source, peer,...) address
+# destination address (client requested document), bytes transferred.
+# If you supply file with route prefix table and autonomouos system numbers,
+# then source and desctination ASNs will also present in flow records
+#
+#	file - path to the tile with prefixes (see file INSTALL).
+#
+#	file @OOPS_HOME@/prefix_table
+#
+#	source - flow records source address and port.
+#
+#       source    127.0.0.1:3333
+#
+#	collector - address and port of collector
+#	you can have several lines(collectors).
+#
+#       collector 127.0.0.1:6666
 #}

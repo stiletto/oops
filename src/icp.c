@@ -279,7 +279,7 @@ hash_entry_t            *he = NULL;
 		    peer->rq_recvd++;
 		}
 		UNLOCK_CONFIG ;
-		res = locate_in_mem(&request.url, READY_ONLY, NULL, NULL);
+		res = locate_in_mem(&request.url, READY_ONLY|NULL_REQUEST, NULL, NULL);
 		if ( res ) {
 		    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "process_icp_msg(): ICP_MEM_HIT.\n");
 		    icp_opcode = ICP_OP_HIT;

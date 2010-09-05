@@ -84,8 +84,8 @@ char	*messages[2][8] = {
 	  "Bad port",
 	  "Access denied to this domain",
 	  "DNS error, can't resolve",
-	  "INternal error",
-	  "Access Denied",
+	  "Internal error",
+	  "Access denied",
 	  "Data transfer error",
 	  "Denied by ACL"
 	},
@@ -205,7 +205,14 @@ struct	buff		*body;
     if ( !obj )
 	return(0);
     bzero(obj, sizeof(*obj));
-    put_av_pair(&obj->headers,"HTTP/1.0", "400 Bad Request");
+    if( code==3 || code==6 || code==8 ) {
+	put_av_pair(&obj->headers,"HTTP/1.0", "403 Forbidden");
+    }
+    else {
+	put_av_pair(&obj->headers,"HTTP/1.0", "400 Bad Request");
+    }
+    put_av_pair(&obj->headers,"Cache-Control:", "no-cache");
+    put_av_pair(&obj->headers,"Pragma:", "no-cache");
     put_av_pair(&obj->headers,"Expires:", "Thu, 01 Jan 1970 00:00:01 GMT");
     put_av_pair(&obj->headers,"Content-Type:", "text/html");
 
@@ -248,6 +255,41 @@ struct	buff		*body;
 			attach_data(messages[LANG_EN][code-1],
 				strlen(messages[LANG_EN][code-1]),
 				body);
+			tptr = proc+2;
+			break;
+		case 'd':
+			{   /* %d - print code */
+			    char	numtmp[6];
+			    int		numlen;
+
+			    numlen = snprintf( numtmp, 5, "%d", code );
+			    if( numlen > 0 )
+				attach_data(numtmp, numlen, body);
+			    else
+				attach_data("??", 2, body);
+			}
+			tptr = proc+2;
+			break;
+		case 'u':   /* %u - print htmlized url path */
+			if ( rq && rq->url.path != NULL ) {
+			    char	*hpath = NULL;
+			    if ( rq->url.proto )
+				attach_data(rq->url.proto, strlen(rq->url.proto), body);
+			    else
+				attach_data("null", 4, body);
+			    attach_data("://", 3, body);
+			    if ( rq->url.host )
+				attach_data(rq->url.host, strlen(rq->url.host), body);
+			    else
+				attach_data("null", 4, body);
+			    hpath = html_escaping(rq->url.path);
+			    if ( hpath ) {
+				attach_data(hpath, strlen(hpath), body);
+				free(hpath);
+			    } else
+				attach_data("/null", 5, body);
+			} else
+			    attach_data("NULL", 4, body);
 			tptr = proc+2;
 			break;
 		case 'm':

@@ -156,6 +156,8 @@ int                     instance;
         instance = mod_list->mod_instance;
 	if ( module && module->redir ) {
 	    rc = module->redir(so, group, rq, flag, instance);
+            my_xlog(OOPS_LOG_DBG,"%s/%d returned %d\n", 
+                mod_list->mod_name, instance, rc);
 	}
 	if ( flag && TEST(*flag, MOD_AFLAG_BRK) )
 	    return(MOD_CODE_ERR);
@@ -201,6 +203,34 @@ struct headers_module	*mod = headers_first;
     while ( mod && (rc == MOD_CODE_OK) ) {
 	if ( mod->match_headers ) rc = mod->match_headers(obj, rq, flags);
 	mod = (struct headers_module*) mod->general.next;
+    }
+    return(rc);
+}
+
+int
+check_redir_control_request(int so, struct request *rq, struct group *group, int *flag)
+{
+int                     rc = MOD_CODE_OK;
+struct  redir_module    *module;
+l_mod_call_list_t       *gr_mods = group->redir_mods;
+mod_call_t              *mod_list = NULL;
+int                     instance;
+
+    if ( gr_mods ) mod_list = gr_mods->list;
+
+    if ( flag ) *flag = 0;
+    while( mod_list && (rc == MOD_CODE_OK) ) {
+        module = NULL;
+        module = redir_module_by_name(mod_list->mod_name);
+        instance = mod_list->mod_instance;
+        if ( module && module->redir_control_request ) {
+            rc = module->redir_control_request(so, group, rq, flag, instance);
+            my_xlog(OOPS_LOG_DBG,"%s/%d returned %d\n",
+                mod_list->mod_name, instance, rc);
+        }
+        if ( flag && TEST(*flag, MOD_AFLAG_BRK) )
+            return(MOD_CODE_ERR);
+        mod_list = mod_list->next;
     }
     return(rc);
 }
@@ -420,7 +450,8 @@ load_mods:
 		redir_module->redir = (mod_load_t*)DLSYM(modh, "redir");
 		redir_module->redir_connect = (mod_load_t*)DLSYM(modh, "redir_connect");
 		redir_module->redir_rewrite_header = (mod_load_t*)DLSYM(modh, "redir_rewrite_header");
-		redir_module->general.type = MODULE_REDIR;
+                redir_module->redir_control_request = (mod_load_t*)DLSYM(modh, "redir_control_request");
+                redir_module->general.type = MODULE_REDIR;
 		insert_module((struct general_module*)redir_module,
 			      (struct general_module**)&redir_first);
 
@@ -629,6 +660,7 @@ load_modules(void)
 {
     insert_module(&log_dummy.general, (struct general_module **)&log_first);
     insert_module(&custom_log.general, (struct general_module **)&log_first);
+    insert_module(&netflow.general, (struct general_module **)&log_first);
 
     insert_module(&oopsctl_mod.general, (struct general_module **)&listener_first);
     insert_module(&wccp2_mod.general, (struct general_module **)&listener_first);
@@ -771,7 +803,7 @@ struct		sockaddr_in	sin_addr;
 		pptr->in_addr = sin_addr.sin_addr;
 		pptr->so = so;
 		add_socket_to_listen_list(so, port, &pptr->in_addr, 0, NULL);
-		listen(so, 128);
+		listen(so, 8196);
 		pptr++;
 	    } else {
 		verb_printf("parse_myports(): bind: %s\n", strerror(errno));

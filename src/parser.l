@@ -1,14 +1,16 @@
-%a 10500
-%o 17000
-%p 10000
-%n 1000
-%e 3000
+%a 12000
+%o 18000
+%p 11000
+%n 1100
+%e 3500
+%x incl
 %{
 #include "oops.h"
 
 #include "y.tab.h"
-int	atline;
-int	parser_errors;
+int atline;
+char *conf_file_name;
+int parser_errors;
 
 #if	defined(WITH_LARGE_FILES)
 #if	defined(HAVE_ATOLL)
@@ -21,6 +23,12 @@ int	parser_errors;
 #else
 #define	ATOOFF	atoi
 #endif	/* WITH_LARGE_FILES */
+
+#define MAX_INCLUDE_DEPTH 10
+YY_BUFFER_STATE include_stack[MAX_INCLUDE_DEPTH];
+char *conf_file_names[MAX_INCLUDE_DEPTH];
+int conf_file_lines[MAX_INCLUDE_DEPTH];
+int include_stack_ptr = 0;
 %}
 
 %s	groupst peerst
@@ -37,6 +45,7 @@ comment		\#.*
 network		{number}("."{number})*"/"{number}
 group		[Gg][Rr][Oo][Uu][Pp]
 networks	[Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]
+include_conf	[Ii][Nn][Cc][Ll][Uu][Dd][Ee]
 logfile		[Ll][Oo][Gg][Ff][Ii][Ll][Ee]
 accesslog	[Aa][Cc][Cc][Ee][Ss][Ss][Ll][Oo][Gg]
 pidfile		[Pp][Ii][Dd][Ff][Ii][Ll][Ee]
@@ -76,6 +85,7 @@ local_networks	[Ll][Oo][Cc][Aa][Ll][_-][Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]
 icp_timeout	[Ii][Cc][Pp][_-][Tt][Ii][Mm][Ee][Oo][Uu][Tt]
 statistics	[Ss][Tt][Aa][Tt][Ii][Ss][Tt][Ii][Cc][Ss]
 module		[Mm][Oo][Dd][Uu][Ll][Ee]
+neg_cache   [Nn][Ee][Gg][Aa][Tt][Ii][Vv][Ee][-_][Cc][Aa][Cc][Hh][Ee]
 string		[^ \t\n\{\}\;\[\]\,]+
 line		[^\n]+
 %%
@@ -105,6 +115,10 @@ line		[^\n]+
 <INITIAL>[Uu][Ss][Ee][Rr][Ii][Dd] {
 		return(USERID_T);
 		}
+<INITIAL>[Aa][Nn][Oo][Nn]_[Ff][Tt][Pp]_[Pp][Aa][Ss][Ss][Ww] {
+                return(FTP_PASSW_T);
+                }
+
 <INITIAL>[Cc][Hh][Rr][Oo][Oo][Tt] {
 		return(CHROOT_T);
 		}
@@ -142,6 +156,38 @@ line		[^\n]+
 <groupst>[Ss][Rr][Cc][Dd][Oo][Mm][Aa][Ii][Nn][Ss] {
 		return(SRCDOMAINS_T);
 		}
+<INITIAL>{include_conf}	{
+		BEGIN(incl);
+		}
+<incl>[ \t]+	/* eat the whitespace */
+<incl>[^ \t\n]+ { /* got the include file name */
+	if ( include_stack_ptr >= MAX_INCLUDE_DEPTH ) {
+		fprintf( stderr, "Includes nested too deeply" );
+		exit( 1 );
+	}
+	conf_file_names[include_stack_ptr] = conf_file_name;
+	conf_file_name = strdup(yytext);
+	conf_file_lines[include_stack_ptr] = atline;
+	atline = 1;
+	include_stack[include_stack_ptr++] = YY_CURRENT_BUFFER;
+	yyin = fopen( yytext, "r" );
+	if ( ! yyin ) {
+		fprintf( stderr, "Unable to include file %s: %i", yytext, errno );
+		exit( 1 );
+	}
+	yy_switch_to_buffer( yy_create_buffer( yyin, YY_BUF_SIZE ) );
+	BEGIN(INITIAL);
+	}
+<<EOF>> {
+	if ( --include_stack_ptr < 0 ) {
+		yyterminate();
+	} else {
+		yy_delete_buffer( YY_CURRENT_BUFFER );
+		conf_file_name = conf_file_names[include_stack_ptr];
+		atline = conf_file_lines[include_stack_ptr];
+		yy_switch_to_buffer( include_stack[include_stack_ptr] );
+	}
+	}
 <INITIAL>{logfile}	{
 		return(LOGFILE);
 		}
@@ -262,6 +308,9 @@ line		[^\n]+
 <INITIAL>{maxresident}	{
 		return(MAXRESIDENT);
 		}
+<INITIAL>[Mm][Ii][Nn][Rr][Ee][Ss][Ii][Dd][Ee][Nn][Tt]	{
+		return(MINRESIDENT);
+		}
 <INITIAL>{icons_host}	{
 		return(ICONS_HOST);
 		}
@@ -315,6 +364,9 @@ line		[^\n]+
 <INITIAL>[Dd][Oo][Nn][Tt]_[Cc][Aa][Cc][Hh][Ee]_[Ww][Ii][Tt][Hh][Oo][Uu][Tt]_[Ll][Aa][Ss][Tt]_[Mm][Oo][Dd][Ii][Ff][Ii][Ee][Dd] {
 		return(DONT_CACHE_WITHOUT_LAST_MODIFIED_T);
 		}
+<INITIAL>{neg_cache}    {
+            return(NEGATIVE_CACHE_T);
+        }
 <storagest>{number}	{
 		yylval.OFFSET = (off_t)ATOOFF(yytext);
 		return(NUMBER);
@@ -479,6 +531,6 @@ int
 yyerror(void)
 {
 	parser_errors++;
-	fprintf(stderr, "lex: error on \"%s\" at line %d\n", yytext, atline);
+	fprintf(stderr, "%s:%d: error on \"%s\"\n", conf_file_name, atline, yytext);
 	exit(1);
 }

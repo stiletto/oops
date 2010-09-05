@@ -286,6 +286,8 @@ int			hostlen = strlen(host), i;
 char			*d, *s;
 
     if ( hostlen <= 0 ) return(NULL);
+/* check if host is ended with a dot, like this: "www.domain.com." */
+    if ( host[hostlen - 1] == '.' ) { hostlen--; }
     while(doml) {
 	if ( doml->length == -1 ) /* this is "*" */
 	    return(doml);
@@ -293,8 +295,10 @@ char			*d, *s;
 	    i = doml->length;
 	    s = &doml->domain[doml->length - 1];
 	    d = &host[hostlen - 1];
+/* check if host is ended with a dot, like this: "www.domain.com." */
+	    if( *d == '.' ) { d--; }
 	    while ( i ) {
-		if ( *s != *d ) break;
+		if ( *s != tolower(*d) ) break;
 		i--; s--; d--;
 	    }
 	    if ( !i && ((doml->length == hostlen) || *d=='.') ) {
@@ -474,6 +478,8 @@ named_acl_type_by_name(char *type)
 	return(ACL_USERCHARSET);
     if ( !strcasecmp(type, "src_ip") )
 	return(ACL_SRC_IP);
+    if ( !strcasecmp(type, "dst_ip") )
+	return(ACL_DST_IP);
     if ( !strcasecmp(type, "method") )
 	return(ACL_METHOD);
     if ( !strcasecmp(type, "port") )
@@ -528,6 +534,7 @@ case ACL_METHOD:
 case ACL_USERCHARSET:
 	/* nothing was allocated in structure	*/
 	break;
+case ACL_DST_IP:
 case ACL_SRC_IP:
 	{
 	struct	acl_ip_data *acl_ip_data = (struct  acl_ip_data*)acl->data;
@@ -881,6 +888,8 @@ case ACL_HEADER_SUBSTR:
 	}
 	if ( must_free_data ) free(data);
 	return(0);
+case ACL_DST_IP:
+        dst_ip_acl_present = TRUE;
 case ACL_SRC_IP:
 	/* IP IP IP					*/
 	/* IP in format a.b.c.d or a.b.c/l		*/
@@ -889,7 +898,7 @@ case ACL_SRC_IP:
 	  struct cidr_net	*networks = NULL, *last = NULL;
 	  int			networks_num = 0;
 
-	    verb_printf("SRC_IP: %s\n", data);
+	    verb_printf("SRC/DST_IP: %s\n", data);
 	    t = data;
 	    while ( (p = (char*)strtok_r(t, "\t \n", &tptr)) != 0 ) {
 	      char		*slash = NULL, masklen, *tt, *pp, *ttptr;
@@ -1075,6 +1084,25 @@ case ACL_USERCHARSET:
 	    return( !strcmp(agent_cs->Name, ucsd->name) );
 	}
 	break;
+case ACL_DST_IP:
+	{
+	struct acl_ip_data *acl_ip_data = (struct acl_ip_data *)acl->data;
+	struct  cidr_net   *net;
+	int		   i;
+	struct	in_addr	   *addr = &(rq->dst_sa.sin_addr);
+
+	    if ( !acl_ip_data ) break;
+	    if (  (acl_ip_data->num<=0) 
+	       || !acl_ip_data->sorted
+	       || !acl_ip_data->unsorted ) break;
+
+	    for(i=0;i<acl_ip_data->num;i++) {
+		net = acl_ip_data->sorted[i];
+		if ( (net->network & net->mask) ==
+		     (ntohl(addr->s_addr) & net->mask) ) return(TRUE);
+	    }
+	}
+        break;
 
 case ACL_SRC_IP:
 	{
@@ -1564,7 +1592,7 @@ char			*p;
 	    new->acl = acl;
 	    new->sign = sign;
 	} else {
-	    verb_printf("parse_networks_acl(): Unknown acl `%s' or bad type (only src_ip allowed).\n", p);
+	    verb_printf("parse_networks_acl(): Unknown acl `%s' or bad type (only src_ip/dst_ip allowed).\n", p);
 	    goto error;
 	}
 	string_list = string_list->next;

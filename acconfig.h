@@ -40,6 +40,7 @@
 #undef HAVE_IPF
 #undef HAVE_SOCKLEN_T
 #undef HAVE_STRUCT_TIMESPEC
+#undef HAVE_UINT8_T
 #undef HAVE_UINT16_T
 #undef HAVE_UINT32_T
 #undef HAVE__GMTOFF__

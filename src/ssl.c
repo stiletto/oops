@@ -46,15 +46,27 @@ ERRBUF ;
 	goto done;
     }
     if ( parent_port && !is_local_dom(rq->url.host)) {
-        parent_req = malloc(64 + strlen(url->host));
+        int     reql = 64 + strlen(url->host);
+        if ( parent_auth ) reql += strlen(parent_auth);
+        parent_req = malloc(reql);
         if ( parent_req ) {
-            sprintf(parent_req, "CONNECT %s:%d HTTP/1.0\r\n\r\n", url->host, url->port);
+            char *fav = NULL;
+
+            if ( parent_auth ) {
+                IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
+                rq->peer_auth = strdup(parent_auth);
+                fav = format_av_pair("Proxy-Authorization: Basic", rq->peer_auth);
+                sprintf(parent_req, "CONNECT %s:%d HTTP/1.0\r\n%s\r\n", url->host, url->port, fav);
+                xfree(fav);
+            } else
+                sprintf(parent_req, "CONNECT %s:%d HTTP/1.0\r\n\r\n", url->host, url->port);
             r = writet(server_so, parent_req, strlen(parent_req), READ_ANSW_TIMEOUT);
             free(parent_req);
             if ( r < 0 ) goto done;
         } else
             goto done;
     } else {
+        SET(rq->flags, RQ_SERVED_DIRECT);
         bind_server_so(server_so, rq);
         if ( str_to_sa(url->host, (struct sockaddr*)&server_sa) ) {
 	    say_bad_request(so, "Can't translate name to address", url->host, ERR_DNS_ERR, rq);
@@ -94,9 +106,9 @@ ERRBUF ;
 	    r = read(server_so, b, sizeof(b));
 	    if ( (r < 0) && (ERRNO == EAGAIN) )
 		goto sel_again;
-	    received += r;
 	    if ( r <= 0 )
 		goto done;
+	    received += r;
 	    r = writet(so, b, r, READ_ANSW_TIMEOUT);
 	    if ( r < 0 ) goto done;
 	}
@@ -119,7 +131,7 @@ done:
     if ( server_so != -1 ) CLOSE(server_so);
     rq->tag = strdup("TCP_MISS");
     rq->code = 555;
-    rq->received = received;
+    rq->doc_sent = rq->received = received;
     rq->hierarchy = strdup("DIRECT");
     rq->source = strdup(rq->url.host);
     log_access(delta_tv, rq, NULL);

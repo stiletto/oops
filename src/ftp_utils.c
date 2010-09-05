@@ -354,7 +354,7 @@ char		*mime_type;
 	my_xlog(OOPS_LOG_FTP|OOPS_LOG_DBG, "recv_ftp_data(): receiving data.\n");
 
     ftp_r->file_dir = FTP_TYPE_FILE;
-    if ( !ftp_r->size || (ftp_r->size >= maxresident) )
+    if ( !ftp_r->size || (ftp_r->size >= maxresident) || (ftp_r->size < minresident) )
     		SET(obj->flags, FLAG_DEAD);
     if ( ftp_r->mode == MODE_PORT ) {
 	sa_len = sizeof(sa);
@@ -1203,7 +1203,10 @@ send_pass:
 	r = writet(server_so, "\r\n", 2, READ_ANSW_TIMEOUT);
     } else {
 	char	*pass = NULL;
-	if ( host_name[0] && strchr(host_name, '.') ) {
+        if (ftp_passw) {
+            pass = malloc(5 + strlen(ftp_passw) + 3);
+            sprintf(pass, "PASS %s\r\n", ftp_passw);
+        } else if ( host_name[0] && strchr(host_name, '.') ) {
 	    pass = malloc(5 + 5 + strlen(host_name) + 3);
 	    sprintf(pass, "PASS oops@%s\r\n", host_name);
 	} else {

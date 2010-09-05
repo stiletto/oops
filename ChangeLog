@@ -1,3 +1,6 @@
+version 1.5.23  - netflow module
+                - status 404 cached with configurable expire
+                  more close to rfc2616 in IMS processing
 version 1.5.22
 		- wccp v2. Real raw devices support (aligned IO).
 		  new swapout algorithm. Configurable option for speed

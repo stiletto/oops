@@ -30,8 +30,8 @@ struct	header_action {
 	char			*data;
 };
 
-struct	header_action	*actions = NULL;
-struct	header_action	*default_action = NULL;
+static  struct	header_action	*actions = NULL;
+static  struct	header_action	*default_action = NULL;
 
 #define	MODULE_NAME	"vary"
 #define	MODULE_INFO	"Processing \'Vary:\' header"

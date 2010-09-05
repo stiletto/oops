@@ -255,7 +255,7 @@ int	rc;
 	my_xlog(OOPS_LOG_SEVERE, "open_db(): db_open(%s): %d %m\n", dbname, rc);
 	dbp = NULL;
     }
-#else	/* Berkeley DB 3.x.x */
+#else	/* Berkeley DB >= 3.x.x */
     if ( db_env_create(&dbenv, 0) )
 	return(MOD_CODE_ERR);
     dbenv->set_errfile(dbenv, stderr);
@@ -282,7 +282,13 @@ int	rc;
     }
     dbp->set_bt_compare(dbp, my_bt_compare);
     dbp->set_pagesize(dbp, OOPS_DB_PAGE_SIZE);
-    rc = dbp->open(dbp, dbname, NULL, DB_BTREE, DB_CREATE, 0);
+    rc = dbp->open(dbp,
+        #if DB_VERSION_MAJOR == 4 && DB_VERSION_MINOR > 0
+        NULL,
+        #endif
+        dbname,
+        NULL, 
+        DB_BTREE, DB_CREATE, 0);
     if ( rc ) {
 	my_xlog(OOPS_LOG_SEVERE, "open_db(): dbp->open(%s): (%d)\n", dbname, rc);
 	dbenv->close(dbenv, 0); dbenv = NULL;

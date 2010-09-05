@@ -28,7 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define		GC_DROP		1
 
 dataq_t		eraser_queue;
-static          last_index = 0;
+static  int	last_index = 0;
 static  int	current_swap_size = 0;
 static	struct	obj_hash_entry	*hash_ptr[HASH_SIZE];
 
@@ -71,25 +71,25 @@ int             hash_index;
 	pthread_mutex_unlock(&flush_mem_cache_lock);
 	return;
     }
-    my_xlog(OOPS_LOG_CACHE, "flush_mem_chache(): total_size: %dMB.\n", total_size/1024/1024);
+    my_xlog(OOPS_LOG_CACHE, "flush_mem_cache(): total_size: %dMB.\n", total_size/1024/1024);
     if ( total_size < lo_mark_val ) {
 	pthread_mutex_unlock(&flush_mem_cache_lock);
-        my_xlog(OOPS_LOG_CACHE, "flush_mem_chache(): total_size < lo_mark.\n", total_size);
+        my_xlog(OOPS_LOG_CACHE, "flush_mem_cache(): total_size < lo_mark.\n", total_size);
 	return;
     }
     if ( total_size > mem_max_val ) {
 	gc_mode = GC_DROP ;
-	my_xlog(OOPS_LOG_CACHE, "flush_mem_chache(): DROPout documents.\n");
+	my_xlog(OOPS_LOG_CACHE, "flush_mem_cache(): DROPout documents.\n");
     } else {
 	gc_mode = GC_EASY ;
-	my_xlog(OOPS_LOG_CACHE, "flush_mem_chache(): SWAPout documents.\n");
+	my_xlog(OOPS_LOG_CACHE, "flush_mem_cache(): SWAPout documents.\n");
     }
     /* create kill-list */
     kill_size = total_size - lo_mark_val;
     kill_size += (lo_mark_val*swap_advance)/100;
     current_swap_size = kill_size;
     if ( kill_size > total_size ) kill_size = total_size;
-    my_xlog(OOPS_LOG_CACHE, "flush_mem_chache(): kill_size=%dMB\n", kill_size/1024/1024);
+    my_xlog(OOPS_LOG_CACHE, "flush_mem_cache(): kill_size=%dMB\n", kill_size/1024/1024);
     destroyed = 0;
     hash_index = last_index;
     do {
@@ -127,7 +127,7 @@ int             hash_index;
         pthread_mutex_unlock(&hash_table[hash_index].lock);
     last_index = hash_index;
     pthread_mutex_unlock(&flush_mem_cache_lock); 
-    my_xlog(OOPS_LOG_CACHE, "flush_mem_chache(): %d documents in kill list.\n", kill_list.count);
+    my_xlog(OOPS_LOG_CACHE, "flush_mem_cache(): %d documents in kill list.\n", kill_list.count);
     if ( kill_list.count > 0 ) {
 	my_xlog(OOPS_LOG_DBG, "flush_mem_cache(): Will swap/destroy %d objects.\n", kill_list.count);
 	RDLOCK_CONFIG ;
@@ -144,7 +144,7 @@ int             hash_index;
 	    current_swap_size -= obj->resident_size;
 	    if ( current_swap_size < 0 ) current_swap_size = 0;
 	    if ( gc_mode == GC_EASY )
-		swap_out_object(obj);
+            if (obj->status_code == STATUS_OK ) swap_out_object(obj);
 	    destroy_obj(obj);
 	}
 	db_mod_detach();
@@ -185,20 +185,20 @@ int             hash_index;
     }
     UNLOCK_CONFIG ;
     total_size += current_swap_size;
-    my_xlog(OOPS_LOG_CACHE, "drop_mem_chache() : total_size: %dMB, current_swap_size: %dMB.\n", total_size/1024/1024, 
+    my_xlog(OOPS_LOG_CACHE, "drop_mem_cache() : total_size: %dMB, current_swap_size: %dMB.\n", total_size/1024/1024, 
     		current_swap_size/1024/1024);
     if ( total_size > mem_max_val ) {
 	gc_mode = GC_DROP ;
-	my_xlog(OOPS_LOG_CACHE, "drop_mem_chache() : DROPout documents.\n");
+	my_xlog(OOPS_LOG_CACHE, "drop_mem_cache() : DROPout documents.\n");
     } else {
-	my_xlog(OOPS_LOG_CACHE, "drop_mem_chache() : no need.\n");
+	my_xlog(OOPS_LOG_CACHE, "drop_mem_cache() : no need.\n");
 	pthread_mutex_unlock(&flush_mem_cache_lock);
 	return;
     }
     /* create kill-list */
     kill_size = total_size - lo_mark_val;
     if ( kill_size > total_size ) kill_size = total_size;
-    my_xlog(OOPS_LOG_CACHE, "drop_mem_chache() : kill_size=%dMB\n", kill_size/1024/1024);
+    my_xlog(OOPS_LOG_CACHE, "drop_mem_cache() : kill_size=%dMB\n", kill_size/1024/1024);
     destroyed = 0;
     hash_index = last_index;
     do {
@@ -237,7 +237,7 @@ int             hash_index;
     last_index = hash_index;
     pthread_mutex_unlock(&flush_mem_cache_lock);
 
-    my_xlog(OOPS_LOG_CACHE, "drop_mem_chache() : %d documents in kill list.\n", kill_list.count);
+    my_xlog(OOPS_LOG_CACHE, "drop_mem_cache() : %d documents in kill list.\n", kill_list.count);
     if ( kill_list.count > 0 ) {
 	my_xlog(OOPS_LOG_DBG, "drop_mem_cache() : Will destroy %d objects.\n", kill_list.count);
 	while ( (obj = list_dequeue(&kill_list)) != 0 ) {
@@ -276,9 +276,10 @@ int			i, k;
 
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "Garbage collector started.\n");
 
-    Log = open("/var/tmp/Log", O_RDWR|O_CREAT|O_APPEND, 0660);
+/*    Log = open("/var/tmp/Log", O_RDWR|O_CREAT|O_APPEND, 0660);
     if ( Log == -1 ) perror("Log");
     printf("Log = %d\n", Log);
+*/
     for(i=0;i<HASH_SIZE;i++) hash_ptr[i] = h++;
 
     forever() {

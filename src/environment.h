@@ -119,11 +119,11 @@ extern		int	seteuid(uid_t);
 #include	<sys/stat.h>
 #endif
 
-#if defined(HAVE_SYS_INTTYPES_H)
+#if defined(HAVE_SYS_INTTYPES_H) || defined(HAVE_INTTYPES_H)
 #include    <inttypes.h>
 #endif
 
-#if !defined(HAVE_SYS_INTTYPES_H) && !defined(_STDINT_H)
+#if !defined(HAVE_SYS_INTTYPES_H) && !defined(HAVE_INTTYPES_H) && !defined(_STDINT_H)
 typedef unsigned int    uintptr_t;
 #endif
 
@@ -141,7 +141,8 @@ typedef unsigned int    uintptr_t;
 #endif
 #endif
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+/* #if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD) */
+#if	defined(HAVE_POLL) && !defined(FREEBSD)
 #include	<sys/poll.h>
 #endif                     
 

@@ -1,17 +1,26 @@
 #!/sbin/sh
 ############################################################################
-# $Id: nettune,v 1.2 2001/03/26 12:27:22 ai Exp $
+# $Id: nettune,v 1.3 2002/03/03 06:31:16 ai Exp $
 #
-# Author: Jens-S. Vöckler <voeckler@rvs.uni-hannover.de>
+# Author: Jens-S. Vöckler <solaris@sean.de>
 #         Jean Chouanard <chouanard@parc.xerox.com>
 #
 ############################################################################
 #
 # /etc/rcS.d/S31nettune -> /etc/init.d/nettune
 #
-# See : http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/your-tune
-# and : http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html
+# See : http://www.sean.de/Solaris/nettune
+# and : http://www.sean.de/Solaris/
 #
+
+# insanity checks
+if [ "`uname`" != "SunOS" ]; then
+    echo "This is not a Solaris system!"
+    exit 1
+fi
+
+# parameter "stop" is a noop, exit ASAP.
+test "$1" = "stop" && exit 0
 
 # insert configuration from secure installation tool, 
 # see: http://yassp.parc.xerox.com/
@@ -22,9 +31,34 @@ if [ "X${NET_SECURITY}" = "X" ]; then
     NET_SECURITY=YES
 fi
 
-# set default paths and say hello
+# set secure defaults
 PATH=/usr/sbin:/usr/bin
-echo "Tweaking Solaris TCP/IP: \c"
+
+# Further legal parameters are "start" (tweak), and no parameter (show)
+if [ "$1" = "start" ]; then 
+    TWEAK=1
+    action='tweaking'
+    echo "Tweaking Solaris TCP/IP: \c"
+else
+    TWEAK=0
+    action='showing'
+    echo "Showing Solaris TCP/IP: \c"
+fi
+
+modlist () {
+    # purpose: show and/or set a parameter 
+    # paramtr: $1: device to use
+    #          $2: name of parameter
+    #          $3..$n: advised value(s)
+    # globals: $TWEAK: 0: show, 1: tweak
+    #          $YASSP_VERBOSE: show content before setting
+    device=$1; shift
+    parameter=$1; shift
+    test $TWEAK -eq 0 -o "$YASSP_VERBOSE" -gt 0 &&
+	echo "$parameter `ndd $device $parameter` advised $@"
+    test $TWEAK -eq 1 && 
+	ndd -set $device $parameter $@
+}
 
 # determine, if SunOS 5.6 (Solaris 2.6) or above is installed (care w/ 2.5.1!)
 osver=`uname -r | sed 's/\.//' | awk '{ print $1*10 }'`
@@ -70,20 +104,20 @@ fi
 # tcp_conn_req_max_q0	1024
 #
 if [ $osver -ge 560 -o $patch -ge 12 ]; then
-     # Solaris 2.6 *OR* patch 103582-12 or above applied
-     echo "   tweaking separate connection queues"
-     ndd -set /dev/tcp tcp_conn_req_max_q 512   # 128 for restrictions
-     if [ "YES${NET_SECURITY}" = "YESYES" ] ; then
+    # Solaris 2.6 *OR* patch 103582-12 or above applied
+    echo "   $action separate connection queues"
+    modlist /dev/tcp tcp_conn_req_max_q 512   # 128 for restrictions
+    if [ "YES${NET_SECURITY}" = "YESYES" ] ; then
 	# use 10240 for SYN flood symptom treatment
-	echo "   tweaking against SYN flood symptoms"
-	ndd -set /dev/tcp tcp_conn_req_max_q0 10240
-     else
-	ndd -set /dev/tcp tcp_conn_req_max_q0 1024
-     fi
+	echo "   $action against SYN flood symptoms"
+	modlist /dev/tcp tcp_conn_req_max_q0 10240
+    else
+        modlist /dev/tcp tcp_conn_req_max_q0 1024
+    fi
 else
-     # Solaris 2.5.1 or below, no patch
-     echo "   tweaking single connection queue"
-     ndd -set /dev/tcp tcp_conn_req_max 512     # Hmmm, how about 1024
+    # Solaris 2.5.1 or below, no patch
+    echo "   $action single connection queue"
+    modlist /dev/tcp tcp_conn_req_max 512     # Hmmm, how about 1024
 fi
 
 
@@ -96,12 +130,12 @@ fi
 # tcp_ip_abort_cinterval	180000
 # tcp_rexmit_interval_max	60000
 #
-echo "   tweaking timeouts"
-ndd -set /dev/tcp tcp_rexmit_interval_initial 3000 # 500 for laboratories
-ndd -set /dev/tcp tcp_rexmit_interval_min 2000     # 200 for laboratories
-ndd -set /dev/tcp tcp_ip_abort_interval 600000     # 10 min before drop
-ndd -set /dev/tcp tcp_ip_abort_cinterval 60000     # 60 sec to estab. conn.
-ndd -set /dev/tcp tcp_rexmit_interval_max 60000    # free nw resources quickly
+echo "   $action timeouts"
+modlist /dev/tcp tcp_rexmit_interval_initial 3000 # 500 for laboratories
+modlist /dev/tcp tcp_rexmit_interval_min 2000     # 200 for laboratories
+modlist /dev/tcp tcp_ip_abort_interval 600000     # 10 min before drop
+modlist /dev/tcp tcp_ip_abort_cinterval 60000     # 60 sec to estab. conn.
+modlist /dev/tcp tcp_rexmit_interval_max 60000    # free nw resources quickly
 
 #
 # slow start bug / feature           Sol8
@@ -112,9 +146,9 @@ ndd -set /dev/tcp tcp_rexmit_interval_max 60000    # free nw resources quickly
 if [ $osver -lt 580 ]; then
     if [ $osver -ge 560 -o $patch -ge 15 ]; then
 	# Solaris 2.6 *OR* patch 103582-15 or above applied
-	echo "   tweaking slow start bug/feature"
-	ndd -set /dev/tcp tcp_slow_start_initial 2    # Solaris 8 uses 4
-	ndd -set /dev/tcp tcp_slow_start_after_idle 2 # Solaris 8 uses 4
+	echo "   $action slow start bug/feature"
+	modlist /dev/tcp tcp_slow_start_initial 2    # Solaris 8 uses 4
+	modlist /dev/tcp tcp_slow_start_after_idle 2 # Solaris 8 uses 4
     fi
 fi
 
@@ -126,16 +160,16 @@ fi
 # tcp_fin_wait_2_flush_interval	675000
 # tcp_time_wait_interval	240000
 #
-echo "   tweaking pMTU discovery interval and common timers"
-ndd -set /dev/ip ip_ire_pathmtu_interval 600000
-ndd -set /dev/tcp tcp_keepalive_interval 3600000
-ndd -set /dev/tcp tcp_fin_wait_2_flush_interval 67500
+echo "   $action pMTU discovery interval and common timers"
+modlist /dev/ip ip_ire_pathmtu_interval 600000
+modlist /dev/tcp tcp_keepalive_interval 3600000
+modlist /dev/tcp tcp_fin_wait_2_flush_interval 67500
 if [ $osver -le 560 ] ; then
      # Before Solaris 7
-     ndd -set /dev/tcp tcp_close_wait_interval 60000 # 2MSL value
+     modlist /dev/tcp tcp_close_wait_interval 60000 # 2MSL value
 else
      # Solaris 7 has changed the name. It's now named for for it does.
-     ndd -set /dev/tcp tcp_time_wait_interval 60000 # 2MSL value
+     modlist /dev/tcp tcp_time_wait_interval 60000 # 2MSL value
 fi
 
 #
@@ -146,14 +180,14 @@ fi
 # tcp_smallest_anon_port	32768
 # udp_smallest_anon_port	32768
 #
-echo "   tweaking misc. parameters"
-ndd -set /dev/ip ip_icmp_err_interval 0
-ndd -set /dev/ip ip_forward_src_routed 0
-ndd -set /dev/tcp tcp_smallest_anon_port 8192
-ndd -set /dev/udp udp_smallest_anon_port 8192
+echo "   $action misc. parameters"
+modlist /dev/ip ip_icmp_err_interval 0
+modlist /dev/ip ip_forward_src_routed 0
+modlist /dev/tcp tcp_smallest_anon_port 8192
+modlist /dev/udp udp_smallest_anon_port 8192
 if [ $osver -ge 580 ]; then
     # ip6_forward_src_routed	1
-    ndd -set /dev/ip ip6_forward_src_routed 0
+    modlist /dev/ip ip6_forward_src_routed 0
 fi
 
 #
@@ -180,56 +214,56 @@ if [ "YES${NET_SECURITY}" = "YESYES" ] ; then
     # pointed out by Jean Chouanard (see Stevens 12.3 and E.4):
     # - uncomment, if you don't want to forward pings or other broadcasts
     #   to the broadcast address(es) of your installed interface(s).
-    ndd -set /dev/ip ip_forward_directed_broadcasts 0
+    modlist /dev/ip ip_forward_directed_broadcasts 0
 
     # - uncomment, if you have multiple interfaces installed, but don't
     #   want to act as a router (no forwarding). Reasonable for most hosts.
-    ndd -set /dev/ip ip_forwarding 0
-    test $osver -ge 580 && ndd -set /dev/ip ip6_forwarding 0
+    modlist /dev/ip ip_forwarding 0
+    test $osver -ge 580 && modlist /dev/ip ip6_forwarding 0
 
     # - uncomment, if you don't want to respond to a ping to any of your
     #   broadcast addresses. On one hand, it is rumored to have caused 
     #   panics. On the other hand, it is a valid response, and often 
     #   used to determine the UP hosts on a particular network.
-    ndd -set /dev/ip ip_respond_to_echo_broadcast 0
-    test $osver -ge 580 && ndd -set /dev/ip ip6_respond_to_echo_multicast 0
+    modlist /dev/ip ip_respond_to_echo_broadcast 0
+    test $osver -ge 580 && modlist /dev/ip ip6_respond_to_echo_multicast 0
 
     # - uncomment, if you don't want to respond to a timestamp
     #   request, unicast or braodcast
-    ndd -set /dev/ip ip_respond_to_timestamp 0
-    ndd -set /dev/ip ip_respond_to_timestamp_broadcast 0
+    modlist /dev/ip ip_respond_to_timestamp 0
+    modlist /dev/ip ip_respond_to_timestamp_broadcast 0
 
     # - For ICMP redirect protection
-    ndd -set /dev/ip ip_ignore_redirect 1
-    test $osver -ge 580 && ndd -set /dev/ip ip6_ignore_redirect 1
-    ndd -set /dev/ip ip_send_redirects 0
-    test $osver -ge 580 && ndd -set /dev/ip ip6_send_redirects 0
+    modlist /dev/ip ip_ignore_redirect 1
+    test $osver -ge 580 && modlist /dev/ip ip6_ignore_redirect 1
+    modlist /dev/ip ip_send_redirects 0
+    test $osver -ge 580 && modlist /dev/ip ip6_send_redirects 0
 
     # Next 3 from Titan ( See http://www.fish.com/titan/ )
     # - Unconditionally flush ARP info from IP routing table
     if [ $osver -le 570 ]; then
-	ndd -set /dev/ip ip_ire_flush_interval 120000
+	modlist /dev/ip ip_ire_flush_interval 120000
     else
 	# is this the correct parameter?
-	ndd -set /dev/ip ip_ire_arp_interval 120000
+	modlist /dev/ip ip_ire_arp_interval 120000
     fi
     # - discard ARP entry from ARP cache after this interval
-    ndd -set /dev/arp arp_cleanup_interval 60000
+    modlist /dev/arp arp_cleanup_interval 60000
 
     # - Enable the 'strong end system' model from RFC 1122
     #   Beware, this might break some interface routing policies in
     #   combination with static routes - disable, if you need such.
-    ndd -set /dev/ip ip_strict_dst_multihoming 1
-    test $osver -ge 580 && ndd -set /dev/ip ip6_strict_dst_multihoming 1
+    modlist /dev/ip ip_strict_dst_multihoming 1
+    test $osver -ge 580 && modlist /dev/ip ip6_strict_dst_multihoming 1
 
     # - add the NFS port (TCP and UDP) as priviledged ports
     ndd /dev/udp udp_extra_priv_ports | grep 2049 1>/dev/null 2>&1
     if [ $? -ne 0 ]; then
-	ndd -set /dev/udp udp_extra_priv_ports_add 2049
+	modlist /dev/udp udp_extra_priv_ports_add 2049
     fi
     ndd /dev/tcp tcp_extra_priv_ports| grep 2049  1>/dev/null 2>&1
     if [ $? -ne 0 ]; then
-	ndd -set /dev/tcp tcp_extra_priv_ports_add 2049
+	modlist /dev/tcp tcp_extra_priv_ports_add 2049
     fi
 fi
 
@@ -241,16 +275,16 @@ fi
 # tcp_xmit_hiwat	8192
 # tcp_recv_hiwat	8192
 #
-echo "   tweaking windows, buffers and watermarks"
-ndd -set /dev/udp udp_xmit_hiwat 16384 # max. UDP PDU size for sending
-ndd -set /dev/udp udp_recv_hiwat 64000 # queue for UDP
-ndd -set /dev/tcp tcp_xmit_hiwat 32768 # Cockroft's recommendation
-ndd -set /dev/tcp tcp_recv_hiwat 32768 # Cockroft's recommendation 
+echo "   $action windows, buffers and watermarks"
+modlist /dev/udp udp_xmit_hiwat 16384 # max. UDP PDU size for sending
+modlist /dev/udp udp_recv_hiwat 64000 # queue for UDP
+modlist /dev/tcp tcp_xmit_hiwat 32768 # Cockroft's recommendation
+modlist /dev/tcp tcp_recv_hiwat 32768 # Cockroft's recommendation 
 
 
 # Note: Starting with Solaris 2.6 you can use tcp_host_param to boost 
 # just selected networks, with Solaris 8 IPv6 hosts separately, see: 
-# http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html#thp
+# http://www.sean.de/Solaris/tune.html#tcp_host_param
 #
 echo "done."
 
@@ -258,7 +292,7 @@ echo "done."
 
 # ******************************************************************************
 # $Log: nettune,v $
-# Revision 1.2  2001/03/26 12:27:22  ai
+# Revision 1.3  2002/03/03 06:31:16  ai
 # *** empty log message ***
 #
 # Revision 3.22  2000/07/13 19:34:53  chouanar

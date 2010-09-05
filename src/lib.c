@@ -622,6 +622,7 @@ resend:
 	if ( (flags & 0x8000) && (ah->id == qh->id) && (!(flags&0xf)) ) {
 	    if ( !ntohs(ah->ancount) ) {
 		my_xlog(OOPS_LOG_DNS|OOPS_LOG_DBG, "my_gethostbyname(): got 0 answers.\n");
+                if (--resend_cnt) goto resend;
 		break;
 	    }
 	} else {
@@ -1352,7 +1353,8 @@ int	rc = -1;
 
     if ( n > 0 ) {
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+/* #if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD) */
+#if	defined(HAVE_POLL) && !defined(FREEBSD)
 	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
 			    *pollfdsaved = NULL, *pfdc;
 	struct	pollarg *pa;
@@ -1462,7 +1464,8 @@ int	rc = -1;
 
     } else {
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+/* #if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD) */
+#if	defined(HAVE_POLL) && !defined(FREEBSD)
 	rc = poll(NULL, 0, msec);
 #else
 	struct timeval	tv;
@@ -2136,7 +2139,7 @@ send_it:
     r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 ) goto done;
     ssended = sended;
-    if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0, NULL, NULL, NULL) )
+    if ( send_data_from_buff_no_wait(so, -1, &send_hot_buff, &send_hot_pos, &sended, NULL, 0, NULL, NULL, NULL) )
 	goto done;
     if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
     if ( sended >= obj->body->used )

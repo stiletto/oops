@@ -92,3 +92,9 @@
 #	When request match ACL, then 'Location' header will be rewritten
 ##
 #	rewrite_location	REWRITEPORTS www(.*)ru:.* www$1.ru
+#
+##
+#
+#
+#canpurge	www.topping.com.ua
+#canpurge/r	10.0.0.1:8080
