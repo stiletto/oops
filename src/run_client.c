@@ -45,7 +45,6 @@ void		free_request(struct request *rq);
 void		leave_obj(struct mem_obj *);
 u_short		hash(struct url *url);
 void		send_not_cached(int so, struct request *rq, char *hdrs);
-struct	mem_obj	*locate_in_mem(struct url *url, int flags);
 int		parse_http_request(char *start, struct request *rq, int so);
 int		check_headers(struct request *rq, char *beg, char *end, int *checked, int so);
 int		parse_url(char*, char*, struct url *, int);
@@ -75,7 +74,7 @@ int			status, checked_len=0, mod_flags;
 int			mem_send_flags = 0, clsalen = sizeof(request.client_sa);
 struct	group		*group;
 int			miss_denied = TRUE;
-int			so;
+int			so, new_object;
 
    so = (int)arg;
 
@@ -241,7 +240,7 @@ re: /* here we go if client want persistent connection */
 	goto done;
     }
     if ( request.flags & RQ_HAS_ONLY_IF_CACHED ) {
-	stored_url = locate_in_mem(&request.url, AND_USE);
+	stored_url = locate_in_mem(&request.url, AND_USE, &new_object);
 	if ( !stored_url ) {
 	    send_error(so, 504, "Gateway Timeout. Or not in cache");
 	    goto done;
@@ -257,14 +256,14 @@ re: /* here we go if client want persistent connection */
 
     if ( request.flags &
 	(RQ_HAS_MAX_AGE|RQ_HAS_MAX_STALE|RQ_HAS_MIN_FRESH) ) {
-	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT);
+	stored_url = locate_in_mem(&request.url, AND_USE|AND_PUT, &new_object);
 	if ( !stored_url ) {
 	    my_log("Can't create or find memory object\n");
 	    say_bad_request(so, "Can't create memory object.\n", "No memory?",
 	    	ERR_INTERNAL, &request);
 	    goto done;
 	}
-	if ( stored_url->creator == pthread_self() ) {
+	if ( new_object ) {
 	    /* it is new object, it probably can be stored	*/
 	    /* it can be forwarded to client			*/
 	    goto read_net;
@@ -318,7 +317,7 @@ re: /* here we go if client want persistent connection */
 	leave_obj(stored_url);
 	goto done;
     }
-    stored_url = locate_in_mem(&request.url, AND_PUT|AND_USE);
+    stored_url = locate_in_mem(&request.url, AND_PUT|AND_USE, &new_object);
     if ( !stored_url ) {
 	my_log("Can't create or find memory object\n");
 	say_bad_request(so, "Can't create memory object.\n", "No memory?",
@@ -326,9 +325,8 @@ re: /* here we go if client want persistent connection */
 	goto done;
     }
 
-    if ( stored_url->creator == pthread_self() ) {
+    if ( new_object ) {
 read_net:
-	stored_url->creator = (pthread_t)NULL;
 	my_log("read <%s><%s><%d><%s> from Net\n", request.url.proto,
 					     request.url.host,
 					     request.url.port,
@@ -394,7 +392,6 @@ struct mem_obj	*obj = NULL;
     pthread_mutex_init(&obj->lock, NULL);
     pthread_mutex_init(&obj->state_lock, NULL);
     pthread_cond_init(&obj->state_cond, NULL);
-    obj->creator = pthread_self();
     return(obj);
 }
 
@@ -441,12 +438,13 @@ destroy_obj(struct mem_obj *obj)
 }
 
 struct mem_obj*
-locate_in_mem(struct url *url, int flags)
+locate_in_mem(struct url *url, int flags, int *new_object)
 {
 struct	mem_obj	*obj=NULL;
 u_short 	url_hash = hash(url);
 int		found=0;
 
+    if ( new_object ) *new_object = FALSE;
     if ( pthread_mutex_lock(&obj_chain) ) {
 	fprintf(stderr, "Failed mutex lock\n");
 	return(NULL);
@@ -527,7 +525,7 @@ int		found=0;
 		    pthread_cond_init(&obj->state_cond, NULL);
 		    pthread_mutex_init(&obj->decision_lock, NULL);
 		    pthread_cond_init(&obj->decision_cond, NULL);
-		    obj->creator = pthread_self();
+		    if ( new_object ) *new_object = TRUE;
 		    obj->next    = hash_table[url_hash].next;
 		    obj->prev    = (struct mem_obj*)&hash_table[url_hash];
 		    obj->flags  |= ANSW_NO_CACHE; /* we dont know yet if obj is cachable */
@@ -569,11 +567,11 @@ int		found=0;
 				   when all done
 				*/
 				obj->disk_ref = disk_ref ;
-				obj->creator = (pthread_t)NULL;
+				if ( new_object ) *new_object = FALSE;
 				obj->writers = 0; /* like old object */
 				if ( load_obj_from_disk(obj, disk_ref) ) {
 				    obj->disk_ref = NULL ;
-				    obj->creator = pthread_self();
+				    if ( new_object ) *new_object = TRUE;
 				    obj->writers = 1; /* like old object */
 				    xfree(disk_ref);
 				    goto nf;

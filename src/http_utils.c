@@ -581,7 +581,7 @@ struct	buff		*to_server_request = NULL;
     free(fake_header); fake_header = NULL;
     free_container(to_server_request); to_server_request = NULL;
 
-    new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP);
+    new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL);
     if ( !new_obj ) {
 	my_log("Can't create new_obj\n");
 	goto validate_err;

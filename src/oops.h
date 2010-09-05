@@ -318,7 +318,6 @@ struct	mem_obj {
 	size_t			content_length;	/* what server say about content */
 	size_t			resident_size;	/* size of object in memory	*/
 	struct	buff		*container;	/* data storage			*/
-	pthread_t		creator;	/* creator of obj in mem	*/
 	struct	buff		*hot_buff;	/* buf to write			*/
 	int			status_code;	/* from the server nswer	*/
 	time_t			request_time;	/* when request was made	*/
@@ -632,7 +631,7 @@ int		http_date(char *date, time_t*);
 int		mk1123time(time_t, char*, int);
 int		str_to_sa(char*, struct sockaddr*);
 struct mem_obj	*create_obj();
-struct mem_obj	*locate_in_mem(struct url*, int);
+struct mem_obj	*locate_in_mem(struct url*, int, int*);
 void		leave_obj(struct mem_obj*);
 void		change_state(struct mem_obj*, int);
 struct	buff	*alloc_buff(int);

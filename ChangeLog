@@ -1,3 +1,7 @@
+	31.05.99
+		core: bug in run_client.c which manifest itself only under
+		FreeBSD (frequently reused thread ids)
+		config: -export-dynamic for LDFLAGS (for Linux and FreeBSD)
 24.05.99 version 1.0c
 	24.05.99
 		module lang - handle all language things for

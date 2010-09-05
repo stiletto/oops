@@ -19,3 +19,6 @@ Known problems:
    connections.
    Latest RedHat comes with right libraries. If you
    have any info re other Linux distributions, please, send me info.
+
+2) FreeBSD - SIGHUP may interrupt sessions. As this never happens with
+   Solaris and linux, I think this is FreeBSD pthreads problem.
