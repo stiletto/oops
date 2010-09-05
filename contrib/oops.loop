@@ -1,0 +1,54 @@
+#!/bin/sh
+#######################################################################
+#
+# This script ensures that Oops will be restarted in case of
+# termination. Designed for SUN Solaris.
+#
+# Contributed by Andy Igoshin <ai@vsu.ru>
+#
+#######################################################################
+#
+# Place this script in Oops home directory.
+#
+# SIGS:  1   2   3    4   5    6    7   16   17
+trap "" HUP INT QUIT ILL TRAP ABRT EMT USR1 USR2
+trap "i=1" TERM
+
+OOPS_HOME=/opt/local/oops       # Oops home directory
+OOPS_NAME=oops			# Oops executable file name
+OOPS_USER=oops                  # Owner of Oops process
+OOPS_WAIT=10                    # Time between attempts to restart Oops
+OOPS_LOG=$OOPS_HOME/oops.out	# Oops log file
+OOPS_DB=$OOPS_HOME/DB		# Oops DB path
+
+NAME=`/bin/basename $0`
+PG=`/bin/pgrep -x $NAME`
+if [ `echo $PG | wc -w` -gt 1 ] || /bin/pgrep -x -U $OOPS_USER $OOPS_NAME > /dev/null; then
+    echo "$NAME: Oops is already running"
+    exit 1
+fi
+
+ulimit -HS -n unlimited
+ulimit -HS -d unlimited
+ulimit -HS -s unlimited
+ulimit -HS -c unlimited
+
+echo $$ > $OOPS_HOME/logs/$NAME.pid
+echo `date`: Starting $NAME > $OOPS_LOG
+
+cd $OOPS_HOME
+
+i=0
+while [ $i -eq 0 ]; do
+	[ -f $OOPS_HOME/core ] && mv $OOPS_HOME/core $OOPS_HOME/core.`date +"%Y.%m.%d-%H:%M:%S"`
+#	Next string may be needed if you use Oops with db-3.x.x
+#	rm -f $OOPS_DB/__db.00[147]
+	echo `date`: Starting Oops >> $OOPS_LOG
+	$OOPS_HOME/$OOPS_NAME -c $OOPS_HOME/oops.cfg >> $OOPS_LOG 2>&1
+	[ $i -eq 0 ] && sleep $OOPS_WAIT
+done
+
+echo `date`: Stopping $NAME >> $OOPS_LOG
+rm -f $OOPS_HOME/logs/$NAME.pid
+
+exit 0

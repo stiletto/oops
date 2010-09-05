@@ -120,6 +120,13 @@ rotate_file(char *name, FILE **f, int num)
 int	last, i;
 char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
 
+    if ( !num ) {
+	/* if no number of logs configured just reopen file */
+	fclose(*f);
+	*f = fopen(name, "a");
+	return;
+    }
+
     /* rename old files */
     last = num - 1;
     sprintf(tname, "%s.%d", name, last);

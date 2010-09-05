@@ -33,7 +33,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<sys/socketvar.h>
 #include	<sys/resource.h>
 
-#if	defined(HAVE_POLL) && !defined(LINUX)
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 #include	<sys/poll.h>
 #endif
 
@@ -1240,7 +1240,7 @@ int	rc=-1;
 
     if ( n > 0 ) {
 
-#if	defined(HAVE_POLL) && !defined(LINUX)
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
 			    *pollfdsaved = NULL, *pfdc;
 	struct	pollarg *pa;
@@ -1352,7 +1352,7 @@ int	rc=-1;
 
     } else {
 
-#if	defined(HAVE_POLL) && !defined(LINUX)
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 	rc = poll(NULL, 0, msec);
 #else
 	struct timeval	tv;
@@ -1383,7 +1383,7 @@ int	rc=-1;
 
     if ( n > 0 ) {
 
-#if	defined(HAVE_POLL) && !defined(LINUX)
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
 			    *pollfdsaved = NULL, *pfdc;
 	struct	pollarg *pa;
@@ -1489,7 +1489,7 @@ int	rc=-1;
 
     } else {
 
-#if	defined(HAVE_POLL) && !defined(LINUX)
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 	rc = poll(NULL, 0, msec);
 #else
 	struct timeval	tv;
@@ -1888,7 +1888,7 @@ go:
 		*/
 		a->flags |= (ANSW_NO_STORE | ANSW_SHORT_CONTAINER);
 	    } else /* obj is not too large */
-		all_siz = MIN(a->content_len, 1024*32);
+		all_siz = a->content_len;
 	} else /* no Content-Len: */
 	    all_siz = ROUND_CHUNKS(end-start-off);
 	body = alloc_buff(all_siz);

@@ -1,0 +1,63 @@
+#!/bin/sh
+#######################################################################
+#
+# This script should be called for starting and stopping Oops.
+# Designed for SUN Solaris.
+#
+# Contributed by Andy Igoshin <ai@vsu.ru>
+#
+#######################################################################
+#
+# /etc/rc2.d/S90oops.init -> /etc/init.d/oops.init
+#
+# /etc/rc0.d/K10oops.init -> /etc/init.d/oops.init
+# /etc/rc1.d/K10oops.init -> /etc/init.d/oops.init
+# /etc/rcS.d/K10oops.init -> /etc/init.d/oops.init
+#
+
+OOPS_HOME=/opt/local/oops       # Oops home directory
+OOPS_NAME=oops			# Oops executable file name
+OOPS_USER=oops			# Owner of Oops process
+OOPS_WAIT=60			# Max time to wait for Oops to stop
+OOPS_LOOP=oops.loop		# Name of Oops looping script
+
+NAME=`/bin/basename $0`
+
+case $* in
+start)
+    echo "$NAME: Starting Oops"
+    if /bin/pgrep -x $OOPS_LOOP > /dev/null || /bin/pgrep -x -U $OOPS_USER $OOPS_NAME > /dev/null; then
+	echo "$NAME: Oops is already running"
+	exit 1
+    fi
+    $OOPS_HOME/$OOPS_LOOP &
+    ;;
+
+stop)
+    if /bin/pgrep -x $OOPS_LOOP > /dev/null || /bin/pgrep -x -U $OOPS_USER $OOPS_NAME > /dev/null; then :
+    else
+	echo "$NAME: Oops is not running"
+	exit 1
+    fi
+    echo "$NAME: Stopping Oops"
+    /bin/pkill -x $OOPS_LOOP
+    $OOPS_HOME/oopsctl stop
+    if [ $? -ne 0 ]; then /bin/pkill -x $OOPS_NAME; fi
+    echo "$NAME: Waiting while Oops stops\c"
+    i=0
+    while /bin/pgrep -x -U $OOPS_USER $OOPS_NAME > /dev/null; do
+	echo ".\c"; sleep 1;
+	if [ $i -gt $OOPS_WAIT ]; then echo "Failed"; break; fi
+	i=`expr $i + 1`
+    done
+    echo "\n$NAME: Oops stopped"
+    ;;
+
+*)
+    echo "usage: $0 {start|stop}" >&2
+    echo "    start        start Oops" >&2
+    echo "    stop         clean shutdown" >&2
+    exit 1
+    ;;
+esac
+exit 0

@@ -638,7 +638,7 @@ struct		sockaddr_in	sin_addr;
 	    *d++ = *p++;
 	}
 	*d = 0;
-	if ( ( t = strchr(buf, ':') ) ) {
+	if ( ( t = (char*)strchr(buf, ':') ) ) {
 	    *t = 0;
 	    port = atoi(t+1);
 	    bzero(&sin_addr, sizeof(sin_addr));

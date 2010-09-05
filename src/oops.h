@@ -234,6 +234,8 @@ typedef	unsigned	uint32_t;
 #define	CLR(a,b)		(a&=~b)
 #define	TEST(a,b)		((a)&(b))
 
+#define	OOPS_DB_PAGE_SIZE	(1024*4)
+
 #define	malloc(x)	xmalloc(x, NULL)
 #define	free(x)		xfree(x)
 
@@ -1034,6 +1036,7 @@ void		free_acl_list(acl_chk_list_t*);
 void		free_acl_access(acl_chk_list_hdr_t*);
 void		parse_acl_access(acl_chk_list_hdr_t**, char*);
 int		check_acl_access(acl_chk_list_hdr_t*, struct request*);
+void		unlink_obj(struct mem_obj*);
 #ifdef		MODULES
 int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
 int	check_redirect(int so, struct request *rq, struct group *group, int *flag);

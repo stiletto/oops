@@ -380,7 +380,7 @@ struct storage_st	*storage;
     my_log("Clean up and exit\n");
     my_log("Flushing mem_cache\n");
     lo_mark_val = 0;
-    flush_mem_cache(1);
+    /*flush_mem_cache(1);*/
     my_log("Locking config\n");
     kill_request = 1;
     WRLOCK_CONFIG ;

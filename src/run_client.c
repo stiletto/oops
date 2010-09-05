@@ -517,6 +517,23 @@ destroy_temp_obj(struct mem_obj *obj)
     free(obj);
 }
 
+void
+unlink_obj(struct mem_obj *obj)
+{
+    if ( obj->prev ) obj->prev->next=obj->next;
+    if ( obj->next ) obj->next->prev=obj->prev;
+    if ( obj->older )
+	obj->older->younger = obj->younger;
+    if ( obj->younger )
+	obj->younger->older = obj->older;
+    if ( youngest_obj == obj ) {
+	youngest_obj = obj->older;
+    }
+    if ( oldest_obj == obj ) {
+	oldest_obj = obj->younger;
+    }
+    obj->prev = obj->next = obj->older = obj->younger = NULL;
+}
 
 void
 destroy_obj(struct mem_obj *obj)

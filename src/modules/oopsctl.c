@@ -41,7 +41,7 @@ char 			cmdarg[1024];
     for (i=0; i< 20; i++) { *(i+command) = NULL;}
     *command = strdup("help");
     *(2 + command) = strdup("-c");
-    sprintf(cmdarg,"%s/oops.cfg", OOPS_HOME);
+    sprintf(cmdarg,"%s", OOPS_CFG);
     *(3 + command) = strdup(cmdarg);
     i = 4;
     path[0] = 0;
@@ -93,7 +93,7 @@ char 			cmdarg[1024];
 	printf("reconfigure	- re-read config file\n");
 	printf("shutdown(stop)	- shutdown oops\n");
 	printf("rotate		- rotate logs\n");
-	printf("start		- start oops (same as %s/oops -c %s/oops.cfg)\n", OOPS_HOME,OOPS_HOME);
+	printf("start		- start oops (same as %s/oops -c %s)\n", OOPS_HOME,OOPS_CFG);
 	exit(0);
     } else
     if ( !strcasecmp(*command, "start") ) {
@@ -124,7 +124,7 @@ char 			cmdarg[1024];
     if ( !strcasecmp(*command, "chkconfig") ) {
 	char	cmdpath[1024], cmdarg[1024];
 	sprintf(cmdpath,"%s/oops", OOPS_HOME);
-	sprintf(cmdarg, "-C%s/oops.cfg", OOPS_HOME);
+	sprintf(cmdarg, "-C%s", OOPS_CFG);
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
 	execv(cmdpath, command+1);
@@ -137,7 +137,7 @@ char 			cmdarg[1024];
 
 	/* first check if config is OK */
 	sprintf(cmdpath,"%s/oops", OOPS_HOME);
-	sprintf(cmdarg, "-C%s/oops.cfg", OOPS_HOME);
+	sprintf(cmdarg, "-C%s", OOPS_CFG);
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
 	child = fork();

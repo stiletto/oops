@@ -1,0 +1,123 @@
+Q1. How to force OOPS never go'DIRECT'?
+A1. There are 2 ways:
+    1) to use parent directive (not the one mentioned in the icp-peer description,
+       but that one which is 'parent xxx.yyy.zzz 3128')
+       In this case 
+       a) ALL requests (except for ones occurring in local-domain or local-networks)
+    	  will be satisfied through parent.
+       b) no icp-requests are sent
+       c) if there is no use of local-networks directive in oops.cfg,
+          then no attempts to resolve names will be made.
+       d) Requests to hosts occurring in local-domain or local-networks
+          are satisfied directly.
+
+    2) to use icp-peer parent description. In this case on getting
+       the request from a client, icp-request is sent to all icp-peer (both
+       parent and sibling). On receiving a 'HIT' reply from anywhere 
+        - we go there. Only if we get 'MISS' we go to the parent, being 
+       the quickest of all to have sent 'MISS' reply. And only if there isn't any   
+       reply from parents we go directly. If we assume the latter variant
+       is rather seldom, then oops can be considered to 
+       go always through the fastest parent.
+
+Q2. I compiled it successfully, ran it and I saw the following in oops.log:
+    > -------------------------------------------------------
+    > >>>>[0x400]db_open: Invalid argument                              
+    > [0x400]oops 1.2d Started                                      
+    > [0x400]DB engine by Sleepycat Software: DB 2.4.14: (6/2/98)   
+    At this time nothing is being written in the disk cashe. Why is it so? What have I  
+    got to do?
+A2. The problem lies in the fact that OOPS was compiled with the old version of
+    DB library. You've got to install the new version, run configure and
+    make. You can download the fresh version from www.sleepycat.com.
+
+
+Q3. I formatted storages which in their sum should occupy 1Gb, but the free space  
+    volume on the disk was hardly changed, however. And should it be like that?
+A3. Yes, it should. At formatting the following operations take place:
+    1) a storage file is created, if it wasn't made before
+    2) 'super-block' and bitmap are created and get stored in the beginning of the file
+    3) seek on the last file byte of the storage is made and one byte is being recorded
+       That is - the storage formatted this way represents a "hole"
+       in file system, which will be filled in according to documents' saving. 
+       
+    If you don't like such behavior, it is possible to create storages in advance with 
+the help of the following command:	
+    dd if=/dev/null of=storage ...
+    In this case you'll reserve the necessary space at once.
+    After such dd don't forget, please, to run oops -z for this storage,
+    you know, dd doesn't create any bitmap and superblock...
+
+Q4. How to set up Transparent proxy?
+A4. There are two independent parts of transparent proxy setup: IP packets
+    forwarding setup and proxy setup. The first part is absolutely the same
+    as for Squid.
+
+    Second part is different.
+    1). Uncomment transparent module description in oops.cfg. You will
+	have something like this
+
+        module transparent {
+                myport 3128
+        }
+
+	myport is port where your router will forward packets.
+
+    2) In the description of your local group (for your network) edit
+       line redir_mods: add word 'transparent'. You will have something like
+       this
+
+	redir_mods transparent;
+
+	or
+
+	redir_mods      transparent redir accel;
+
+    If you can - set up ipfilter on your computer, this will allow oops to
+    handle requests which have no 'Host:' header. Oops will authomatically
+    discover ipfilter during ./configure.
+
+    If something goes wrong you will receive error messages "Bad formed URL".
+    To find what is wrong use next steps:
+
+	1) Enter command(substitute with your values):
+
+		telnet proxyhost myport
+
+	   end enter next lines:
+
+		GET / HTTP/1.0<ENTER>
+		Host: www.cnn.com<ENTER>
+		<ENTER>
+
+	   You should get CNN page as responce.  You can (and should) check
+	   this step even before you set up packet forwarding.
+
+	2) Use tcpdump or snoop to check that your forwarding is working
+	   properly.
+
+Q5. How to find which group given address belongs to?
+A5. In the group description you will see two directives:
+    networks and/or networks_acl. networks_acl have higher priority: they are
+    checked first in the order they appear in oops.cfg. If request match
+    networks_acl for some group - we use this group.
+
+    If request will not match any networks_acl, then we use networks.
+    Networks are sorted so that more 'specific' networks checked first.
+    
+    For example, networks
+
+	0/0
+	192.168.0.0/24
+	192.168.0.0/25
+                     
+     will be checked in next order:
+     
+
+        192.168.0.0/25
+        192.168.0.0/24
+        0/0
+
+     so that host 192.168.0.1 will belong to group with 192.168.0.0/25 in
+     description.
+                

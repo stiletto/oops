@@ -84,6 +84,7 @@ int			delta_tv;
 char			*answer = NULL;
 
     my_xlog(LOG_FTP, "Ftp...\n");
+    bzero(&ftp_request, sizeof(ftp_request));
     if ( parent_port ) {
         bzero(&dst_sa, sizeof(dst_sa));
 	if ( local_networks_sorted && local_networks_sorted_counter ) {
@@ -166,7 +167,6 @@ char			*answer = NULL;
 
  icp_failed:;
     } /* all icp things */
-    bzero(&ftp_request, sizeof(ftp_request));
     ftp_request.client	= so;
     ftp_request.obj	= obj;
     ftp_request.request = rq;

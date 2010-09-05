@@ -1458,7 +1458,7 @@ char		*result = NULL, *s, *d, esc, doll;
     if ( !src || !target || !pmatch )
 	return(NULL);
     while ( curr->rm_so > -1 ) {
-	length = curr->rm_eo - curr->rm_so + 1;
+	length += curr->rm_eo - curr->rm_so + 1;
 	subs++;
 	curr++;
     }
@@ -1501,7 +1501,7 @@ char		*result = NULL, *s, *d, esc, doll;
 	if ( isdigit(*s) && doll ) {
 	    /* insert n-th subexpression */
 	    n = *s - '0';
-	    if ( ( n > 0 ) && ( n < MAXMATCH) ) {
+	    if ( ( n > 0 ) && (n<=subs) && ( n < MAXMATCH) ) {
 		int	copylen;
 		curr = &pmatch[n];
 		copylen = curr->rm_eo - curr->rm_so;

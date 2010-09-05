@@ -1,3 +1,12 @@
+Version 1.3
+	09.02.00
+		fixed more bugs: high %CPU, core dumps during reconfigure
+		fixed some minor bug during kill -WINCH if no {n size} option
+			used
+		added FAQ, added oops.cfg.doc
+	06.02.00
+		fixed bug introduced in 1.2f (memory corruption)
+		fixed problem with high poll() rate (and high %CPU)
 Version 1.2f
 	25.01.00
 		added --with-DB to configure.in

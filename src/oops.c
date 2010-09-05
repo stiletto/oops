@@ -456,9 +456,11 @@ run:
     }
     next_alloc_storage = NULL;
     reconfig_request = 0;
+    open_db();
+    prepare_storages();
+    UNLOCK_CONFIG;
     if ( disk_hi_free >= 100          ) disk_hi_free  = DEFAULT_HI_FREE;
     if ( disk_low_free > disk_hi_free ) disk_low_free = disk_hi_free;
-    UNLOCK_CONFIG;
     if ( connect_from[0] != 0 ) {
 	connect_from_sa_p = &connect_from_sa;
 	if ( str_to_sa(connect_from, (struct sockaddr*)connect_from_sa_p) ) {
@@ -476,8 +478,6 @@ run:
     }
 
     report_limits();
-    open_db();
-    prepare_storages();
     my_log( "oops %s Started\n", VERSION);
     version = VERSION;
 #ifdef	DB_VERSION_STRING
@@ -926,7 +926,7 @@ int	rc;
     dbenv = calloc(sizeof(*dbenv),1);
     bzero(&dbinfo,sizeof(dbinfo));
     dbinfo.db_cachesize = db_cachesize;
-    dbinfo.db_pagesize = 16*1024;	/* 16k */
+    dbinfo.db_pagesize = OOPS_DB_PAGE_SIZE;
     dbinfo.bt_compare = my_bt_compare;
     if ( !dbhome[0] || !dbname[0] ) return;
     if (db_appinit(dbhome, NULL, dbenv, 
@@ -964,7 +964,7 @@ int	rc;
 	return;
     }
     dbp->set_bt_compare(dbp, my_bt_compare);
-    dbp->set_pagesize(dbp, 16*1024);
+    dbp->set_pagesize(dbp, OOPS_DB_PAGE_SIZE);
     rc = dbp->open(dbp, dbname, NULL, DB_BTREE, DB_CREATE, 0);
     if ( rc ) {
 	my_log("dbp->open(%s): %s\n", dbname, db_strerror(rc));

@@ -899,6 +899,7 @@ struct  memb    *map = NULL;
     if ( rc ) {
 	my_log("Cant create cursor for checking\n");
 	dbp->close(dbp, 0);
+	dbp = NULL;
 	goto abor;
     }
 do_scan:

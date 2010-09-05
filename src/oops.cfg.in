@@ -421,15 +421,20 @@ module oopsctl {
         html_refresh    300
 }
 
+##
+## This module hadnle 'Vary' header - it was written to better support
+## Russian Apache
+##
 module	vary {
 	user-agent	by_charset
 	accept-charset	ignore
 }
 
 ##
-## WWW -accelerator. To use - addword accel to
+## WWW -accelerator. To use - add word accel to
 ## redir_mods line for
 ## the group 'world' description
+## You will find more description of this module in supplied accel_maps file
 ##
 #module	accel {
 # myport can have next form:

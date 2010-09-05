@@ -1,0 +1,201 @@
+#!/sbin/sh
+############################################################################
+# $Id: nettune,v 3.1 1999/03/15 21:17:33 chouanar Exp chouanar $
+#
+# Author: Jens-S. Vöckler <voeckler@rvs.uni-hannover.de>
+#
+# $Log: nettune,v $
+# Revision 3.1  1999/03/15 21:17:33  chouanar
+# add minor correction for 2.7 + author change
+#
+# Revision 3.0  1999/03/14 23:24:26  chouanar
+# *** empty log message ***
+#
+# Revision 2.0  1998/11/17 22:48:51  jean
+# *** empty log message ***
+#
+############################################################################
+#
+# /etc/rcS.d/S31nettune -> /etc/init.d/nettune
+#
+# See : http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/your-tune
+# and : http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html
+#
+
+PATH=/usr/sbin:/usr/bin
+/usr/ucb/echo -n "Tweaking Solaris TCP/IP: "
+SECURITY="YES"
+
+# determine, if SunOS 5.6 (Solaris 2.6) or above is installed (care w/ 2.5.1!)
+osver=`uname -r | sed 's/\.//' | awk '{ print $1*10 }'`
+
+# determine, if patch 10358[123]-12 or above is installed (2.5.1: x86+Sparc)
+# if you are using Solaris < 2.5.1, you must modify this to suit your needs.
+# since /var is usually not yet mounted, we must look into the kernel module.
+patch=`strings -a /kernel/drv/tcp | egrep '10358[123]' | awk '{ print $4 }'`
+if [ -z "$patch" ]; then patch="0-0"; fi
+patch=`echo $patch | awk -F- '{ print $2*1 }'`
+
+# report your findings (for Solari < 2.6 only)
+if [ $osver -lt 560 ]; then
+    if [ $patch -gt 0 ]; then
+	/usr/ucb/echo -n "TCP patch pl-$patch found "
+	if [ $patch -ge 12 ]; then
+	    echo "(good)"
+	else 
+	    echo "(too low)"
+	fi
+    else
+	echo "TCP patch missing (bad)"
+    fi
+elif [ $osver -gt 560 ]; then
+    echo "Solaris 7 or above (excellent)"
+else
+    echo "Solaris 2.6 (good)"
+fi
+
+#
+# connection Q: *INCREASE* if you suffer from SYN floods, or many drops...
+#
+# tcp_conn_req_max_q	128
+# tcp_conn_req_max_q0	1024
+#
+if [ $osver -ge 560 -o $patch -ge 12 ]; then
+     # Solaris 2.6 *OR* patch 103582-12 or above applied
+     echo "   tweaking separate connection queues"
+     ndd -set /dev/tcp tcp_conn_req_max_q 512   # 128 for restrictions
+     if [ "YES${SECURITY}" = "YESYES" ] ; then
+	# use 10240 for SYN flood symptom treatment
+	echo "   tweaking against SYN flood symptoms"
+	ndd -set /dev/tcp tcp_conn_req_max_q0 10240
+     else
+	ndd -set /dev/tcp tcp_conn_req_max_q0 1024
+     fi
+else
+     # Solaris 2.5.1 or below, no patch
+     echo "   tweaking single connection queue"
+     ndd -set /dev/tcp tcp_conn_req_max 512     # Hmmm, how about 1024
+fi
+
+
+#
+# retransmission timeouts
+#
+# tcp_rexmit_interval_initial	3000
+# tcp_rexmit_interval_min	200
+# tcp_ip_abort_interval		480000
+# tcp_ip_abort_cinterval	180000
+# tcp_rexmit_interval_max	60000
+#
+echo "   tweaking timeouts"
+ndd -set /dev/tcp tcp_rexmit_interval_initial 3000 # 500 for laboratories
+ndd -set /dev/tcp tcp_rexmit_interval_min 2000     # 200 for laboratories
+ndd -set /dev/tcp tcp_ip_abort_interval 600000     # 10 minutes before drop
+ndd -set /dev/tcp tcp_ip_abort_cinterval 60000     # 60 seconds to estab. conn.
+ndd -set /dev/tcp tcp_rexmit_interval_max 240000   # RFC instead of 2MSL
+
+#
+# slow start bug / feature
+#
+# tcp_slow_start_initial	2
+# tcp_slow_start_after_idle	2
+#
+if [ $osver -ge 560 -o $patch -ge 15 ]; then
+     # Solaris 2.6 *OR* patch 103582-15 or above applied
+     echo "   tweaking slow start bug/feature"
+     ndd -set /dev/tcp tcp_slow_start_initial 2
+fi
+
+#
+# path MTU discovery, common timers
+#
+# ip_ire_pathmtu_Interval	600000
+# tcp_keepalive_interval	72000000
+# tcp_fin_wait_2_flush_interval	675000
+# tcp_time_wait_interval	240000
+#
+echo "   tweaking pMTU discovery interval and common timers"
+ndd -set /dev/ip ip_ire_pathmtu_interval 600000
+ndd -set /dev/tcp tcp_keepalive_interval 3600000
+ndd -set /dev/tcp tcp_fin_wait_2_flush_interval 67500
+if [ $osver -le 560 ] ; then
+     # Before Solaris 7
+     ndd -set /dev/tcp tcp_close_wait_interval 60000 # 2MSL value
+else
+     # Solaris 7 have change the name. It's now named for for it does.
+     ndd -set /dev/tcp tcp_time_wait_interval 60000 # 2MSL value
+fi
+
+#
+# common parameters
+#
+# ip_icmp_err_interval		500
+# ip_forward_src_routed		1
+# tcp_smallest_anon_port	32768
+# udp_smallest_anon_port	32768
+#
+echo "   tweaking misc. parameters"
+ndd -set /dev/ip ip_icmp_err_interval 0
+ndd -set /dev/ip ip_forward_src_routed 0
+ndd -set /dev/tcp tcp_smallest_anon_port 8192
+ndd -set /dev/udp udp_smallest_anon_port 8192
+
+#
+# security relevant features
+#
+# ip_forward_directed_broadcasts	1
+# ip_forwarding				2
+# ip_respond_to_echo_broadcast		1
+# ip_ignore_redirect			0
+# ip_send_redirects			1
+# ip_ire_flush_interval			1200000
+# arp_cleanup_interval			300000
+# ip_strict_dst_multihoming		0
+#
+if [ "YES${SECURITY}" = "YESYES" ] ; then
+     echo "   applying security tweaks..."
+     # pointed out by Jean Chouanard (see Stevens 12.3 and E.4):
+     # - uncomment, if you don't want to forward pings or other broadcasts
+     #   to the broadcast address(es) of your installed interface(s).
+     ndd -set /dev/ip ip_forward_directed_broadcasts 0
+     # - uncomment, if you have multiple interfaces installed, but don't
+     #   want to act as a router (no forwarding). Reasonable for most hosts.
+     ndd -set /dev/ip ip_forwarding 0
+     # - uncomment, if you don't want to respond to a ping to any of your
+     #   broadcast addresses. On one hand, it is rumored to have caused panics.
+     #   On the other hand, it is a valid response, and often used to determine
+     #   the UP hosts on a particular network.
+     ndd -set /dev/ip ip_respond_to_echo_broadcast 0
+
+     # - For ICMP redirect protection
+     ndd -set /dev/ip ip_ignore_redirect 1
+     ndd -set /dev/ip ip_send_redirects 0
+
+     # Next 3 from Titan ( See http://www.fish.com/titan/ )
+     # - Unconditionally flush ARP info from IP routing table
+     ndd -set /dev/ip ip_ire_flush_interval 120000
+     # - discard ARP entry from ARP cache after this interval
+     ndd -set /dev/arp arp_cleanup_interval 60000
+     # - Enable the 'strong end system' model from RFC 1122
+     ndd -set /dev/ip ip_strict_dst_multihoming 1
+fi
+
+#
+# windows
+#
+# udp_xmit_hiwat	8192
+# udp_recv_hiwat	8192
+# tcp_xmit_hiwat	8192
+# tcp_recv_hiwat	8192
+#
+echo "   tweaking windows, buffers and watermarks"
+ndd -set /dev/udp udp_xmit_hiwat 16384 # max. UDP PDU size for sending
+ndd -set /dev/udp udp_recv_hiwat 64000 # queue for UDP
+ndd -set /dev/tcp tcp_xmit_hiwat 32768 # Cockroft's recommendation
+ndd -set /dev/tcp tcp_recv_hiwat 32768 # Cockroft's recommendation 
+
+# Note:
+# Under 2.6 you can use tcp_host_param to boost just selected networks
+# See: http://www.rvs.uni-hannover.de/people/voeckler/tune/EN/tune.html#thp
+#
+echo "done."

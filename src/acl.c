@@ -878,10 +878,16 @@ struct	url			parsed_url;
 
     switch(acl->type) {
 case ACL_DSTDOMREGEX:
-	if ( !parsed_url.host ) return(FALSE);
-	urd = (struct  urlregex_acl_data*)acl->data;
-	if (regexec(&urd->preg, parsed_url.host, 0,  NULL, 0))
+	if ( !parsed_url.host ) {
+	    free_url(&parsed_url);
 	    return(FALSE);
+	}
+	urd = (struct  urlregex_acl_data*)acl->data;
+	if (regexec(&urd->preg, parsed_url.host, 0,  NULL, 0)) {
+	    free_url(&parsed_url);
+	    return(FALSE);
+	}
+	free_url(&parsed_url);
 	return(TRUE);
 	break;
 case ACL_URLREGEXI:
@@ -913,8 +919,12 @@ case ACL_DSTDOM:
 	if ( acl->data && parsed_url.host ) {
 	    struct domain_list	*best =
 	    	find_best_dom((struct domain_list*)acl->data, parsed_url.host);
-	    if ( best ) return(TRUE);
+	    if ( best )  {
+		free_url(&parsed_url);
+		return(TRUE);
+	    }
 	}
+	free_url(&parsed_url);
 	break;
 case ACL_PORT:
 	if ( acl->data && parsed_url.port ) {
@@ -932,6 +942,7 @@ case ACL_PORT:
 	free_url(&parsed_url);
 	return(FALSE);
 default:
+	free_url(&parsed_url);
 	break;
     }
     return(FALSE);

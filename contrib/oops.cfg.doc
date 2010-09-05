@@ -1,0 +1,705 @@
+#
+# Configuration file for oops proxy cache server
+#
+# Crated by _tgz@enjoy-unix.org
+#
+
+#
+# Types:
+#
+# string: any character
+# number: a nature number (N >= 0)
+# boolean: {yes|no}
+#	yes: option is enables
+#	no: option is disabled
+#
+# host: <string>
+#	represents a host's name
+# host_list: {<host> ...}
+# port: <number>
+#	number must be less than 32768
+# port_range: \[<port>:<port>\]
+#	the first <port> must be the lower
+# port_list: {{<port>|<port_range>},...}
+#	items separated by commas
+#
+# <ip>: <number>
+#	number must be less than 256
+# ip_addr: <ip>.<ip>.<ip>.<ip>
+# ip_addr_list: {<ip_addr> ...}
+#
+# <netmask>: <number>
+#	number must be less than 33
+# net_addr: <ip_addr>/<netmask>
+# net_addr_list: {<net_addr> ...}
+#
+# ACL_name: <string>
+#	refers to an ACL's name
+# ACL_list: {{[!]<ACL_name>} ...}
+#	'!' means negation
+#
+# size: <number>m
+#	refers to something's size
+# percent: <number>
+#	means whole * percent / 100
+# days: <number>
+#	represents some amount of time measured in days
+# hours: <number>
+#	represents some amount of time measured in hours
+# milisecs: <number>
+#	represents some amount of time measured in milisecundums (1/1000
+#	secundum)
+#
+# regex: <string>
+#	represents a regular expression
+# path: <string>
+#	refers to a file's full name (path + filename + extension)
+# filename: <string>
+#	refers to a file's basename (filename + extension W/O path)
+# charset: <string>
+#	??? refers to a character set
+# username: <string>
+#	represents a user's name (as in /etc/passwd)
+#
+# include: include:<path>
+#	get the real value from <path> which contains one value per
+#	line, '#'-style comments are allowed.
+#
+
+#
+# Which nameservers to use for domain name resolving. You can use this
+# directive more than once but you must specify at least nameserver.
+# While it is optional it is highly recomended to use this directive
+# for performance reason.
+#
+# Optional: yes
+#
+# address: <ip_addr>
+#	the address of the nameserver
+
+# nameserver	<address>
+nameserver	127.0.0.1
+
+#
+# Which port oops binds on.
+#
+# Optional: ???
+#
+# service: {http_port|icp_port}
+#	http_port: for the http protocol
+#	icp_port: for the Internet Cache Protocol
+#
+
+# <service>	<port>
+http_port	3128
+icp_port	3130
+
+#
+# setuid() to this uid after chroot()'ing.
+#
+# Optional: yes
+# 
+
+# userid	<username>
+userid		oops
+
+#
+# Use chroot(). Remember that all paths below will be relative
+# to this one.
+#
+# Optional: yes
+#
+
+# chroot	<path>
+#chroot		/usr/local/oops
+
+#
+# Attributes for oops' logfiles.
+#
+# Optional: yes
+#
+# type: {logfile|accesslog}
+#	logfile: debug informations
+#	accesslog: who accessed what (the same as in squid)
+# logpath: <path>
+#	path to the log file
+# attribs: \{ <N> <S> \}
+#	S: <number>
+#		rotate logfile if bigger than S
+#	N: <size>
+#		no more than N logfiles will be kept
+#
+# attribs are optional.
+
+# <type>	<logpath>		<attribs>
+logfile		/var/log/oops/debug	{ 3 1m }
+accesslog	/var/log/oops/access	{ 3 1m }
+
+#
+# Uncomment the line below if you want logfiles to be buffered.
+# Otherwise they won't.
+#
+
+logs_buffered
+
+#
+# The location of the file where oops keeps its process ID.
+#
+# Optional: yes
+#
+
+# pidfile	<path>
+pidfile		/var/run/oops.pid
+
+#
+# Write statistics to this file every minute.
+#
+# Optional: yes
+#
+
+# statistics	<path>
+statistics	/var/log/oops/statistic
+
+#
+# Where to search for link.gif, dir.gif, binary.gif etc. (for 
+# ftp lists). If omitted the name of running host will be used.
+# Using remote files can decrase the speed significally.
+#
+# Optional: yes
+#
+# location: {icons-host|icons-port|icons-path}
+#	icons-host: host, where you have icons
+#	icons-port: port where httpd listen
+#	icons-path: path to icons
+
+# icons-host	<host>
+# icons-port	<port>
+# iconst-path	<path>
+
+# <location>	<value>
+#icons-host	ss5.paco.net
+#icons-port	80
+#icons-path	icons
+
+#
+# Memory cache size limits.
+#
+# Optional: yes
+#
+# limit: {mem_max|lo_mark}
+#	mem_max: when total object volume in memory grows
+#		over this drop objects without attempt to save it.
+#		(This generally means that cachable data came faster
+#		from the network than we can save it on the disk.)
+#	lo_mark: hint, how much cached objects be kept in memory.
+#		When total amount becomes larger than this limit,
+#		start to swap to the disk.
+#
+
+# <limit>	<size>
+mem_max		16m
+lo_mark		8m
+
+#
+# Object expirations.
+#
+# Optional: ???
+#
+# expiration-type: {default-expire-value|ftp-expire-value|max-expire-value}
+#	default-expire-value: expiration time for documents that don't
+#		contain an "Expire:" field
+#	ftp-expire-value: expiration time for ftp objects
+#	max-expire-value: no documents will be kept beyond this time
+#		even if it requested to do. default-expire-value can
+#		override this limit.
+#
+
+# <expiration-type>	<days>
+default-expire-value	30
+ftp-expire-value	3
+max-expire-value	30
+
+# ???
+# in which proportion time passed since last document modification
+# will accounted in expire time. For example, if last-modified-factor=5
+# and there was passed 10 days since document modification, then expiration
+# will be set to 2 days in future (but no nore then max-expire-value)
+#
+# Optional: yes
+#
+# divider: <number>
+#	???
+#
+
+# last-modifier-factor	<divider>
+last-modified-factor	5
+
+#
+# How often check for expired documents.
+#
+# Optional: yes
+#
+
+# default-expire-interval	<hours>
+default-expire-interval		24
+
+# ???
+# How long wait for icp reply from peer.
+#
+# Optional: yes
+#
+
+# icp_timeout	<milisecs>
+icp_timeout	1000
+
+#
+# Disk cache size limits.
+#
+# Optional: yes
+#
+# type: {disk-low-free|disk-ok-free}
+#	disk-low-free: clean up cache if free space on the storage
+#		media goes under free_disk. Zero means exactly 1M.
+#	disk-ok-free: stop cache cleanup when free space reaches
+#		free_disk. Zero means exactly 2M.
+# free_disk: <percent>
+#	100 means the whole size of the media where the storage
+#	is kept	on.
+#
+
+# <type>	<free_disk>
+disk-low-free	0
+disk-ok-free	8
+
+#
+# Force to use HTTP/1.1 when communicating with the document server.
+# This option is required if module "vary" is used.
+#
+
+#force_http11
+
+# ???
+# Always check document freshness, even if it's not stale nor expired.
+# This force oops to behave squid-like: first check the cached document,
+# then send it.
+#
+
+#always_check_freshness
+
+#
+# If the user aborted connection when we already had downloaded
+# more than P percent of the document, continue processing.
+#
+# Optional: yes
+#
+# P: <percent>
+#
+
+# force_completion	<P>
+force_completion	50
+
+#
+# Only those objects will be cached whose size is smaller than MS.
+#
+# Optional: yes
+#
+# MS: <size>
+#
+
+# maxresident	<MS>
+maxresident	1m
+
+#
+# Insert some headers in responces: 'X-Forwarded-For:' and 'Via:'
+#
+# Optional: yes
+#
+
+# <field>		<boolean>
+#insert_x_forwarded_for	yes
+#insert_via		yes
+
+# ???
+# Bind to this name or ip-address when we connecting to the document server.
+#
+# Optional: yes
+#
+
+# connect-from		<host>
+#connect-from		proxy.paco.net
+
+#
+# ACL definitions, one ACL per line.
+#
+# Optional: yes
+#
+# name: <string>
+#	you can refer to the ACL by this name later
+# type: {urlregex|urlpath|usercharset|port|dstdom|dstdom_regex|src_ip|method}
+#	urlregex: the value field is a <regex> which is compared
+#		against the requested URL.
+#	urlpath: ???
+#	usercharset: the value field is a <charset> which can be determined
+#		from User-Agent. This is for nat.languages tricks.
+#	port: the value field is a <port_list> ???
+#	dstdom: the value field is <host_list> which is compared
+#		against the destination domain name
+#	dstdom_regex: the value field is a <regex> which is regex-compared
+#		against the destination domain name. It is much slower
+#		then dstdom, but more flexible.
+#	src_ip: the value field is an {<ip_addr>|<net_addr>}
+#		which is compared against the requester's IP address ???
+#	method: http method (GET, PUT, POST, PURGE, ...)
+#
+# data: {<include>|<value>}
+#	value: {<regex>|<host_list>|<port_list>|<net_addr_list>|<ip_addr_list>|<charset>}
+#
+#
+
+# acl	<name>		<type>		<data>
+#acl	CACHEABLECGI	urlregex	http://www\.topping\.com\.ua/cgi-bin/pingstat\.cgi\?072199131826
+#acl	WWWPACO		urlregex	www\.paco\.net
+#acl	NO_RLH		urlregex	zipper
+#acl	REWRITEPORTS	urlregex	(www.job.ru|www.sale.ru)
+#acl	REWRITEHOSTS	urlregex	(www.asm.ru|zipper\.paco)
+#acl	WINUSER		usercharset	windows-1251
+#acl	DOSUSER		usercharset	ibm866
+#acl	UNIXUSER	usercharset	koi8-r
+#acl	BADPORTS	port		[0:79],110,138,139,513,[6000:6010]
+#acl	BADDOMAIN	dstdom		baddomain1.com baddomain2.com
+#acl	BADDOMREGEX	dstdom_regex	baddomain\.((com)|(org))
+#acl	LOCAL_NETWORKS	src_ip		include:/usr/local/oops/acl_local_networks
+#acl	BADNETWORKS	src_ip		192.168.10/24
+#acl	ADMINS		src_ip		127.0.0.1
+#acl	PURGE		method		PURGE
+
+# ???
+# Deny serve requests that came from <ACL_list>.
+#
+# Optional: yes
+#
+
+# acl_deny	<ACL_list>
+acl_deny	PURGE !ADMINS
+
+# 
+# Never cache objects whose PATH contains <string>.
+# Very fast.
+# Optional: yes
+#
+
+# stop_cache	<string>
+stop_cache	?
+stop_cache	cgi-bin
+
+#
+# Do not cache objects whose ACL matches.
+# Slow if regex used, but flexible.
+# Optional: yes
+#
+
+# stop_cache_acl	<ACL_name>
+#stop_cache_acl		WWWPACO
+
+#
+# Check and set expiration date for documents.
+#
+# Optional: yes
+#
+# min: <number>
+#	Document will not expire earlier then <min> sec in future
+# P: <percent>[%]
+#	Set expiration date in accordance with Last-Modified header
+# max: <number>
+#	Document will expire earlier then <max> sec in future
+#
+
+# refresh_pattern	<ACL_name>	<min>	<P>	<max>
+#refresh_pattern	CACHEABLECGI	20	50%	200
+#refresh_pattern	WWWPACO		0	0%	0
+
+#
+# Forward all requests to <host> except local ones (to avoid endless
+# recursion). This option also suppress any ICP queries to any peer.
+#
+
+# parent	<host>		<port>
+#parent		proxy.paco.net	3128
+
+# ???
+# ICP peers
+#
+# Optional: yes
+#
+
+#peer proxy.paco.net 3128 3130
+#{
+#	sibling;
+#	# we will NOT send requests for these domains
+#	deny dstdomain *;
+#	# we will send requests for these domains
+#	allow dstdomain *;
+#}
+
+#peer proxy.gu.net 80 3130
+#{
+#	parent;
+#	allow dstdomain *;
+#	deny dstdomain paco.net odessa.ua;
+#}
+
+#
+# Do not forward requests to parents if target is N.
+#
+# Optional: yes
+#
+# N: {<host_list>|<net_addr_list>}
+#
+
+# <area>	<N>
+#local-domain	odessa.ua od.ua
+#local-domain	odessa.net paco.net netsy.net netsy.com te.net.ua
+#local-networks	195.114.128/19 10/8 192.168/16
+
+#
+# Access groups
+#
+# Optional: yes
+#
+# But note: if you will have no groups in config file you will be denied
+# on each request.
+#
+
+# You can describe group ip adresses here, or using src_ip acl's
+# with networks_acl directive.
+# networks_acl always have higher preference (checked first) and
+# are checked in the order of appearance.
+# If host wil not fall in any networks_acl - we check in networks.
+# networks are ordered by masklen - longest masks(most specific networks)
+# are checked first.
+
+#group paco
+#{
+#	networks	195.114.128/19 127/8 195.5.40.93/32;
+#	networks_acl	LOCAL_NETWORKS !BAD_NETWORKS
+#	badports	[0:79],110,138,139,513,[6000:6010];
+#	miss		allow;
+#
+#	# When deny access to proxy server for this group
+#	denytime	Sat,Sun		0642:1000
+#	denytime	Mon,Thu:Fri,Sun	0900:2100
+#
+#	# Authentication modules for this group, seprated by space.
+#	auth_mods	passwd_file;
+#
+#	# URL-Redirector modules for this group, separated by space.
+#	redir_mods	redir;
+#
+#	# limit whole group to 8 KB/s
+#	bandwidth	8k;
+#
+#	icp
+#	{
+#		allow dstdomain *;
+#	}
+#
+#	http
+#	{
+#		# deny dstdomain	{<host_list>|<include>}
+#		# allow dstdomain	{<host_list>|<include>}
+#
+#		allow dstdomain *;
+#	}
+#}
+
+#group world
+#{
+#	networks	0/0;
+#	badports	[0:79],110,138,139,513,[6000:6010];
+#
+#	http
+#	{
+#		deny	dstdomain *;
+#	}
+#
+#	icp
+#	{
+#		deny	dstdomain *;
+#	}
+#}
+
+#
+# The location of database index files.
+# dbhome: directory where all DB indices resides. This directory
+#	must exists.
+# dbname: filename for the index file
+# Without DB oops will cache only to memory.
+#
+# Optional: yes
+#
+# dbhost	<path>
+# dbname	<filename>
+#
+
+dbhome		/var/local/oops/DB
+dbname		dburl
+
+#
+# Storage section. You can define zero or more storage devices.
+# Zero means that oops will cache only to memory.
+#
+# Optional: yes
+#
+# path: <path>
+#	path to the file or device
+# size: {<size>|auto}
+#	specifies the storage's size (this information is needed
+#	for the format process (oops -z). On existing storages you can
+#	use the keyword "auto" (for disk slices it won't work on Linux and
+#	some other platforms).
+# offset: <number>
+#	don't touch the first N sectors ???
+#
+
+storage
+{
+	path /dev/sda2;
+	size auto;
+#	offset 512;
+}
+
+#storage
+#{
+#	path /usr/local/oops/storages/oops_storage1 ;
+#	size 600m ;
+#}
+
+#
+# Module configuration
+#
+# Optional: yes
+#
+
+#
+# Module to handle national languages
+#
+#module lang
+#{
+#
+#	default_charset	koi8-r
+#
+#	# Recode tables and other charset stuff
+#	CharsetRecodeTable windows-1251 /usr/local/lib/oops/tables/koi-win.tab
+#	CharsetRecodeTable ISO-8859-5 /usr/local/lib/oops/tables/koi-iso.tab
+#	CharsetRecodeTable ibm866 /usr/local/lib/oops/tables/koi-alt.tab
+#	CharsetAgent windows-1251 AIR_Mosaic IWENG/1 MSIE WinMosaic (Windows (WinNT;
+#	CharsetAgent windows-1251 (Win16; (Win95; (Win98; (16-bit) Opera/3.0
+#	CharsetAgent ibm866 DosLynx Lynx2/OS/2
+#}
+
+# The error reporting module
+module err
+{
+	# template
+	template /usr/local/lib/oops/templates/err_template.html;
+
+	# Language to use when generate Error messages
+	lang en;
+}
+
+#
+# The password proxy-authentication module.
+#
+# Default realm, scheme and password file. The only
+# thing you can really want to change is 'file'
+# and 'template'. You don't have to reconfigure oops
+# if you only change the content of passwd file or
+# template: oops will automatically reload them.
+#
+
+module passwd_file
+{
+	realm		oops
+	scheme		Basic
+	file		/usr/local/etc/oops/passwd
+	template	/usr/local/lib/oops/templates/auth_template.html
+}
+
+#
+# The redirection module.
+#
+# file: <path>
+#	path to the redirection rules
+# template: <path>
+#	path to the local error template
+# myport: [{<host>|<ip_addr>}:]<port>
+#	process redirection only on those requests which arreive on
+#	this interface/port
+# You don't have to reconfigure oops
+# if you only change the content of rules file or
+# template: oops will automatically reload them.
+#
+#
+
+module redir
+{
+	file		/usr/local/etc/oops/redir_rules
+	template	/usr/local/lib/oops/templates/redir_template.html
+
+	#myport		3129
+}
+
+#
+# Module which handle requests of oopsctl - programm to control proxy server
+#
+module oopsctl
+{
+	# Path to oopsctl unix socket
+	socket_path /var/local/oops/oopsctl;
+
+	# Time to auto-refresh page (in seconds)
+        html_refresh 300;
+}
+
+#
+# This module hanldle 'Vary' header in serever responce.
+# In cooperation with 'force_http11' it can give you more hits for
+# documents served by HTTP/1.1 servers
+# It was written spaecial for better cooperation with Russian Apache.
+#module	vary
+#{
+#	user-agent	by_charset
+#	accept-charset	ignore
+#}
+
+#
+# The WWW-accelerator module.
+# To use for a group (???) add the word ``accel''
+# to its redir_mods list.
+#
+# myport: {[{<host>|ip_addr}:]<port>} ...
+#	???
+# file: <path>
+#	configuration file for maps and other directives. Checked in
+#	every minute.
+#
+
+#module	accel
+#{
+#	file		/usr/local/oops/accel_maps
+#	myport		80
+#}
+
+#
+# The transparent proxy module.
+# To use for a group (???) add the word ``transparent''
+# to its redir_mods list.
+#
+# myport: {[{<host>|ip_addr}:]<port>} ...
+#	???
+#
+
+#module	transparent
+#{
+#	myport 3128;
+#}
