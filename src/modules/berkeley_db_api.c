@@ -21,17 +21,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "../modules.h"
 
 #define	MODULE_NAME	"berkeley_db"
-#define	MODULE_INFO	"BerkeleyDB API"
+#define	MODULE_INFO	"BerkeleyDB %d.%d.%d API"
+#define	MODULE_BR14	"BerkeleyDB API/stopper"
 
 #if	defined(MODULES)
-char		module_type 	= MODULE_DB_API;
-char		module_info[]	= MODULE_INFO  ;
-char		module_name[]	= MODULE_NAME  ;
+char		module_type 		= MODULE_DB_API;
+char		module_info[MODINFOLEN] = MODULE_BR14;
+char		module_name[]		= MODULE_NAME;
 #define		MODULE_STATIC
 #else
-static	char	module_type 	= MODULE_DB_API ;
-static	char	module_info[]	= MODULE_INFO	;
-static	char	module_name[]	= MODULE_NAME	;
+static	char	module_type 		= MODULE_DB_API;
+static	char	module_info[MODINFOLEN] = MODULE_BR14;
+static	char	module_name[]		= MODULE_NAME;
 #define		MODULE_STATIC	static
 #endif
 
@@ -39,29 +40,29 @@ static	char	module_name[]	= MODULE_NAME	;
 #include	<db.h>
 
 #if	defined(MODULES)
-int		mod_run();
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
-int		db_api_open(int*), db_api_close();
+int		mod_run(void);
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run(void);
+int		db_api_open(int*), db_api_close(void);
 int		db_api_get(db_api_arg_t*, db_api_arg_t*, int*);
 int		db_api_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*, int*);
 int		db_api_del(db_api_arg_t*, int*);
-int		db_api_sync();
+int		db_api_sync(int *);
 void*		db_api_cursor_open(int, int*);
 int		db_api_cursor_get(void*, db_api_arg_t*, db_api_arg_t*, int*);
 int		db_api_cursor_del(void*, int*);
 int		db_api_cursor_close(void*, int*);
 #else
-static	int	mod_run();
-static	int	mod_load();
-static	int	mod_unload();
-static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
-static	int	db_api_open(int*), db_api_close();
+static	int	mod_run(void);
+static	int	mod_load(void);
+static	int	mod_unload(void);
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
+static	int	db_api_open(int*), db_api_close(void);
 static	int	db_api_get(db_api_arg_t*, db_api_arg_t*, int*);
 static	int	db_api_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*, int*);
 static	int	db_api_del(db_api_arg_t*, int*);
-static	int	db_api_sync();
+static	int	db_api_sync(int *);
 static	void*	db_api_cursor_open(int, int*);
 static	int	db_api_cursor_get(void*, db_api_arg_t*, db_api_arg_t*, int*);
 static	int	db_api_cursor_del(void*, int*);
@@ -95,7 +96,7 @@ struct	db_api_module	berkeley_db_api = {
 };
 
 static	DB_ENV                  *dbenv;
-#if     DB_VERSION_MAJOR<3
+#if     DB_VERSION_MAJOR < 3
 static	DB_INFO                 dbinfo;
 #endif
 static	DB                      *dbp;
@@ -105,7 +106,7 @@ static	size_t			db_cache_mem_val;
 
 #define	DB_VERSION_IN_USE	(DB_VERSION_MAJOR*100+DB_VERSION_MINOR)
 
-#if	DB_VERSION_IN_USE>=302
+#if	DB_VERSION_IN_USE >= 302
 static  int     my_bt_compare(DB*, const DBT*, const DBT*);
 #else
 static  int     my_bt_compare(const DBT*, const DBT*);
@@ -120,28 +121,38 @@ static	pthread_rwlock_t	bdb_config_lock;
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_load()
+mod_load(void)
 {
-    printf("%s started\n", module_name);
+    int major, minor, patch;
+
+    major = DB_VERSION_MAJOR;
+    minor = DB_VERSION_MINOR;
+    patch = DB_VERSION_PATCH;
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO,
+	     major, minor, patch);
+
     dbp		= NULL;
     dbenv	= NULL;
     dbhome[0]	= 0;
     dbname[0]	= 0;
     db_cache_mem_val = 4 * 1024 * 1024;
     pthread_rwlock_init(&bdb_config_lock, NULL);
+
+    printf("%s started\n", module_name);
+
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_unload()
+mod_unload(void)
 {
     printf("%s stopped\n", module_name);
     return(MOD_CODE_OK);
@@ -156,7 +167,7 @@ mod_config_beg(int i)
 	dbp->close(dbp, 0);
 	dbp = NULL;
     }
-#if     DB_VERSION_MAJOR<3
+#if     DB_VERSION_MAJOR < 3
     if ( dbhome[0] && dbenv && db_appexit(dbenv) ) {
 	my_xlog(OOPS_LOG_SEVERE, "main(): db_appexit failed.\n");
     }
@@ -176,6 +187,7 @@ mod_config_end(int i)
 {
     return(MOD_CODE_OK);
 }
+
 MODULE_STATIC
 int
 mod_config(char *config, int i)
@@ -208,6 +220,7 @@ char	*p = config;
     UNLOCK_BDB_CONFIG ;
     return(MOD_CODE_OK);
 }
+
 MODULE_STATIC
 int
 db_api_open(int *aflag)
@@ -223,7 +236,7 @@ int	rc;
     my_xlog(OOPS_LOG_STOR, "db_api_open()\n");
 
     dbp = NULL;
-#if	DB_VERSION_MAJOR<3
+#if	DB_VERSION_MAJOR < 3
     dbenv = calloc(sizeof(*dbenv),1);
     bzero(&dbinfo, sizeof(dbinfo));
     dbinfo.db_cachesize = db_cache_mem_val;
@@ -242,17 +255,17 @@ int	rc;
 	my_xlog(OOPS_LOG_SEVERE, "open_db(): db_open(%s): %d %m\n", dbname, rc);
 	dbp = NULL;
     }
-#else
+#else	/* Berkeley DB 3.x.x */
     if ( db_env_create(&dbenv, 0) )
 	return(MOD_CODE_ERR);
     dbenv->set_errfile(dbenv, stderr);
     dbenv->set_errpfx(dbenv, "oops");
     dbenv->set_cachesize(dbenv, 0, db_cache_mem_val, 0);
     rc = dbenv->open(dbenv, dbhome,
-#if	DB_VERSION_MAJOR==3 && DB_VERSION_MINOR==0
+#if	DB_VERSION_MAJOR == 3 && DB_VERSION_MINOR == 0
 	NULL,
 #endif
-	DB_CREATE|DB_THREAD|DB_INIT_MPOOL|DB_PRIVATE,
+	DB_CREATE|DB_THREAD|DB_PRIVATE|DB_INIT_MPOOL,
 	0);
     if ( rc ) {
 	my_xlog(OOPS_LOG_SEVERE, "open_db(): Can't open dbenv.\n");
@@ -283,25 +296,25 @@ int	rc;
     UNLOCK_BDB_CONFIG ;
     return(MOD_CODE_OK);
 }
+
 MODULE_STATIC
 int
-db_api_close()
+db_api_close(void)
 {
     WRLOCK_BDB_CONFIG ;
     if ( !dbp ) {
 	UNLOCK_BDB_CONFIG ;
 	return(MOD_CODE_OK);
     }
-    printf("db_api_close()\n");
     my_xlog(OOPS_LOG_STOR, "db_api_close()\n");
     if ( dbp ) {
 	dbp->sync(dbp, 0);
 	dbp->close(dbp, 0);
 	dbp = NULL;
     }
-#if     DB_VERSION_MAJOR<3
+#if     DB_VERSION_MAJOR < 3
     if ( dbhome[0] && dbenv && db_appexit(dbenv) ) {
-	my_xlog(OOPS_LOG_SEVERE, "main(): db_appexit failed.\n");
+	my_xlog(OOPS_LOG_SEVERE, "db_api_close(): db_appexit failed.\n");
     }
     if ( dbenv ) free(dbenv);
 #else
@@ -311,6 +324,7 @@ db_api_close()
     dbenv = NULL;
     UNLOCK_BDB_CONFIG ;
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "BerkeleyDB closed\n");
+    printf("BerkeleyDB closed\n");
     return(MOD_CODE_OK);
 }
 
@@ -355,7 +369,6 @@ int	rc;
     *aflag = MOD_AFLAG_BRK;
     return(MOD_CODE_OK);
 }
-
 
 MODULE_STATIC
 int
@@ -440,7 +453,7 @@ void	*res = NULL;
 	return(MOD_CODE_OK);
     }
     rc = dbp->cursor(dbp, NULL, &dbcp
-#if     DB_VERSION_IN_USE>=206
+#if     DB_VERSION_IN_USE >= 206
 					, 0
 #endif
 					);
@@ -545,13 +558,14 @@ db_api_sync(int *aflag)
 }
 
 int
-#if	DB_VERSION_IN_USE>= 302
+#if	DB_VERSION_IN_USE >= 302
 my_bt_compare(DB* db, const DBT* a, const DBT* b)
 #else
 my_bt_compare(const DBT* a, const DBT* b)
 #endif
 {
     if ( a->size != b->size ) return(a->size-b->size);
+    if ( a->size == 0 ) return(0);
     return(memcmp(a->data, b->data, a->size));
 }
 #else

@@ -19,6 +19,7 @@
 %token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T MY_AUTH_T PARENT_AUTH_T
 %token	PEER_ACCESS_T PER_SESS_BW_T PER_IP_BW_T PER_IP_CONN_T CONN_FROM_T
 %token	ALWAYS_CHECK_FRESHNESS_ACL_T PEER_DOWN_TIMEOUT_T
+%token	EXPIRE_TIME_T SWAP_ADVANCE_T FETCH_WITH_CLIENT_SPEED_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name
@@ -58,9 +59,10 @@ struct	peer_c {
 	int			down_timeout;
 } peer_c = {PEER_SIBLING,NULL,NULL,NULL, 60};
 
-struct	domain_list	*load_domlist_from_file(char*);
-struct	domain_list	*load_domlist_from_list(struct string_list *);
-int			string_to_days(struct denytime *, struct string_list *);
+static	void			add_to_stop_cache(char *string);
+static	struct	domain_list	*load_domlist_from_file(char*);
+static	struct	domain_list	*load_domlist_from_list(struct string_list *);
+static	int			string_to_days(struct denytime *, struct string_list *);
 
 %}
 
@@ -106,6 +108,7 @@ statement	: logfile
 		| max_expire_value
 		| ftp_expire_value
 		| expire_interval
+		| expiretime
 		| last_modified_factor
 		| always_check_freshness
 		| always_check_freshness_acl
@@ -122,6 +125,7 @@ statement	: logfile
 		| mem_max
 		| lo_mark
 		| hi_mark
+		| swap_advance
 		| group
 		| peer
 		| storage
@@ -142,6 +146,7 @@ statement	: logfile
 		| blacklist
 		| start_red
 		| refuse_at
+		| fetch_with_client_speed
 		| dont_cache_without_last_modified
 		| error L_EOS {
 			yyerrok;
@@ -236,6 +241,17 @@ insert_x_forwarded_for : INSERT_X_FORWARDED_FOR_T string L_EOS {
 			free(yylval.STRPTR);
 		}
 
+fetch_with_client_speed : FETCH_WITH_CLIENT_SPEED_T string L_EOS {
+			if ( !strcasecmp(yylval.STRPTR, "yes") )
+				fetch_with_client_speed = TRUE;
+			   else
+			if (!strcasecmp(yylval.STRPTR, "no") )
+				fetch_with_client_speed = FALSE;
+			   else
+				printf("fetch_with_client_speed can be 'yes' or 'no'\n");
+			free(yylval.STRPTR);
+		}
+
 insert_via	: INSERT_VIA_T string L_EOS {
 			if ( !strcasecmp(yylval.STRPTR, "yes") )
 				insert_via = TRUE;
@@ -310,7 +326,7 @@ refresh_pattern	: REFRESH_PATTERN_T string num string num L_EOS {
 			len = strlen($2) + strlen($4) + 20 ;
 			buf = malloc(len);
 			if ( buf ) {
-			    sprintf(buf, "%s %d %s %d", $2, $3, $4, $5);
+			    snprintf(buf, len, "%s %d %s %d", $2, $3, $4, $5);
 			    parse_refresh_pattern(&global_refresh_pattern, buf);
 			    free(buf);
 			}
@@ -427,7 +443,7 @@ connect_from	: CONNECT_FROM STRING L_EOS {
 			strncpy(connect_from, yylval.STRPTR, sizeof(connect_from)-1);
 			free(yylval.STRPTR);
 			p = connect_from;
-			while ( *p ) {*p=tolower(*p);p++;}
+			while ( *p ) { *p=tolower(*p); p++; }
 			verb_printf("CONNECT_FROM:\t<<%s>>\n", connect_from);
 		}
 
@@ -503,6 +519,18 @@ expire_value	: EXPIRE_VALUE NUMBER L_EOS {
 			default_expire_value=yylval.INT * 24 * 3600;
 		}
 
+expiretime	: EXPIRE_TIME_T string_list {
+		    struct	denytime		*denytime;
+		    int		start_m, end_m;
+		    char m1[10], m2[10];
+
+		    expiretime = xmalloc(sizeof(*expiretime), "");
+		    if ( expiretime != NULL ) {
+		        bzero(expiretime, sizeof(*expiretime));
+		        string_to_days(expiretime, $2);
+		    }
+		    free_string_list($2);
+		}
 max_expire_value : MAX_EXPIRE_VALUE_T NUMBER L_EOS {
 			verb_printf("MAX_EXPIRE_VALUE:\t<<%d days>>\n", yylval.INT);
 			max_expire_value=yylval.INT * 24 * 3600;
@@ -598,6 +626,12 @@ lo_mark		: LO_MARK num L_EOS {
 			lo_mark_val = $2 ;
 		}
 
+swap_advance	: SWAP_ADVANCE_T num L_EOS {
+			verb_printf("SWAP_ADVANCE:\t<<%d>>\n", $2);
+			swap_advance = $2 ;
+			if ( swap_advance <= 0 ) swap_advance = 1;
+		}
+
 hi_mark		: HI_MARK num L_EOS {
 			verb_printf("HI_MARK:\t<<%d>>\n", $2);
 			hi_mark_val = $2 ;
@@ -616,7 +650,7 @@ module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			int			instance = 0;
 
 			modname = $2;
-			if ( (inst = strchr($2, '/') ) ) {
+			if ( (inst = strchr($2, '/')) ) {
 			    *inst = 0;
 			    instance = atoi(++inst);
 			}
@@ -684,7 +718,7 @@ storage		: STORAGE '{' st_ops '}' L_EOS {
 #else
 		    verb_printf("Storage: %s (size %d bytes)\n", storage_path, storage_size);
 #endif
-		    new = xmalloc(sizeof(*new), "parser: new storage");
+		    new = calloc(1, sizeof(*new));
 		    if ( !new ) {
 			yyerror();
 		    }
@@ -692,6 +726,7 @@ storage		: STORAGE '{' st_ops '}' L_EOS {
 		    new->path = storage_path;
 		    new->size = storage_size;
 		    new->i_off = storage_offset;
+		    new->fd = -1;
 		    if ( !storages ) {
 			storages = new;
 		    } else {
@@ -807,7 +842,7 @@ st_op		: SIZE offset ';' { storage_size = $2; }
 
 group		: GROUP group_name '{' group_ops '}' L_EOS {
 			struct	group_ops_struct *ops, *next_ops;
-			struct	group	*new_grp;
+			struct	group	*new_grp, *g;
 
 			new_grp = xmalloc(sizeof(*new_grp),"parser: new group");
 			if ( !new_grp ) {
@@ -891,7 +926,7 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 							}
 							last = mc;
 							strncpy(mc->mod_name, l->string, sizeof(mc->mod_name)-1);
-							if ( (sl = strchr(mc->mod_name, '/') ) ) {
+							if ( (sl = strchr(mc->mod_name, '/')) ) {
 							    *sl = 0;
 							    mc->mod_instance = atoi(sl+1);
 							}
@@ -926,10 +961,15 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 				free(ops);
 				ops = next_ops;
 			}
-			new_grp->next = groups;
+			new_grp->next = 0;
 			/* create acl/dstdomain cache */
 			new_grp->dstdomain_cache = hash_init(128, HASH_KEY_STRING);
-			groups = new_grp;
+			if ( ! groups ) groups = new_grp;
+                            else {
+                                g = groups;
+                                while( g->next ) g = g->next;
+                                g->next = new_grp;
+                        }
 		}
 group_name	: STRING {
 			$$ = yylval.STRPTR;
@@ -1590,6 +1630,20 @@ network		: NETWORK {
 
 %%
 
+
+static void
+add_to_stop_cache(char *string)
+{
+struct  string_list     *new;
+
+    new = xmalloc(sizeof(*new), "add_to_stop_cache(): 1");
+    if ( new ) {
+	new->string = string;
+	new->next = stop_cache;
+	stop_cache = new;
+    }
+}
+
 struct domain_list*
 load_domlist_from_file(char* file)
 {
@@ -1605,7 +1659,7 @@ char			buf[128], *p;
     /* read file - domain per line */
     while ( fgets(buf, sizeof(buf), f) ) {
 	p = buf;
-	if ( ( p = memchr(buf, '\n', sizeof(buf)) ) ) *p = 0;
+	if ( (p = memchr(buf, '\n', sizeof(buf))) ) *p = 0;
 	/* skip leading spaces */
 	p = buf;
 	while ( *p && IS_SPACE(*p) ) p++;
@@ -1671,55 +1725,6 @@ char			buf[128], *p;
 }
 
 int
-string_to_days(struct denytime *dt, struct string_list *list)
-{
-unsigned char	res = 0;
-char		*t, *tokptr, *tb;
-int		start_m=0, end_m=0;
-
-    if ( (dt == NULL) || (list==NULL) ) return(0);
-
-    while ( list ) {
-	tb = list->string;
-	if ( list->next ) /* this must be dayspec */
-	while( (t = (char*)strtok_r(tb, ",", &tokptr)) != 0 ) {
-	    char          fday[4],tday[4];
-	    unsigned char d1, d2, i;
-
-	    tb = NULL;
-	    if ( sscanf(t,"%3s:%3s", (char*)&fday,(char*)&tday) == 2 ) {
-		verb_printf("string_to_days(): Day interval from: '%s' to '%s'\n", fday,tday);
-		d1 = daybit(fday);
-		d2 = daybit(tday);
-		if ( TEST(d1, 0x80) || TEST(d2, 0x80) || (d1>d2)) {
-		    verb_printf("string_to_days(): Wrong daytime\n");
-		    return(0);
-		}
-		i = d1;
-		while(i <= d2) {
-		    res |= i;
-		    i <<= 1;
-		}
-	    } else {
-		verb_printf("string_to_days(): Day: '%s'\n", t);
-		res |= daybit(t);
-	    }  
-	} else /* this must be timespec */ {
-	    if ( list->string && (sscanf(list->string, "%d:%d", &start_m, &end_m) != 2) ) {
-		verb_printf("Wrong timespec: %s\n", list->string);
-		return(0);
-	    }
-	    verb_printf("string_to_days(): %0.4d-%0.4d\n", start_m, end_m);
-	    dt->start_minute = 60*(start_m/100) + start_m%100;
-	    dt->end_minute = 60*(end_m/100) + end_m%100;
-	}
-	list = list->next;
-    }
-    dt->days = res;
-    return(0);
-}
-
-int
 readconfig(char *name)
 {
 FILE		*cf;
@@ -1744,4 +1749,59 @@ int		code;
     printf("Parser returned %d, %d errors found\n", code, parser_errors);
     if ( parser_errors ) code = parser_errors;
     return(code);
+}
+
+static int
+string_to_days(struct denytime *dt, struct string_list *list)
+{
+unsigned char	res = 0;
+char		*t, *tokptr, *tb;
+int		start_m=0, end_m=0;
+
+    if ( (dt == NULL) || (list == NULL) ) return(0);
+
+    while ( list ) {
+	tb = list->string;
+	if ( list->next ) /* this must be dayspec */
+	while( (t = (char*)strtok_r(tb, ",", &tokptr)) != 0 ) {
+	    char          fday[4],tday[4];
+	    unsigned char d1, d2, i;
+
+	    tb = NULL;
+	    if ( sscanf(t,"%3s:%3s", (char*)&fday,(char*)&tday) == 2 ) {
+		verb_printf("string_to_days(): Day interval from: '%s' to '%s'\n", fday,tday);
+		d1 = daybit(fday);
+		d2 = daybit(tday);
+		if ( TEST(d1, 0x80) || TEST(d2, 0x80) ) {
+		    verb_printf("string_to_days(): Wrong daytime\n");
+		    return(0);
+		}
+		i = d1;
+		d2 <<= 1; if ( d2 > 64 ) d2 = 1;
+		if ( d2 == d1 ) {
+                    res |= daybit("all");
+		} else {
+		    while(i != d2) {
+		        res |= i;
+		        i <<= 1;
+		        if ( i > 64 ) i = 1;
+		    }
+                }
+	    } else {
+		verb_printf("string_to_days(): Day: '%s'\n", t);
+		res |= daybit(t);
+	    }  
+	} else /* this must be timespec */ {
+	    if ( list->string && (sscanf(list->string, "%d:%d", &start_m, &end_m) != 2) ) {
+		verb_printf("Wrong timespec: %s\n", list->string);
+		return(0);
+	    }
+	    verb_printf("string_to_days(): %0.4d-%0.4d\n", start_m, end_m);
+	    dt->start_minute = 60*(start_m/100) + start_m%100;
+	    dt->end_minute = 60*(end_m/100) + end_m%100;
+	}
+	list = list->next;
+    }
+    dt->days = res;
+    return(0);
 }

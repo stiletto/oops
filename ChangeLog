@@ -1,5 +1,13 @@
+version 1.5.22
+		- wccp v2. Real raw devices support (aligned IO).
+		  new swapout algorithm. Configurable option for speed
+		  between server and proxy (with client speed(default) or
+		  with full speed). More memory control. Performance
+		  emprovements, bug fixes, e.t.c.
 version 1.5.18
 		 - method CONNECT ignored connect_from.
+	24.06.01 - Initial OpenBSD support. (ai)
+
 version 1.5.17
 	26.04.01 - connect_from for groups. (ai)
 	12.04.01 - acces_log now htmlize path.

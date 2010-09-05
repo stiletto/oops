@@ -1,5 +1,5 @@
-#if	!defined(DATAQ_H_INCLUDED)
-#define DATAQ_H_INCLUDED
+#if	!defined(_DATAQ_H_INCLUDED_)
+#define _DATAQ_H_INCLUDED_
 
 #define	DATAQ_MAGIC	0x0000ABBA
 
@@ -26,4 +26,5 @@ extern	int dataq_destroy(dataq_t *dq);
 extern	int dataq_enqueue(dataq_t *dq, void *);
 extern	int dataq_dequeue(dataq_t *dq, void **);
 extern	int dataq_dequeue_no_wait(dataq_t *dq, void **);
-#endif
+
+#endif	/* !_DATAQ_H_INCLUDED_ */

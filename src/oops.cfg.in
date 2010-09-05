@@ -96,6 +96,12 @@ default-expire-value    7
 ftp-expire-value	7
 
 ##
+#  if you want expirestart and run only at some time intervals,
+#  then use next instruction
+##
+#expiretime	Sun:Sat 0100:0700
+
+##
 # Maximum expite time - doc will not keep in cache more then
 # this number of days (except if defaiult-expire-value used for this documeny)
 ##
@@ -164,6 +170,7 @@ maxresident	1m
 
 insert_x_forwarded_for	yes
 insert_via		yes
+fetch_with_client_speed yes
 
 ##
 #  If host have several interfaces or aliases, use exactly
@@ -194,6 +201,7 @@ insert_via		yes
 #acl	WORKTIME	time		Mon,Tue:Fri 0900:1800
 #acl	HTMLS		content_type	text/html
 #acl	USERS		username	joe
+acl	MSIE		header_substr	user-agent MSIE
 acl	ADMINS		src_ip		127.0.0.1
 acl	PURGE		method		PURGE
 acl	CONNECT		method		CONNECT
@@ -620,6 +628,7 @@ module	vary {
 # myport can have next form:
 # myport [{hostname|ip_addr}:]port ...
 #	myport			3128
+#	broken_browsers		MSIE
 #}
 
 ##
@@ -715,7 +724,7 @@ module	berkeley_db {
 # some kind of traffic. To intercept www requests from your users use
 # next 'service-group' definition
 #
-#        service-group port 80
+#        service-group web-cache
 #
 # Routers for this service group.
 # Here you list ip-addresses of routers in service group.
@@ -723,6 +732,6 @@ module	berkeley_db {
 # address of interface which is directed to cache. You can describe several
 # (up to 32) routers.
 #
-#        router  212.109.32.113
+#        router  10.10.10.1
 #
 #}

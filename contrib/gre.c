@@ -1,5 +1,5 @@
 /*
- *    $Id: gre.c,v 1.1 2001/04/27 11:40:49 igor Exp $
+ *    $Id: gre.c,v 1.2 2001/10/27 13:22:51 igor Exp $
  *
  * Glenn Chisholm <glenn@ircache.net>
  * Duane Wessels <wessels@ircache.net>
@@ -11,6 +11,7 @@
  * http://www.squid-cache.org/WCCP-support/FreeBSD-4.x/gre.c
  * for wccp2.c
  * Difference is in the size of struct gre only.
+ * You need this file for wccp v2.
  *
  * Igor Khasilev <igor@paco.net>
  */

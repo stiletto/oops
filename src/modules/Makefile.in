@@ -6,21 +6,25 @@ LDFLAGS = @LDFLAGS@
 LD = @LD@
 SOFLAGS = @SOFLAGS@
 OPT_MODS = @OPT_MODS@
-CXXCOMPFLAGS=@CXXCOMPFLAGS@
-CXXSOFLAGS=@CXXSOFLAGS@
-MYSQL_LIB=@MYSQL_LIB@
-PGSQL_LIB=@PGSQL_LIB@
+CXXCOMPFLAGS = @LIBGB_INCL@ @CXXCOMPFLAGS@
+CXXSOFLAGS = @LIBGB_INCL@ @CXXSOFLAGS@
+LIBDB_INCL = @LIBDB_INCL@
+MYSQL_LIB = @MYSQL_LIB@
+PGSQL_LIB = @PGSQL_LIB@
+EXTRASRC = @EXTRASRC@
 
 .SUFFIXES:	.c .cpp .o .so
 
+EXTRAOBJS = $(EXTRASRC:%c=../%o)
+
 .c.o:
-	${CC} ${CFLAGS} ${CDEFS} -c $<
+	${CC} ${CFLAGS} ${LIBDB_INCL} ${CDEFS} -c $<
 #
 .o.so:
 	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 
 .c.so:
-	${CC} ${CFLAGS} ${SOFLAGS} ${CDEFS} -c $<
+	${CC} ${CFLAGS} ${LIBDB_INCL} ${SOFLAGS} ${CDEFS} -c $<
 	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $(<:.c=.o) $(LIBS)
 
 .cpp.o:
@@ -83,7 +87,7 @@ berkeley_db_api.@MOD_EXT@:	berkeley_db_api.c ../modules.h ../oops.h
 gigabase_db_api.@MOD_EXT@:	gigabase_db_api.cpp ../modules.h ../oops.h
 
 oopsctl: oopsctl.c ../modules.h ../config.h  ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} oopsctl.c ${LDFLAGS} ${LIBS} -o oopsctl
+	${CC} ${CFLAGS} ${CDEFS} oopsctl.c ${EXTRAOBJS} ${LDFLAGS} ${LIBS} -o oopsctl
 
 passwd_pgsql.so: passwd_sql.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} -D__PGSQL -c passwd_sql.c -o passwd_pgsql.o

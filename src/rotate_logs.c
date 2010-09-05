@@ -20,9 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	"oops.h"
 
-void	rotate_file(char * name, FILE **f, int num);
+static	void	rotate_file(char * name, FILE **f, int num);
 
-void
+static void
 rotate_names(char *name, filebuff_t *fb, int num)
 {
 int	last, i;
@@ -31,15 +31,8 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
     if ( fb == NULL || name == NULL ) return;
     if ( !num ) {
 	/* if no number of logs configured just reopen file */
-#if	defined(HAVE_SNPRINTF)
 	close(fb->fd);
 	fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT);
-#else
-	if ( fb->File ) fclose(fb->File);
-	fb->fd = -1;
-	fb->File = fopen(name, "a");
-	if (fb->File) fb->fd=fileno(fb->File);
-#endif
 	return;
 
     }
@@ -48,21 +41,13 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
     last = num - 1;
     /* now rotate */
     for(i=last;i>0;i--) {
-	sprintf(tname,  "%s.%d", name, i-1);	/* newer version */
-	sprintf(tname1, "%s.%d", name, i);	/* older version */
-	RENAME(tname, tname1);			/* rename newer to older */
+	snprintf(tname,  sizeof(tname)-1,  "%s.%d", name, i-1);	/* newer version */
+	snprintf(tname1, sizeof(tname1)-1, "%s.%d", name, i);	/* older version */
+	RENAME(tname, tname1);					/* rename newer to older */
     }
-#if	defined(HAVE_SNPRINTF)
     if ( fb->fd != -1 ) close(fb->fd);
     RENAME(name, tname);
     fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT, 0660);
-#else
-    if ( fb->File ) fclose(fb->File);
-    RENAME(name, tname);
-    fb->fd = -1;
-    fb->File = fopen(name, "a");
-    if (fb->File) fb->fd=fileno(fb->File);
-#endif
 }
 
 void
@@ -116,7 +101,7 @@ rotate_logs(void *arg)
 struct stat	statb;
 int		r;
 
-    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "rotate_logs(): Log rotator started.\n");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "Log rotator started.\n");
     if ( arg ) return (void *)0;
     forever() {
 	RDLOCK_CONFIG ;
@@ -153,7 +138,7 @@ int		r;
     }
 }
 
-void
+static void
 rotate_file(char *name, FILE **f, int num)
 {
 int	last, i;
@@ -170,12 +155,11 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
     last = num - 1;
     /* now rotate */
     for(i=last;i>0;i--) {
-	sprintf(tname,  "%s.%d", name, i-1);	/* newer version */
-	sprintf(tname1, "%s.%d", name, i);	/* older version */
-	RENAME(tname, tname1);			/* rename newer to older */
+	snprintf(tname,  sizeof(tname)-1,  "%s.%d", name, i-1);	/* newer version */
+	snprintf(tname1, sizeof(tname1)-1, "%s.%d", name, i);	/* older version */
+	RENAME(tname, tname1);					/* rename newer to older */
     }
     fclose(*f);
     RENAME(name, tname);
     *f = fopen(name, "a");
 }
-

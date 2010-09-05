@@ -23,3 +23,12 @@ option
 
 separate timeouts for
 connect, read, ...
+
+oopsctl cache-swap	done (?)
+
+byte hit count
+
+configurable swap
+advance 		done
+
+optimize find_free_bit	done

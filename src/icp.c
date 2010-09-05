@@ -48,11 +48,13 @@ struct	icp_lookup {
 	int			rq_n;
 };
 
-void	send_icp_op(int so, struct sockaddr_in *sa, int op, int rq_n, char *urlp);
-void	send_icp_op_err(int so, struct sockaddr_in *sa, int rq_n);
-struct	peer	*peer_by_addr(struct sockaddr_in*);
-int     process_hit(struct icp_lookup *icp_lookup, struct icp_queue_elem *qe);
-int     process_miss(struct icp_lookup *icp_lookup, struct icp_queue_elem *qe);
+static	struct	peer	*peer_by_addr(struct sockaddr_in*);
+static	int     	process_hit(struct icp_lookup *icp_lookup, struct icp_queue_elem *qe);
+static	void		process_icp_msg(int so, char *buf, int len, struct sockaddr_in *, struct sockaddr_in *);
+static	int     	process_miss(struct icp_lookup *icp_lookup, struct icp_queue_elem *qe);
+static	void		send_icp_op(int so, struct sockaddr_in *sa, int op, int rq_n, char *urlp);
+static	void		send_icp_op_err(int so, struct sockaddr_in *sa, int rq_n);
+
 
 #define	icp_opcode	icp_hdr->w0.opcode
 #define	icp_version	icp_hdr->w0.version
@@ -216,7 +218,7 @@ icp_request_destroy(struct icp_queue_elem *icpr)
     pthread_mutex_destroy(&icpr->icpr_mutex);
 }
 
-void
+static void
 process_icp_msg(int so, char *buf, int len, struct sockaddr_in *sa, struct sockaddr_in *my_sa)
 {
 struct	icp_hdr		*icp_hdr = (struct icp_hdr*)buf;
@@ -290,9 +292,13 @@ hash_entry_t            *he = NULL;
 		    int			rc;
 		    /* locate on storage */
 		    RDLOCK_CONFIG;
+#if     !defined(USE_INTERNAL_DB_LOCKS)
 		    RDLOCK_DB;
+#endif
 		    rc = locate_url_on_disk(&request.url, &tmp_ref);
+#if     !defined(USE_INTERNAL_DB_LOCKS)
 		    UNLOCK_DB;
+#endif
 		    UNLOCK_CONFIG;
 		    if ( rc >= 0 )xfree(tmp_ref);
 		    if ( !rc ) {
@@ -466,7 +472,7 @@ hash_entry_t            *he = NULL;
     }
 }
 
-void
+static void
 send_icp_op_err(int so, struct sockaddr_in *sa, int rq_n)
 {
 char	buf[5*4];
@@ -480,7 +486,8 @@ struct	icp_hdr	*icp_hdr = (struct icp_hdr*)buf;
     icp_rq_n = htonl(rq_n);
     sendto(so, buf, len, 0, (struct sockaddr*)sa, sizeof(struct sockaddr_in));
 }
-void
+
+static void
 send_icp_op(int so, struct sockaddr_in *sa, int op, int rq_n, char *urlp)
 {
 char	*buf;
@@ -505,8 +512,8 @@ int	r;
     xfree(buf);
 }
 
-struct peer*
-peer_by_addr (struct sockaddr_in *sa)
+static struct peer*
+peer_by_addr(struct sockaddr_in *sa)
 {
 struct	peer *peer = peers;
 
@@ -521,7 +528,7 @@ struct	peer *peer = peers;
 }
 
 struct peer*
-peer_by_http_addr (struct sockaddr_in *sa)
+peer_by_http_addr(struct sockaddr_in *sa)
 {
 struct	peer *peer = peers;
 
@@ -535,7 +542,7 @@ struct	peer *peer = peers;
     return(peer);
 }
 
-int
+static int
 process_miss(struct icp_lookup *icp_lookup, struct icp_queue_elem *qe)
 {
 int				rq_n;
@@ -568,7 +575,7 @@ int				rq_n;
     return(0);
 }
 
-int
+static int
 process_hit(struct icp_lookup *icp_lookup, struct icp_queue_elem *qe)
 {
 int				rq_n;

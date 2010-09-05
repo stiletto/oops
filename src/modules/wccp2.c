@@ -59,28 +59,30 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define     WCCP2_PACKET_RETURN_METHOD_GRE 0x00000001
 #define     WCCP2_PACKET_RETURN_METHOD_L2  0x00000002
 
+#define     PortsDefined                   (0x0010)
+
 #define     MAX_ROUTERNAME_LEN              64
 
 #define     MODULE_NAME "wccp2"
-#define     MODULE_INFO "Web Cache Coordination Protocol V2.0"
+#define     MODULE_INFO "Web Cache Coordination Protocol v2.0"
 
 #if	defined(MODULES)
 char	    module_type   = MODULE_LISTENER ;
 char	    module_name[] = MODULE_NAME ;
 char	    module_info[] = MODULE_INFO;
-int         mod_load();
-int         mod_unload();
-int         mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+int         mod_load(void);
+int         mod_unload(void);
+int         mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 void*       process_call(void *arg);
-int         mod_tick();
+int         mod_tick(void);
 #define     MODULE_STATIC
 #else
 static	char	module_type   = MODULE_LISTENER ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
-static  int     mod_load();
-static  int     mod_unload();
-static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+static  int     mod_load(void);
+static  int     mod_unload(void);
+static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 static	void*	process_call(void *arg);
 static  int        mod_tick();
 #define     MODULE_STATIC	static
@@ -196,7 +198,8 @@ typedef struct  service_group_view_ {
 typedef struct  wccp2_service_group_ {
     struct wccp2_service_group_ *next;
     /* config-time data         */
-    uint16_t                        port;
+    int                             group_id;
+    uint16_t                        port[8];
     int                             security_option;
     char                            password[9];
 
@@ -232,8 +235,7 @@ static  wccp2_service_group_t   *service_groups, *config_service_group;
 static  wccp2_service_group_t   *last_service_group;
 static  int                     config_router_index;
 
-static  void free_service_groups();
-static  void free_service_group(wccp2_service_group_t *);
+static  void free_service_groups(void);
 static  int  send_Here_I_Am(wccp2_service_group_t *g, wccp2_router_t *r);
 typedef struct  wccp2_message_header_ {
     uint32_t    Type;
@@ -344,18 +346,20 @@ static	int	Send_Redirect_Assignment(wccp2_service_group_t *g, wccp2_router_t *r)
 
 MODULE_STATIC
 int
-mod_load()
+mod_load(void)
 {
-    printf("WCCP2 started\n");
     pthread_rwlock_init(&wccp2_config_lock, NULL);
     service_groups = NULL;
     tick_cnt = 0;
+
+    printf("WCCP2 started\n");
+
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_unload()
+mod_unload(void)
 {
     WRLOCK_WCCP2_CONFIG ;
     printf("WCCP2 Stopped\n");
@@ -366,10 +370,12 @@ MODULE_STATIC
 int
 mod_config_beg(int i)
 {
+    wccp2_socket = -1;
+    free_service_groups();
     config_service_group = NULL;
     last_service_group = NULL;
     config_router_index = 0;
-    memset(&cache_engine, 0, sizeof(cache_engine));
+    bzero(&cache_engine, sizeof(cache_engine));
     return(MOD_CODE_OK);
 }
 
@@ -384,19 +390,22 @@ char    *vector[10], *orig = NULL;
     words = word_vector(config, " \t\n", (char **)&vector[0], 10);
     if ( words < 0 )
         goto error;
+    printf ("Words: %d\n", words);
     if ( words > 0 ) {
         if ( !strncasecmp(vector[0], "identity", 4) ) {
             if ( words < 2 ) {
                 printf("hostname or ip expected after 'identity' in line '%s'\n", orig);
                 goto error;
             }
-            memset(&cache_engine.identity, 0, sizeof(cache_engine.identity));
+            bzero(&cache_engine.identity, sizeof(cache_engine.identity));
             strncpy(&cache_engine.identity[0], vector[1], sizeof(cache_engine.identity)-1);
             printf("identity: %s\n", cache_engine.identity);
         }
         if ( !strncasecmp(vector[0], "service-group", 4) ) {
-            char    *password = "";
-            u_short port = 0;
+            char        *password = "";
+            u_short     port[8] = {0,0,0,0,0,0,0,0};
+            int         group_id = 0;
+            int         index;
 
             if ( config_service_group != 0 ) {
                 /* insert configured service group in list  */
@@ -409,18 +418,42 @@ char    *vector[10], *orig = NULL;
                     last_service_group = config_service_group;
                 }
             }
-            if ( words < 3 ) {
+            if ( words < 2 ) {
                 printf("Incomplete command'%s'\n", orig);
                 goto error;
             }
-            if ( !strncasecmp(vector[1], "port", 2) ) {
-                port = atoi(vector[2]);
+            index = 1;
+            if ( !strncasecmp(vector[index], "web-cache", 2) ) {
+                group_id = 0;
+                port[0] = 80;
+            } else
+            if ( (group_id = atoi(vector[index])) == 0 ) {
+                printf("web-cache or number expected, got: '%s'\n", vector[index]);
+                goto error;
+            }
+            index++;
+            if ( index>= words ) goto do_group;
+            if ( !strncasecmp(vector[index], "port", 2) ) {
+                int     i;
+                char    *t, *p, *tptr;
+
+                index++;
+                p = vector[index];
+                for (i=0; i<8; i++) {
+                    t = strtok_r(p, ",", &tptr);
+                    if ( !t ) break;
+                    p = NULL;
+                    port[i] = (u_short)atoi(t);
+                    printf("port: %d\n", port[i]);
+                }
+
             } else {
                 printf("word 'port' expected after 'service-group', but we have '%s'\n", vector[1]);
                 goto error;
             }
-            if ( words <= 3 ) goto do_group;
-            if ( !strncasecmp(vector[3], "password", 2) ) {
+            index++;
+            if ( words <= index ) goto do_group;
+            if ( !strncasecmp(vector[index], "password", 2) ) {
                 if ( words >= 5 ) {
                     printf(" pass: %s\n", vector[4]);
                     password = vector[4];
@@ -437,12 +470,13 @@ char    *vector[10], *orig = NULL;
                 printf("No mem for new service group\n");
                 goto error;
             }
-            config_service_group->port = port;
+            memcpy(config_service_group->port, port, sizeof(port));
+            config_service_group->group_id = group_id;
             config_service_group->n_routers = 0;
             config_service_group->ChangeNumber = 1;
             config_service_group->n_caches = 1;
             pthread_mutex_init(&config_service_group->view_lock, NULL);
-            memset(&config_service_group->password[0], 0, 9);
+            bzero(&config_service_group->password[0], 9);
             strncpy(&config_service_group->password[0], password, 8);
             if ( 0 != password[0] )
                 config_service_group->security_option = WCCP2_MD5_SECURITY;
@@ -464,7 +498,7 @@ char    *vector[10], *orig = NULL;
             router->ReceiveID = 0;
             /* set up some default values               */
             /* use HASH by default                      */
-            router->assignment_method = WCCP2_HASH_ASSIGNMENT;
+            router->assignment_method = WCCP2_ASSIGNMENT_METHOD_HASH;
             /* use L2 forwarding by default             */
             /* that is Cache must be directly reachable */
             /* from router (same Ethernet segment?)     */
@@ -507,24 +541,32 @@ mod_config_end(int i)
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
 wccp2_service_group_t   *g;
 wccp2_router_t          *r;
 struct  sockaddr_in     wccp2_bind_sa;
 int                     rc;
+#if defined(LINUX) && defined(IP_PMTUDISC_DONT)
+int                     sockopt_val;
+#endif
 
-    /* reopen wccp2 socket */
-    if ( wccp2_socket != -1 )
-        close(wccp2_socket);
+    if ( !service_groups )
+        return(MOD_CODE_OK);
     wccp2_socket = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if ( wccp2_socket == -1 ) {
         fprintf(stderr, "Can't create wccp socket: %s\n", strerror(errno));
         return(MOD_CODE_ERR);
     }
+#if defined(LINUX) && defined(IP_PMTUDISC_DONT)
+    /* Linux 2.4 does not set IP IDs on UDP packets with DF flag by default,
+     * force it to do so as Cisco does not like it */
+    sockopt_val=IP_PMTUDISC_DONT;
+    setsockopt(wccp2_socket, SOL_IP, IP_MTU_DISCOVER, (char*)&sockopt_val, sizeof(sockopt_val));
+#endif
     fcntl(wccp2_socket, F_SETFL, fcntl(wccp2_socket, F_GETFL, 0)|O_NONBLOCK);
     /* bind to port */
-    memset(&wccp2_bind_sa, 0, sizeof(wccp2_bind_sa));
+    bzero(&wccp2_bind_sa, sizeof(wccp2_bind_sa));
     wccp2_bind_sa.sin_family = AF_INET;
     wccp2_bind_sa.sin_port = htons(WCCP2_PORT);
     wccp2_bind_sa.sin_addr.s_addr = INADDR_ANY;
@@ -551,7 +593,7 @@ int                     rc;
     return(MOD_CODE_OK);
 }
 
-int
+static int
 I_Am_Designated_Cache(wccp2_service_group_t *g)
 {
 int         i;
@@ -587,7 +629,7 @@ uint32_t    my_ip;
 
 MODULE_STATIC
 int
-mod_tick()
+mod_tick(void)
 {
     tick_cnt++;
     if ( 0 == (tick_cnt % 10) ) {
@@ -620,7 +662,7 @@ process_call(void *arg)
 {
 char                            buf[16*1024];
 struct  sockaddr_in             source;
-int                             source_len = sizeof(source);
+socklen_t                       source_len = sizeof(source);
 int                             rc, Length, i, NumOfCaches;
 char                            *position, *end;
 uint16_t                        *portP;
@@ -822,7 +864,7 @@ web_cache_identity_element_t            *cache_element;
     return(MOD_CODE_OK);
 }
 
-int
+static int
 send_Here_I_Am(wccp2_service_group_t *g, wccp2_router_t *r)
 {
 struct  sockaddr_in     router_addr;
@@ -846,7 +888,7 @@ web_cache_identity_element_t *scache, *dcache;
     }
     r->address = router_addr.sin_addr.s_addr;
     router_addr.sin_port = htons(WCCP2_PORT);
-    memset(&msg, 0, sizeof(msg));
+    bzero(&msg, sizeof(msg));
     msg.msg_name    = (void*)&router_addr;
     msg.msg_namelen = sizeof(router_addr);
     msg.msg_iov = &HIA[0];
@@ -873,17 +915,31 @@ web_cache_identity_element_t *scache, *dcache;
     }
 
     /* service Info Component                               */
-    memset(&send_service_info_component, 0, sizeof(send_service_info_component));
+    bzero(&send_service_info_component, sizeof(send_service_info_component));
     send_service_info_component.Type = htons(WCCP2_SERVICE_INFO);    
     send_service_info_component.Length = htons(sizeof(send_service_info_component)-4);
-    if ( g->port == 80 ) {
+    if ( g->group_id == 0 ) {
         send_service_info_component.Service_Type = WCCP2_SERVICE_STANDARD;
         send_service_info_component.Service_ID = 0;
         HIA[2].iov_base = (char*)&send_service_info_component;
         HIA[2].iov_len = sizeof(send_service_info_component);
         send_message_header.Length += HIA[2].iov_len;
     } else {
-        abort();
+        send_service_info_component.Service_Type = WCCP2_SERVICE_DYNAMIC;
+        send_service_info_component.Service_ID = g->group_id;
+        send_service_info_component.Service_Flags |=  htons(PortsDefined);
+        send_service_info_component.Protocol = 6; /* TCP */
+        send_service_info_component.Port[0] = htons(g->port[0]);
+        send_service_info_component.Port[1] = htons(g->port[1]);
+        send_service_info_component.Port[2] = htons(g->port[2]);
+        send_service_info_component.Port[3] = htons(g->port[3]);
+        send_service_info_component.Port[4] = htons(g->port[4]);
+        send_service_info_component.Port[5] = htons(g->port[5]);
+        send_service_info_component.Port[6] = htons(g->port[6]);
+        send_service_info_component.Port[7] = htons(g->port[7]);
+        HIA[2].iov_base = (char*)&send_service_info_component;
+        HIA[2].iov_len = sizeof(send_service_info_component);
+        send_message_header.Length += HIA[2].iov_len;
     }
 
     /* web cache identity info component                    */
@@ -897,7 +953,7 @@ web_cache_identity_element_t *scache, *dcache;
         g->caches[0].WC_Address = cache_engine.ip_identity.sin_addr.s_addr;
     }
 
-    memset(&send_cache_identity_info_component, 0, sizeof(send_cache_identity_info_component));
+    bzero(&send_cache_identity_info_component, sizeof(send_cache_identity_info_component));
     send_cache_identity_info_component.Type = htons(WCCP2_WC_ID_INFO);
     send_cache_identity_info_component.Length = htons(sizeof(send_cache_identity_info_component) - 4);
     send_cache_identity_info_component.Identity.WC_Address = cache_engine.ip_identity.sin_addr.s_addr;
@@ -909,7 +965,7 @@ web_cache_identity_element_t *scache, *dcache;
 
     /* web cache view info component                        */
     send_cache_view_info_component.Type = htons(WCCP2_WC_VIEW_INFO);
-    send_cache_view_info_component.Length = 
+    send_cache_view_info_component.Length = (uint16_t)
             htons(8 + g->view.routers.n_routers*8 + 4 + 
                 g->view.caches.n_caches*4);
     send_cache_view_info_component.ChangeNumber = htonl(g->ChangeNumber);
@@ -947,10 +1003,10 @@ web_cache_identity_element_t *scache, *dcache;
     send_cap_info_component.Forwarding.Value = htonl(r->forwarding_method);
     send_cap_info_component.Assignment.Type=htons(WCCP2_ASSIGNMENT_METHOD);
     send_cap_info_component.Assignment.Length = htons(4);
-    send_cap_info_component.Forwarding.Value = htonl(r->assignment_method);
+    send_cap_info_component.Assignment.Value = htonl(r->assignment_method);
     send_cap_info_component.PacketReturn.Type=htons(WCCP2_PACKET_RETURN_METHOD);
     send_cap_info_component.PacketReturn.Length = htons(4);
-    send_cap_info_component.Forwarding.Value = htonl(r->return_method);
+    send_cap_info_component.PacketReturn.Value = htonl(r->return_method);
     HIA[5].iov_base = (char*)&send_cap_info_component;
     HIA[5].iov_len  = sizeof(send_cap_info_component);
     send_message_header.Length += HIA[5].iov_len;
@@ -965,9 +1021,10 @@ web_cache_identity_element_t *scache, *dcache;
     my_xlog(OOPS_LOG_DBG, "wccp2.c:send_Here_I_Am(): writev(): %d\n", rc);
     if ( rc == -1 ) perror("sendmsg");
 #endif
+    return(0);
 }
 
-int
+static int
 Send_Redirect_Assignment(wccp2_service_group_t *g, wccp2_router_t *r)
 {
 struct  sockaddr_in     router_addr;
@@ -985,7 +1042,7 @@ u_char                  *bucket;
     so = wccp2_socket;
     str_to_sa(r->name, (struct sockaddr*)&router_addr);
     router_addr.sin_port = htons(WCCP2_PORT);
-    memset(&msg, 0, sizeof(msg));
+    bzero(&msg, sizeof(msg));
     msg.msg_name    = (void*)&router_addr;
     msg.msg_namelen = sizeof(router_addr);
     msg.msg_iov = &RA[0];
@@ -1012,20 +1069,34 @@ u_char                  *bucket;
     }
 
     /* service Info Component                               */
-    memset(&send_service_info_component, 0, sizeof(send_service_info_component));
+    bzero(&send_service_info_component, sizeof(send_service_info_component));
     send_service_info_component.Type = htons(WCCP2_SERVICE_INFO);
     send_service_info_component.Length = htons(sizeof(send_service_info_component)-4);
-    if ( g->port == 80 ) {
+    if ( g->group_id == 0 ) {
         send_service_info_component.Service_Type = WCCP2_SERVICE_STANDARD;
         send_service_info_component.Service_ID = 0;
         RA[2].iov_base = (char*)&send_service_info_component;
         RA[2].iov_len = sizeof(send_service_info_component);
         send_message_header.Length += RA[2].iov_len;
     } else {
-        abort();
+        send_service_info_component.Service_Type = WCCP2_SERVICE_DYNAMIC;
+        send_service_info_component.Service_ID = g->group_id;
+        send_service_info_component.Service_Flags |=  htons(PortsDefined);
+        send_service_info_component.Protocol = 6; /* TCP */
+        send_service_info_component.Port[0] = htons(g->port[0]);
+        send_service_info_component.Port[1] = htons(g->port[1]);
+        send_service_info_component.Port[2] = htons(g->port[2]);
+        send_service_info_component.Port[3] = htons(g->port[3]);
+        send_service_info_component.Port[4] = htons(g->port[4]);
+        send_service_info_component.Port[5] = htons(g->port[5]);
+        send_service_info_component.Port[6] = htons(g->port[6]);
+        send_service_info_component.Port[7] = htons(g->port[7]);
+        RA[2].iov_base = (char*)&send_service_info_component;
+        RA[2].iov_len = sizeof(send_service_info_component);
+        send_message_header.Length += RA[2].iov_len;
     }
 
-    memset(&send_assignment_component, 0, sizeof(send_assignment_component));
+    bzero(&send_assignment_component, sizeof(send_assignment_component));
     send_assignment_component.Type = htons(WCCP2_REDIRECT_ASSIGNMENT);
     send_assignment_component.Length = htons( 8 + 4 +
                 sizeof(router_assignment_element_t)*g->view.routers.n_routers + 4 +
@@ -1090,21 +1161,24 @@ u_char                  *bucket;
     return(0);
 }
 
-wccp2_service_group_t*
+static wccp2_service_group_t*
 group_by_info(wccp2_service_info_component_t *info)
 {
 wccp2_service_group_t  *res = NULL, *g = service_groups;
 
     while ( g ) {
-        if ( (info->Service_Type == WCCP2_SERVICE_STANDARD) && (g->port == 80))
+        if ( (info->Service_Type == WCCP2_SERVICE_STANDARD) 
+                && (g->group_id == 0))
             return(g);
-        
+        if ( (info->Service_Type == WCCP2_SERVICE_DYNAMIC)
+                && (g->group_id == info->Service_ID) )
+            return(g);
         g = g->next;
     }
     return(res);
 }
 
-wccp2_router_t*
+static wccp2_router_t*
 router_by_ip(wccp2_service_group_t* g, uint32_t addr)
 {
 int i;
@@ -1114,15 +1188,16 @@ int i;
         if ( addr == g->routers[i].address ) {
             return(&g->routers[i]);
         }
-        for(i=0;i<g->view.routers.n_routers;i++) {
-            if ( addr == g->view.routers.r_views[i].his_IP ) {
-                return(&g->routers[i]);
-            }
+    }
+    for(i=0;i<g->view.routers.n_routers;i++) {
+        if ( addr == g->view.routers.r_views[i].his_IP ) {
+            return(&g->routers[i]);
         }
     }
     return(NULL);
 }
-router_view_t*
+
+static router_view_t*
 router_view_by_ip(wccp2_service_group_t* g, uint32_t addr)
 {
 int i;
@@ -1138,7 +1213,7 @@ int i;
 }
 
 
-int
+static int
 known_router(uint32_t ID, wccp2_service_group_t *g)
 {
 int     i;
@@ -1158,7 +1233,7 @@ int     i;
     return(FALSE);
 }
 
-int
+static int
 cache_in_view(web_cache_identity_element_t *c, wccp2_service_group_t *g)
 {
 int i;
@@ -1174,7 +1249,7 @@ int i;
     return(FALSE);
 }
 
-int
+static int
 insert_router_in_config(uint32_t ID, wccp2_service_group_t *g)
 {
 int                     i;
@@ -1195,7 +1270,7 @@ struct  sockaddr_in     sa;
     return(TRUE);
 }
 
-int
+static int
 insert_cache_in_view(web_cache_identity_element_t *c, wccp2_service_group_t *g)
 {
 int i;
@@ -1216,7 +1291,7 @@ int i;
 }
 
 /* must be called for locked view */
-void
+static void
 check_view(wccp2_service_group_t *g)
 {
 int             i, j, k, changed = 0;
@@ -1276,4 +1351,18 @@ uint32_t        Cache_ID;
         }
     }
     if ( changed ) g->view.ChangeNumber++;
+}
+
+void
+free_service_groups()
+{
+wccp2_service_group_t     *g, *n;
+
+    g = service_groups;
+    while(g) {
+        n = g->next;
+        free(g);
+        g = n;
+    }
+    service_groups=NULL;
 }

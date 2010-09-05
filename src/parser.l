@@ -1,5 +1,5 @@
-%a 10000
-%o 16000
+%a 10500
+%o 17000
 %p 10000
 %n 1000
 %e 3000
@@ -179,6 +179,9 @@ line		[^\n]+
 <INITIAL>[Dd][Ee][Ff][Aa][Uu][Ll][Tt][_-][Ee][Xx][Pp][Ii][Rr][Ee][_-][Vv][Aa][Ll][Uu][Ee] {
 		return(EXPIRE_VALUE);
 		}
+<INITIAL>[Ee][Xx][Pp][Ii][Rr][Ee][Tt][Ii][Mm][Ee] {
+		return(EXPIRE_TIME_T);
+		}
 <INITIAL>[Dd][Bb]_[Cc][Aa][Cc][Hh][Ee][_][Mm][Ee][Mm]   {
 		return(DB_CACHE_MEM);
 		}
@@ -276,6 +279,12 @@ line		[^\n]+
 		}
 <INITIAL>{hi_mark}	{
 		return(HI_MARK);
+		}
+<INITIAL>[Ss][Ww][Aa][Pp]_[Aa][Dd][Vv][Aa][Nn][Cc][Ee] {
+		return(SWAP_ADVANCE_T);
+		}
+<INITIAL>[Ff][Ee][Tt][Cc][Hh][_-][Ww][Ii][Tt][Hh][_-][Cc][Ll][Ii][Ee][Nn][Tt][-_][Ss][Pp][Ee][Ee][Dd] {
+		return(FETCH_WITH_CLIENT_SPEED_T);
 		}
 <INITIAL>[Ii][Nn][Ss][Ee][Rr][Tt]_[Xx]_[Ff][Oo][Rr][Ww][Aa][Rr][Dd][Ee][Dd]_[Ff][Oo][Rr] {
 		return(INSERT_X_FORWARDED_FOR_T);

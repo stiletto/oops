@@ -17,12 +17,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
-#define		NO_NEED_XMALLOC 1
+#define		NO_NEED_XMALLOC		1
+#define		_LIB_H_INCLUDED_	1
+
 #include	"../oops.h"
 
-char		path[MAXPATHLEN];
-char		cpath[MAXPATHLEN];
-char		*command[20];
+static	char	path[MAXPATHLEN];
+static	char	cpath[MAXPATHLEN];
+static	char	*command[20];
 
 int
 main(int argc, char **argv)
@@ -36,7 +38,7 @@ char 			cmdarg[1024];
     for (i=0; i< 20; i++) { *(i+command) = NULL;}
     *command = strdup("help");
     *(2 + command) = strdup("-c");
-    sprintf(cmdarg,"%s", OOPS_CFG);
+    snprintf(cmdarg, sizeof(cmdarg)-1, "%s", OOPS_CFG);
     *(3 + command) = strdup(cmdarg);
     i = 4;
     path[0] = 0;
@@ -89,9 +91,11 @@ char 			cmdarg[1024];
 	printf("htmlstat	- get stat in html format\n");
 	printf("chkconfig	- check config file\n");
 	printf("reconfigure	- re-read config file\n");
+	printf("graceful	- re-read config file without storage checking\n");
 	printf("shutdown(stop)	- shutdown oops\n");
 	printf("rotate		- rotate logs\n");
 	printf("verbosity=LVL	- set verbosity (like -x LVL)\n");
+	printf("requests	- print current requests in service\n");
 	printf("start		- start oops (same as %s/oops -c %s)\n", OOPS_SBINDIR,OOPS_CFG);
 	exit(0);
     } else
@@ -99,7 +103,7 @@ char 			cmdarg[1024];
 	pid_t	child;
 	char	cmdpath[1024];
 
-	sprintf(cmdpath,"%s/oops", OOPS_SBINDIR);
+	snprintf(cmdpath, sizeof(cmdpath)-1, "%s/oops", OOPS_SBINDIR);
 	*(1+command) = cmdpath;
         chdir(OOPS_HOME);
 	child = fork();
@@ -107,6 +111,7 @@ char 			cmdarg[1024];
 	case(-1):
 		printf("oopsctl: Can't start child: %s\n", strerror(ERRNO));
 		exit(1);
+		break;
 	case(0):
 		i = 4;
 		if (*(command + 4)) {
@@ -122,8 +127,8 @@ char 			cmdarg[1024];
     }
     if ( !strcasecmp(*command, "chkconfig") ) {
 	char	cmdpath[1024], cmdarg[1024];
-	sprintf(cmdpath,"%s/oops", OOPS_SBINDIR);
-	sprintf(cmdarg, "-C%s", OOPS_CFG);
+	snprintf(cmdpath, sizeof(cmdpath)-1, "%s/oops", OOPS_SBINDIR);
+	snprintf(cmdarg, sizeof(cmdarg)-1, "-C%s", OOPS_CFG);
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
 	execv(cmdpath, command+1);
@@ -135,8 +140,8 @@ char 			cmdarg[1024];
 	int	stat;
 
 	/* first check if config is OK */
-	sprintf(cmdpath,"%s/oops", OOPS_SBINDIR);
-	sprintf(cmdarg, "-C%s", OOPS_CFG);
+	snprintf(cmdpath, sizeof(cmdpath)-1, "%s/oops", OOPS_SBINDIR);
+	snprintf(cmdarg, sizeof(cmdarg)-1, "-C%s", OOPS_CFG);
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
 	child = fork();
@@ -144,6 +149,7 @@ char 			cmdarg[1024];
 	case -1:
 		printf("oopsctl: Can't start child: %s\n", strerror(ERRNO));
 		exit(1);
+		break;
 	case 0:
 		execv(cmdpath, command+1);
 		printf("oopsctl: Can't execute: %s\n", strerror(ERRNO));
@@ -161,32 +167,38 @@ char 			cmdarg[1024];
     if ( !strcasecmp(*command,"stat") || 
 	 !strcasecmp(*command,"htmlstat") ||
 	 !strcasecmp(*command,"reconfigure") ||
+	 !strcasecmp(*command,"graceful") ||
+	 !strcasecmp(*command,"flush") ||
 	 !strcasecmp(*command,"rotate") ||
 	 !strcasecmp(*command,"stop") ||
 	 !strncasecmp(*command,"verbosity=", 10) ||
 	 !strncasecmp(*command,"requests", 8) ||
 	 !strcasecmp(*command,"shutdown")
         ) {
+
 srv_conn:
-     /* connecting to server */
-     oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
-     if ( oopsctl_so == -1 ) {
-	printf("oopsctl: socket(): %s\n", strerror(ERRNO));
-	exit(1);
-     }
-     bzero(&sun_addr, sizeof(sun_addr));
-     sun_addr.sun_family = AF_UNIX;
-     strncpy(sun_addr.sun_path, path, sizeof(sun_addr.sun_path)-1);
-     if ( connect(oopsctl_so, (struct sockaddr*)&sun_addr, sizeof(sun_addr)) ) {
- 	printf("oopsctl: connect(): %s\n", strerror(ERRNO));
-	exit(1);
-     }
-     write(oopsctl_so, *command, strlen(*command));
-     write(oopsctl_so, "\n", 1);
-     fflush(stdout);
-     while ( (alen = read(oopsctl_so, answer, sizeof(answer))) > 0 ) {
- 	write(1, answer, alen);
-     }
-    } else printf("oopsctl: Unknown command %s\n", *command);
-    exit(0);
+	/* connecting to server */
+	oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
+	if ( oopsctl_so == -1 ) {
+	    printf("oopsctl: socket(): %s\n", strerror(ERRNO));
+	    exit(1);
+        }
+        bzero(&sun_addr, sizeof(sun_addr));
+        sun_addr.sun_family = AF_UNIX;
+        strncpy(sun_addr.sun_path, path, sizeof(sun_addr.sun_path)-1);
+        if ( connect(oopsctl_so, (struct sockaddr*)&sun_addr, sizeof(sun_addr)) ) {
+	    printf("oopsctl: connect(): %s\n", strerror(ERRNO));
+	    exit(1);
+        }
+        write(oopsctl_so, *command, strlen(*command));
+        write(oopsctl_so, "\n", 1);
+        fflush(stdout);
+        while ( (alen = read(oopsctl_so, answer, sizeof(answer))) > 0 ) {
+	    write(1, answer, alen);
+        }
+
+    } else
+	printf("oopsctl: Unknown command %s\n", *command);
+
+    return(0);
 }

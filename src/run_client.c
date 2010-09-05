@@ -29,30 +29,31 @@ extern struct	err_module	*err_first;
 #define		REQUEST_EMPTY	0
 #define		REQUEST_READY	1
 
-void		free_url(struct url *url);
-void		free_request(struct request *rq);
-void		leave_obj(struct mem_obj *);
-u_short		hash(struct url *url);
-void		send_not_cached(int so, struct request *rq, char *hdrs);
-int		parse_http_request(char *start, struct request *rq, int so);
-int		check_headers(struct request *rq, char *beg, char *end, int *checked, int so);
-int		parse_url(char*, char*, struct url *, int);
-void		release_obj(struct mem_obj*);
-void		send_from_mem(int, struct request *, char* , struct mem_obj*, int);
-void		increment_clients(void);
-void		decrement_clients(void);
-void		make_purge(int, struct request *);
-int		parse_connect_url(char* src, char *httpv, struct url *url, int so);
-void		insert_request_in_hash(struct request *);
-void		remove_request_from_hash(struct request *);
-void		insert_request_in_ip_hash(struct request *);
-void		remove_request_from_ip_hash(struct request *);
+static	struct	mem_obj*	create_temp_obj(void);
+static	void	destroy_temp_obj(struct mem_obj *obj);
+static	u_short	hash(struct url *url);
+static	void	decrement_clients(void);
+static	void	increment_clients(void);
+static	int	in_stop_cache(struct request *);
+static	void	make_purge(int, struct request *);
+static	int	parse_connect_url(char* src, char *httpv, struct url *url, int so);
+static	int	parse_http_request(char *start, struct request *rq, int so);
+static	void	release_obj(struct mem_obj *);
+
+inline	static	int	add_request_av(char* avtext, struct request *request);
+inline	static	int	check_headers(struct request *rq, char *beg, char *end, int *checked, int so);
+inline	static	void	free_request(struct request *rq);
+inline	static	void	insert_request_in_hash(struct request *);
+inline	static	void	remove_request_from_hash(struct request *);
+inline	static	void	insert_request_in_ip_hash(struct request *);
+inline	static	void	remove_request_from_ip_hash(struct request *);
+
 
 #if	defined(DEMO)
 static	int	served = 0;
 #endif
 
-void*
+void *
 run_client(void *arg)
 {
 u_char			*buf = NULL;
@@ -77,8 +78,6 @@ struct	work		*work;
     if ( !work ) return(NULL);
     so = work->so;
     accepted_so = work->accepted_so;
-    xfree(work);	/* we don't need it anymore	*/
-
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
 	my_xlog(OOPS_LOG_SEVERE, "run_client(): fcntl(): %m\n");
 
@@ -89,8 +88,11 @@ struct	work		*work;
     bzero(&request, sizeof(request));
     request.accepted_so = accepted_so;
     request.so = so;
-    if ( getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen) == -1 )
-	my_xlog(OOPS_LOG_SEVERE, "run_client(): getpeername(%d): %m\n", so);
+    if ( work ) memcpy(&request.client_sa, &work->sa, sizeof(request.client_sa));
+    IF_FREE(work);	/* we don't need it anymore	*/
+    work = NULL;
+
+
     getsockname(so, (struct sockaddr*)&request.my_sa, &mysalen);
     request.request_time = started = time(NULL);
     insert_request_in_hash(&request);
@@ -154,15 +156,14 @@ struct	work		*work;
 	goto done;
     }
     headers = (char*)buf + request.headers_off;
-    if ( getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen) == -1 )
-	my_xlog(OOPS_LOG_SEVERE, "run_client(): getpeername(%d): %m\n", so);
     RDLOCK_CONFIG ;
 ck_group:
     group = rq_to_group(&request);
     if ( ! group ) {
 	UNLOCK_CONFIG;
-	say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
+	say_bad_request(so, "Please contact cachemaster\n", "No group found. Proxy access denied.\n",
 	    ERR_ACC_DENIED, &request);
+	my_xlog(OOPS_LOG_SEVERE, "run_client(): No group found. Access banned.\n");
 	goto done;
     }
     miss_denied = group->miss_deny;
@@ -215,8 +216,22 @@ ck_group:
 	/* check for redirects */
 	if ( check_redirect(so, &request, group, &mod_flags) ) {
 	    UNLOCK_CONFIG;
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "run_client(): check_redirect denied.\n");
+	    IF_STRDUP(request.tag, "TCP_DENIED");
+	    IF_STRDUP(request.source, "REDIR_MOD");
+	    request.code = 555;
+	    log_access(0, &request, NULL);
 	    goto done;
 	}
+        if ( TEST(mod_flags, MOD_AFLAG_OUT) ) {
+	    UNLOCK_CONFIG;
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "run_client(): check_redirect finished req.\n");
+	    IF_STRDUP(request.tag, "TCP_REDIR");
+	    IF_STRDUP(request.source, "REDIR_MOD");
+	    request.code = 555;
+	    log_access(0, &request, NULL);
+	    goto done;
+        }
 	redir_mods_visited = TRUE;
 	if ( TEST(mod_flags, MOD_AFLAG_CKACC) )
 	    goto ck_group;	/* we must get group again, as it my-be 
@@ -263,6 +278,7 @@ ck_group:
 	request.flags |= RQ_HAVE_PER_IP_BW;
 	request.per_ip_bw = group->per_ip_bw;
     }
+    memcpy(&request.conn_from_sa, &connect_from_sa, sizeof(request.conn_from_sa));
     if ( group && group->conn_from_sa.sin_addr.s_addr ) {
 	memcpy(&request.conn_from_sa, &group->conn_from_sa, sizeof(request.conn_from_sa));
     }
@@ -499,8 +515,8 @@ done:
 /* create absolutely empty object	*/
 /* which is not included in any lists	*/
 
-struct mem_obj*
-create_temp_obj()
+static struct mem_obj*
+create_temp_obj(void)
 {
 struct mem_obj	*obj = NULL;
 
@@ -514,7 +530,7 @@ struct mem_obj	*obj = NULL;
     return(obj);
 }
 
-void
+static void
 destroy_temp_obj(struct mem_obj *obj)
 {
     free_url(&obj->url);
@@ -531,7 +547,7 @@ unlink_obj(struct mem_obj *obj)
 {
     if ( obj->prev ) obj->prev->next=obj->next;
     if ( obj->next ) obj->next->prev=obj->prev;
-    if ( obj->older )
+/*    if ( obj->older )
 	obj->older->younger = obj->younger;
     if ( obj->younger )
 	obj->younger->older = obj->older;
@@ -541,9 +557,12 @@ unlink_obj(struct mem_obj *obj)
     if ( oldest_obj == obj ) {
 	oldest_obj = obj->younger;
     }
+*/
     decrease_hash_size(obj->hash_back, obj->resident_size);
     obj->hash_back = NULL;
-    obj->prev = obj->next = obj->older = obj->younger = NULL;
+    obj->prev = obj->next
+/*  =  obj->older = obj->younger */
+    = NULL;
 }
 
 void
@@ -551,16 +570,17 @@ destroy_obj(struct mem_obj *obj)
 {
     if ( obj->prev ) obj->prev->next=obj->next;
     if ( obj->next ) obj->next->prev=obj->prev;
-    if ( obj->older )
+/*    if ( obj->older )
 	obj->older->younger = obj->younger;
     if ( obj->younger )
 	obj->younger->older = obj->older;
     if ( youngest_obj == obj ) {
 	youngest_obj = obj->older;
-    }
+   }
     if ( oldest_obj == obj ) {
 	oldest_obj = obj->younger;
     }
+*/
     free_url(&obj->url);
     free_container(obj->container);
     free_avlist(obj->headers);
@@ -584,15 +604,16 @@ int		found=0, mod_flags = 0;
 
     if ( new_object ) *new_object = FALSE;
     MY_TNF_PROBE_0(obj_chain_lock_start, "contention", "obj_chain_lock begin")
-    if ( pthread_mutex_lock(&obj_chain) ) {
+/*    if ( pthread_mutex_lock(&obj_chain) ) {
 	fprintf(stderr, "locate_in_mem(): Failed mutex lock.\n");
 	return(NULL);
     }
+*/
     MY_TNF_PROBE_0(obj_chain_lock_stop, "contention", "obj_chain_lock end")
     /* lock hash entry */
     if ( pthread_mutex_lock(&hash_table[url_hash].lock) ) {
 	fprintf(stderr, "locate_in_mem(): Failed mutex lock\n");
-	pthread_mutex_unlock(&obj_chain);
+/*	pthread_mutex_unlock(&obj_chain);*/
 	return(NULL);
     }
 	obj=hash_table[url_hash].next;
@@ -610,7 +631,7 @@ int		found=0, mod_flags = 0;
 		    if (  flags & AND_USE ) {
 			if ( pthread_mutex_lock(&obj->lock) ) {
 			    pthread_mutex_unlock(&hash_table[url_hash].lock);
-			    pthread_mutex_unlock(&obj_chain);
+/*			    pthread_mutex_unlock(&obj_chain);*/
 			    return(NULL);
 			}
 			obj->refs++;
@@ -620,16 +641,16 @@ int		found=0, mod_flags = 0;
 		    obj->accessed += 1;
 		    obj->rate = obj_rate(obj);
 		    pthread_mutex_unlock(&hash_table[url_hash].lock);
-		    pthread_mutex_unlock(&obj_chain);
+/*		    pthread_mutex_unlock(&obj_chain);*/
 		    return(obj);
 		}
 	    obj=obj->next;
 	}
 	if ( !found && ( flags & AND_PUT ) ) {
 		/* need to insert */
-		obj=xmalloc(sizeof(struct mem_obj), "locate_in_mem(): for object");
+		obj = xmalloc(sizeof(struct mem_obj), "locate_in_mem(): for object");
 		if ( obj ) {
-		    memset(obj, 0, sizeof(struct mem_obj));
+		    bzero(obj, sizeof(struct mem_obj));
 		    obj->created = global_sec_timer;
 		    obj->last_access = global_sec_timer;
 		    obj->accessed = 1;
@@ -685,7 +706,7 @@ int		found=0, mod_flags = 0;
 		    if (obj->next) obj->next->prev = obj;
 		    hash_table[url_hash].next=obj;
 		    obj->hash_back = &hash_table[url_hash];
-		    if ( youngest_obj) {
+/*		    if ( youngest_obj) {
 			obj->older = youngest_obj;
 			youngest_obj->younger = obj;
 		    }
@@ -693,6 +714,7 @@ int		found=0, mod_flags = 0;
 		    if ( !oldest_obj ) {
 		       oldest_obj = obj;
 		    }
+*/
 		    if ( found && ( flags & AND_USE ) ) {
 			pthread_mutex_lock(&obj->lock);
 			obj->refs++;
@@ -700,14 +722,16 @@ int		found=0, mod_flags = 0;
 		    }
 		    ++total_objects;
 		    pthread_mutex_unlock(&hash_table[url_hash].lock);
-		    pthread_mutex_unlock(&obj_chain);
+/*		    pthread_mutex_unlock(&obj_chain);*/
 		    /* now try to load obj from disk */
 		    if ( !(flags & NO_DISK_LOOKUP) ) {
 			int			rc, resident_size;
 			struct	disk_ref	*disk_ref;
 			struct	storage_st	*storage;
 			RDLOCK_CONFIG;
+#if     !defined(USE_INTERNAL_DB_LOCKS)
 			RDLOCK_DB;
+#endif
                         MY_TNF_PROBE_0(locate_url_on_disk_start, "contention", "obj_chain_lock begin");
 			rc = locate_url_on_disk(url, &disk_ref);
                         MY_TNF_PROBE_0(locate_url_on_disk_stop, "contention", "obj_chain_lock begin");
@@ -744,7 +768,9 @@ int		found=0, mod_flags = 0;
 
 				    if ( new_object ) *new_object = TRUE ;
 				    SET(obj->flags, FLAG_DEAD);
+#if     !defined(USE_INTERNAL_DB_LOCKS)
 				    UNLOCK_DB;
+#endif
 				    UNLOCK_CONFIG ;
 				    leave_obj(obj);
 				    n_obj = locate_in_mem(&rq->url,
@@ -758,7 +784,10 @@ int		found=0, mod_flags = 0;
 			} else {
 			    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_FTP|OOPS_LOG_DBG, "locate_in_mem(): Not found.\n");
 			}
-		nf:	UNLOCK_DB;
+		nf:
+#if     !defined(USE_INTERNAL_DB_LOCKS)
+			UNLOCK_DB;
+#endif
 			UNLOCK_CONFIG;
 		    }
 		    return(obj);
@@ -766,12 +795,13 @@ int		found=0, mod_flags = 0;
 	}
 done:
     pthread_mutex_unlock(&hash_table[url_hash].lock);
-    pthread_mutex_unlock(&obj_chain);
+/*    pthread_mutex_unlock(&obj_chain);*/
     return(obj);
 }
 
 
-int
+inline
+static int
 add_request_av(char* avtext, struct request *request)
 {
 struct	av	*new=NULL, *next;
@@ -820,7 +850,8 @@ failed:
    and checked accordingly.
    checked poins to the character next to the last recognized header
  */
-int
+inline
+static int
 check_headers(struct request *request, char *beg, char *end, int *checked, int so)
 {
 char	*start;
@@ -1007,7 +1038,7 @@ go:
     return(0);
 }
 
-int
+static int
 parse_http_request(char* src, struct request *rq, int so)
 {
 char	*p, *httpv;
@@ -1072,7 +1103,7 @@ int	http_major, http_minor;
     return(0);
 }
 
-int
+static int
 parse_connect_url(char* src, char *httpv, struct url *url, int so)
 {
 char	*ss, *host=NULL;
@@ -1436,7 +1467,7 @@ only_path:
     return(0);
 }
 
-u_short
+static u_short
 hash(struct url *url)
 {
 u_short		res = 0;
@@ -1458,7 +1489,7 @@ char		*p;
     return(res & HASH_MASK);
 }
 
-void
+static void
 release_obj(struct mem_obj *obj)
 {
 /* just decrement refs */
@@ -1489,14 +1520,15 @@ char			*url_str = NULL;
 struct	url		*url;
 
     MY_TNF_PROBE_0(obj_chain_lock_start, "contention", "obj_chain_lock begin");
-    if ( pthread_mutex_lock(&obj_chain) ) {
+/*    if ( pthread_mutex_lock(&obj_chain) ) {
 	fprintf(stderr, "leave_obj(): Failed mutex lock in leave.\n");
  	return;
     }
+*/
     MY_TNF_PROBE_0(obj_chain_lock_stop, "contention", " obj_chain_lock end");
     if ( pthread_mutex_lock(&hash_table[url_hash].lock) ) {
 	fprintf(stderr, "leave_obj(): Failed mutex lock in leave.\n");
-	pthread_mutex_unlock(&obj_chain);
+/*	pthread_mutex_unlock(&obj_chain);*/
 	return;
     }
     release_obj(obj);
@@ -1525,16 +1557,16 @@ struct	url		*url;
 	    urll+= 3 + 1; /* :// + \0 */
 	    url_str = xmalloc(urll, "leave_obj(): url_str");
 	    if ( obj->doc_type == HTTP_DOC )
-		sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
+		snprintf(url_str, urll, "%s%s:%d", url->host, url->path, url->port);
 	      else
-		sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
+		snprintf(url_str, urll, "%s://%s%s:%d", url->proto, url->host, url->path, url->port);
 	    disk_ref = obj->disk_ref;
 	    obj->disk_ref = NULL;
 	}
 	destroy_obj(obj);
     }
     pthread_mutex_unlock(&hash_table[url_hash].lock);
-    pthread_mutex_unlock(&obj_chain);
+/*    pthread_mutex_unlock(&obj_chain);*/
     if ( child ) leave_obj(child);
     if ( must_be_erased && url_str && disk_ref) {
 	eraser_data_t	*ed;
@@ -1551,7 +1583,8 @@ struct	url		*url;
     }
 }
 
-void
+inline
+static void
 free_request( struct request *rq)
 {
 struct	av	*av, *next;
@@ -1631,7 +1664,7 @@ int			modflags = 0;
     }
 }
 
-int
+static int
 in_stop_cache(struct request *rq)
 {
 struct	string_list	*l = stop_cache;
@@ -1648,7 +1681,7 @@ struct	string_list	*l = stop_cache;
     return(0);
 }
 
-void
+static void
 increment_clients(void)
 {
     if ( !pthread_mutex_lock(&clients_lock) ) {
@@ -1662,7 +1695,7 @@ increment_clients(void)
     UNLOCK_STATISTICS(oops_stat);
 }
 
-void
+static void
 decrement_clients(void)
 {
     if ( !pthread_mutex_lock(&clients_lock) ) {
@@ -1688,7 +1721,7 @@ int	on = -1;
     return(0);
 }
 
-void
+static void
 make_purge(int so, struct request *rq)
 {
 struct	mem_obj		*obj;
@@ -1745,7 +1778,8 @@ obj_rate(struct mem_obj *obj)
     return(0);
 }
 
-void
+inline
+static void
 insert_request_in_hash(struct request *rq)
 {
 int	index;
@@ -1759,7 +1793,8 @@ int	index;
     pthread_mutex_unlock(&(rq_hash[index].lock));
 }
 
-void
+inline
+static void
 remove_request_from_hash(struct request *rq)
 {
 int	index;
@@ -1774,7 +1809,8 @@ int	index;
     pthread_mutex_unlock(&(rq_hash[index].lock));
 }
 
-void
+inline
+static void
 insert_request_in_ip_hash(struct request *rq)
 {
 int		index;
@@ -1814,7 +1850,8 @@ ip_hash_entry_t	*he = NULL;
     pthread_mutex_unlock(&ip_hash[index].lock);
 }
 
-void
+inline
+static void
 remove_request_from_ip_hash(struct request *rq)
 {
 int		index;

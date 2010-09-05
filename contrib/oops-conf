@@ -9,17 +9,17 @@
 case $1 in
 
 acc)
-    # AIX cc (3.6.5, 4.4)
-    CC="cc_r -O3 -qstrict -qmaxmem=65535"
-    CXX="xlC_r -O3 -qstrict -qmaxmem=65535"
-    CPPFLAGS="-I/usr/include -I/usr/local/include"
-    CFLAGS="-I/usr/include -I/usr/local/include"
-    LDFLAGS="-L/usr/local/lib"
+    # AIX cc (3.6.5, 4.4, 5.0)
+    CC="xlc_r  -O2"
+    CXX="xlC_r -O2"
+    CPPFLAGS="-I/usr/include"
+    CFLAGS="-I/usr/include"
+    LDFLAGS=""
     ;;
 
 scc)
-    # Solaris cc (Workshop 5.0)
-    CC="cc -fast -xO3 -Qn"
+    # Solaris cc (SUN Workshop 5.0, Forte C 6U1)
+    CC="cc -fast -xO3"
     CPPFLAGS="-I/usr/include -I/usr/local/include"
     CFLAGS="-I/usr/include -I/usr/local/include"
     LDFLAGS="-L/usr/local/lib"
@@ -34,8 +34,8 @@ gcc)
 *)
     echo "Usage: oops-conf [option]"
     echo "       option:"
-    echo "          acc   - IBM C for AIX 3.6.5, 4.4"
-    echo "          scc   - SUN Workshop 5.0"
+    echo "          acc   - IBM C for AIX 3.6.5, 4.4, 5.0"
+    echo "          scc   - SUN Workshop 5.0, Forte C 6U1"
     echo "          gcc   - GNU C"
     exit 0
     ;;
@@ -50,4 +50,6 @@ CFLAGS="$CFLAGS" \
 LDFLAGS="$LDFLAGS" \
 ./configure \
     --prefix=/opt/local \
-    --enable-large-files
+    --enable-large-files \
+    --enable-oops-user=oops \
+    --with-LDAP=/usr/ldap

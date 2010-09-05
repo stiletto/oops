@@ -24,30 +24,34 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	"version.h"
 
-char	*configfile = "oops.cfg";
-int	readconfig(char*);
-int	cidr_net_cmp(const void *, const void *);
+extern	int	readconfig(char*);
+
 int	operation;
 char	hostname[64];
 struct	sockaddr_in	Me;
 int	run_daemon = 0;
 int	pid_d = -1;
 struct	obj_hash_entry	hash_table[HASH_SIZE];
-int	checked=0;
-void	print_acls(void), free_acl(struct acls *);
-void	print_dom_list(struct domain_list *);
-void	free_peers(struct peer *);
-void	free_dstd_ce(void*);
-void	free_bind_acl_list(bind_acl_t*);
-int	close_listen_so_list(void);
-extern	int	str_to_sa(char*, struct sockaddr *);
-extern	int	init_filebuff(filebuff_t*);
+int	checked = 0;
+
+static	char	*configfile = "oops.cfg";
+
+static	int	cidr_net_cmp(const void *, const void *);
+static	int	close_listen_so_list(void);
+static	void	free_acl(struct acls *);
+static	void	free_bind_acl_list(bind_acl_t*);
+static	void	free_dstd_ce(void*);
+static	void	free_peers(struct peer *);
+static	void	print_acls(void);
+static	void	print_dom_list(struct domain_list *);
+static	void	remove_limits(void);
+static	void	report_limits(void);
+static	int	usage(void);
+
+
 #if	defined(_WIN32)
 BOOL	WINAPI	KillHandler(DWORD dwCtrlType);
 #endif
-
-pthread_attr_t		p_attr;
-pthread_t		stat_thread = (pthread_t)NULL;
 
 time_t			start_time;
 struct			mem_obj	*youngest_obj, *oldest_obj;
@@ -57,7 +61,8 @@ char    		logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
 char    		accesslog[MAXPATHLEN];
 char    		statisticslog[MAXPATHLEN];
 char			dbhome[MAXPATHLEN];
-int			db_in_use;
+char			disk_state_string[MAXPATHLEN];
+int			db_in_use, broken_db;
 char			dbname[MAXPATHLEN];
 int			reserved_fd[RESERVED_FD];
 int			accesslog_num, accesslog_size;
@@ -118,6 +123,7 @@ pthread_mutex_t		icp_resolver_lock;
 pthread_mutex_t		dns_cache_lock;
 pthread_mutex_t		st_check_in_progr_lock;
 pthread_mutex_t		mktime_lock;
+pthread_mutex_t		flush_mem_cache_lock;
 
 int			use_workers;
 int			current_workers;
@@ -134,7 +140,7 @@ struct	group		*groups;
 struct	cidr_net	**sorted_networks_ptr;
 struct	listen_so_list	*listen_so_list;
 int			sorted_networks_cnt;
-int		mem_max_val, lo_mark_val, hi_mark_val;
+int		mem_max_val, lo_mark_val, hi_mark_val, swap_advance;
 u_short		internal_http_port;
 struct	obj_hash_entry	hash_table[HASH_SIZE];
 struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
@@ -149,6 +155,7 @@ int             insert_via;
 int             insert_x_forwarded_for;
 int		dont_cache_without_last_modified;
 int		storages_ready;
+int             fetch_with_client_speed;
 
 named_acl_t	*named_acls;
 struct charset	*charsets;
@@ -162,6 +169,8 @@ unsigned int	start_red;
 unsigned int	refuse_at;
 filebuff_t	logbuff;
 filebuff_t	accesslogbuff;
+
+struct denytime	*expiretime;
 
 struct	rq_hash_entry	rq_hash[RQ_HASH_SIZE];
 struct	ip_hash_head	ip_hash[IP_HASH_SIZE];
@@ -214,6 +223,7 @@ struct	cidr_net *next_net;
 	nets = next_net;
     }
 }
+
 void
 free_dom_list(struct domain_list *list)
 {
@@ -242,18 +252,6 @@ struct	string_list	*curr, *next;
 	curr = next;
     }
     stop_cache = NULL;
-}
-
-void
-free_storages(struct storage_st *current)
-{
-struct storage_st *next=NULL;
-
-    while (current) {
-	next = current->next;
-	free_storage( current ) ;
-	current=next;
-    }
 }
 
 void
@@ -304,7 +302,7 @@ struct	cidr_net	*nets, *next_net;
     }
 }
 
-void
+static void
 sort_networks(void)
 {
 struct	group		*g = groups;
@@ -360,12 +358,12 @@ int k=0;
     }
 }
 
-int
+static int
 usage(void)
 {
     printf("usage:  oops [-{C|c} config_filename] [-v] [-V] [-w num] [-W num]\n");
     printf("             [-x acdfhinsACDFHINS] [-{Z|z}]\n");
-    printf("-C|c filename - path to config file.\n");
+    printf("-C|c filename - path to config file (-C - config test).\n");
     printf("-d            detaches from the terminal, so runs as daemon.\n");
     printf("-v            - verbose startup.\n");
     printf("-V            - show version info.\n");
@@ -418,6 +416,7 @@ int	format_storages = 0;
 		printf("CFLAGS=%s\n\n", OOPS_CFLAGS);
 		printf("LIBS=%s\n\n", OOPS_LIBS);
 		exit(0);
+		break;
 	case('x'):
 		vlvls = optarg;
 		while ( *vlvls ) {
@@ -427,6 +426,12 @@ int	format_storages = 0;
 				break;
 			case 'A':
 				verbosity_level = OOPS_LOG_SEVERE | OOPS_LOG_PRINT;
+				break;
+			case 'b':
+				verbosity_level |= OOPS_LOG_CACHE;
+				break;
+			case 'B':
+				verbosity_level &= ~ OOPS_LOG_CACHE;
 				break;
 
 			case 'c':
@@ -514,6 +519,7 @@ int	format_storages = 0;
 	case('?'):
 	    usage();
 	    exit(1);
+	    break;
 	default:
 	    printf("Invalid option '%c'\n", c);
 	    usage();
@@ -604,12 +610,12 @@ int	format_storages = 0;
     pthread_mutex_init(&dns_cache_lock, NULL);
     pthread_mutex_init(&st_check_in_progr_lock, NULL);
     pthread_mutex_init(&mktime_lock, NULL);
+    pthread_mutex_init(&flush_mem_cache_lock, NULL);
     pthread_rwlock_init(&config_lock, NULL);
     pthread_rwlock_init(&db_lock, NULL);
     icp_requests_hash = hash_init(128, HASH_KEY_INT);
     list_init(&blacklist);
     workq_init(&icp_workq, 64, icp_processor);
-    skip_check = 0;
     kill_request = 0;
     global_sec_timer = time(NULL);
     bzero(&oops_stat, sizeof(oops_stat));
@@ -629,6 +635,7 @@ int	format_storages = 0;
     init_filebuff(&logbuff);
     init_filebuff(&accesslogbuff);
     parent_auth = NULL;
+    expiretime = NULL;
 
     if ( !check_config_only )
 	load_modules();
@@ -659,6 +666,7 @@ run:
     bzero(lo_mark,	sizeof(lo_mark));
     bzero(hi_mark,	sizeof(hi_mark));
     bzero(parent_host,	sizeof(parent_host));
+    swap_advance = 1;
     parent_port		= 0;
     IF_FREE(parent_auth);
     http_port		= 3128;
@@ -693,6 +701,7 @@ run:
     insert_via		= TRUE;
     dont_cache_without_last_modified = FALSE;
     storages_ready = FALSE;
+    fetch_with_client_speed = TRUE;
     if ( stop_cache )
 	free_stop_cache();
 
@@ -765,6 +774,11 @@ run:
 	bind_acl_list = NULL;
     }
 
+    if ( expiretime != NULL ) {
+	free_denytimes(expiretime);
+	expiretime = NULL;
+    }
+
     /* release reserved fd's	*/
     for(i=0;i<RESERVED_FD;i++)
 	if ( reserved_fd[i] >= 0 )
@@ -807,7 +821,7 @@ run:
 	    do_exit(1);
 	}
 #endif	/* !_WIN32 */
-	sprintf(pid, "%-10d", (int)getpid());
+	snprintf(pid, sizeof(pid)-1, "%-10d", (int)getpid());
 	write(pid_d, pid, strlen(pid));
     }
 
@@ -825,6 +839,7 @@ run:
 
     next_alloc_storage = NULL;
     db_in_use = db_mod_open();
+    broken_db = FALSE;
     prepare_storages();
 
     if ( oops_user ) set_euser(NULL);	/* back to saved uid */
@@ -877,6 +892,7 @@ run:
     /* this is all we need to start server */
 
 
+    skip_check = 0;
     run();
     reconfig_request = 1;
     WRLOCK_CONFIG ;
@@ -893,13 +909,13 @@ run:
 
 }
 
-void
+static void
 free_dstd_ce(void *a)
 {
-    free(a);
+    xfree(a);
 }
 
-void
+static void
 free_acl(struct acls *acls) {
 struct	acl		*acl,  *next_acl;
 struct	domain_list	*dom_list;
@@ -916,7 +932,7 @@ struct	domain_list	*dom_list;
 			verb_printf("free_acl(): Unknown ACL type\n");
 			break;
 		}
-		free(acl);
+		xfree(acl);
 		acl = next_acl;
 	    }
 	    acl = acls->deny;
@@ -931,15 +947,15 @@ struct	domain_list	*dom_list;
 			verb_printf("Unknown ACL type\n");
 			break;
 		}
-		free(acl);
+		xfree(acl);
 		acl = next_acl;
 	    }
-	    free(acls);
+	    xfree(acls);
 	}
 }
 
-void
-print_acls()
+static void
+print_acls(void)
 {
 struct	group		*group = groups;
 struct	acls		*acls;
@@ -985,7 +1001,7 @@ struct	domain_list	*dom_list;
     }
 }
 
-void
+static void
 print_dom_list(struct domain_list *list)
 {
 struct	domain_list	*next;
@@ -997,7 +1013,7 @@ struct	domain_list	*next;
     }
 }
 
-int
+static int
 cidr_net_cmp(const void *a1, const void *a2)
 {
 struct cidr_net	*n1, *n2;
@@ -1007,31 +1023,7 @@ struct cidr_net	*n1, *n2;
     return(n2->masklen - n1->masklen);
 }
 
-void
-add_to_stop_cache(char *string)
-{
-struct	string_list	*new;
-
-    new = xmalloc(sizeof(*new), "add_to_stop_cache(): 1");
-    if ( new ) {
-	new->string = string;
-	new->next = stop_cache;
-	stop_cache = new;
-    }
-}
-
-void
-init_storages(struct storage_st *current)
-{
-struct storage_st * next = NULL;
-    while (current) {
-	next = current->next;
-	init_storage( current ) ;
-	current=next;
-    }
-}
-
-void
+static void
 free_peers(struct peer *peer)
 {
 struct	peer	*next;
@@ -1049,7 +1041,7 @@ struct	peer	*next;
     }
 }
 
-int
+static int
 close_listen_so_list(void)
 {
 struct listen_so_list *list = listen_so_list, *next, *new, *new_curr=NULL;
@@ -1143,7 +1135,7 @@ struct passwd	*pwd = NULL;
 #endif	/* !_WIN32 */
 }
 
-void
+static void
 free_bind_acl_list(bind_acl_t* list)
 {
 bind_acl_t	*next;
@@ -1155,4 +1147,84 @@ bind_acl_t	*next;
 	free(list);
 	list = next;
     }
+}
+
+static void
+remove_limits(void)
+{
+#if	!defined(_WIN32)
+struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
+
+#if	defined(RLIMIT_DATA)
+	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
+	    rl.rlim_cur = rl.rlim_max;
+	    if ( !setrlimit(RLIMIT_DATA, &rl) ) {
+		printf("RLIMIT_DATA changed to maximum: %u\n", (unsigned)rl.rlim_max);
+	    } else {
+		printf("warning: Can't change RLIMIT_DATA\n");
+	    }
+	}
+#endif
+#if	defined(RLIMIT_NOFILE)
+	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
+	    rl.rlim_cur = rl.rlim_max = OPEN_FILES_MAXIMUM;
+	    if ( !setrlimit(RLIMIT_NOFILE, &rl) ) {
+		printf("RLIMIT_NOFILE changed to maximum: %u\n", (unsigned)rl.rlim_max);
+	    } else {
+		printf("warning: Can't change RLIMIT_NOFILE\n");
+	    }
+	}
+#endif
+#if	defined(_RLIMIT_CORE)
+	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
+	    rl.rlim_cur = 0;
+	    if ( !setrlimit(RLIMIT_CORE, &rl) ) {
+		printf("RLIMIT_CORE changed to minimum: %u\n", (unsigned)rl.rlim_cur);
+	    } else {
+		printf("warning: Can't change RLIMIT_CORE\n");
+	    }
+	}
+#endif
+#if	defined(RLIMIT_NPROC) && defined(LINUX)
+	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
+	    rl.rlim_cur = RLIM_INFINITY;
+	    if ( !setrlimit(RLIMIT_NPROC, &rl) ) {
+		printf("RLIMIT_NPROC changed to maximum: %u\n", (unsigned)rl.rlim_cur);
+	    } else {
+		printf("warning: Can't change RLIMIT_NPROC\n");
+	    }
+	}
+#endif
+#endif	/* !_WIN32 */
+}
+
+static void
+report_limits(void)
+{
+#if	!defined(_WIN32)
+struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
+
+#if	defined(RLIMIT_DATA)
+	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
+	}
+#endif
+#if	defined(RLIMIT_NOFILE)
+	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
+	}
+#endif
+#if	defined(RLIMIT_CORE)
+	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
+	}
+#endif
+#if	defined(RLIMIT_NPROC) && defined(LINUX)
+	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
+	    if ( !getrlimit(RLIMIT_NPROC, &rl) ) /* ??? same condition ??? */    {
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
+	    }
+	}
+#endif
+#endif	/* !_WIN32 */
 }

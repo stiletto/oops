@@ -20,18 +20,28 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"oops.h"
 #include	"modules.h"
 
-struct	log_module		*log_first = NULL;
-struct	err_module		*err_first = NULL;
-struct	auth_module		*auth_first = NULL;
-struct	output_module		*output_first = NULL;
-struct	redir_module		*redir_first = NULL;
-struct	listener_module		*listener_first = NULL;
-struct	headers_module		*headers_first = NULL;
-struct	pre_body_module		*pre_body_first = NULL;
-struct	db_api_module		*db_api_first = NULL;
-struct	output_module		*lang_mod = NULL;
+#if     !defined(SOLARIS)
+#if	!defined(PEXT_SYM)
+#define		PEXT_SYM	""
+#endif
+#define		DLSYM(a, b)	dlsym(a, PEXT_SYM b)
+#else
+#define         DLSYM(a, b)     dlsym(a, b)
+#endif
 
-void	insert_module(struct general_module*, struct general_module**);
+struct	general_module		*global_mod_chain;
+struct	log_module		*log_first	= NULL;
+struct	err_module		*err_first	= NULL;
+struct	auth_module		*auth_first	= NULL;
+struct	output_module		*output_first	= NULL;
+struct	redir_module		*redir_first	= NULL;
+struct	listener_module		*listener_first	= NULL;
+struct	headers_module		*headers_first	= NULL;
+struct	pre_body_module		*pre_body_first	= NULL;
+struct	db_api_module		*db_api_first	= NULL;
+struct	output_module		*lang_mod	= NULL;
+
+static	void	insert_module(struct general_module*, struct general_module**);
 
 struct	general_module *
 module_by_name(char *name)
@@ -107,19 +117,6 @@ struct general_module	*res;
     return((struct auth_module*)res);
 }
 
-struct	redir_module *
-redir_module_by_name(char *name)
-{
-struct general_module	*res;
-    res = (struct general_module*)redir_first;
-    while( res ) {
-	if ( !strcasecmp(res->name, name) )
-	    return((struct redir_module*)res);
-	res = res->next;
-    }
-    return((struct redir_module*)res);
-}
-
 int
 check_auth(int so, struct request *rq, struct group *group, int *flag)
 {
@@ -160,7 +157,7 @@ int                     instance;
 	if ( module && module->redir ) {
 	    rc = module->redir(so, group, rq, flag, instance);
 	}
-	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
+	if ( flag && TEST(*flag, MOD_AFLAG_BRK) )
 	    return(MOD_CODE_ERR);
 	mod_list = mod_list->next;
     }
@@ -186,33 +183,6 @@ int                     instance;
         instance = mod_list->mod_instance;
 	if ( module && module->redir_connect ) {
 	    rc = module->redir_connect(so, rq, flag, instance);
-	}
-	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
-	    return(MOD_CODE_ERR);
-	mod_list = mod_list->next;
-    }
-    return(rc);
-}
-
-int
-do_redir_rewrite_header(char **hdr, struct request *rq, int *flag)
-{
-int			rc = MOD_CODE_OK;
-struct	redir_module	*module;
-l_mod_call_list_t	*gr_mods;
-mod_call_t      	*mod_list = NULL;
-int                     instance;
-
-    if ( !rq ) return(rc);
-    if ( flag ) *flag = 0;
-    gr_mods = rq->redir_mods;
-    if ( gr_mods ) mod_list = gr_mods->list;
-
-    while( mod_list && (rc == MOD_CODE_OK) ) {
-	module = redir_module_by_name(mod_list->mod_name);
-        instance = mod_list->mod_instance;
-	if ( module && module->redir_rewrite_header ) {
-	    rc = module->redir_rewrite_header(hdr, rq, flag, instance);
 	}
 	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
 	    return(MOD_CODE_ERR);
@@ -295,19 +265,19 @@ struct	db_api_module	*db_api_module;
 
 char			*nptr;
 
-    sprintf(modules_path, "./modules");
+    snprintf(modules_path, sizeof(modules_path)-1, "./modules");
     rc = stat(modules_path, &statb);
     if ( !rc && TEST(statb.st_mode, S_IFDIR) )
 	goto load_mods;
     else
-	sprintf(modules_path, "%s", OOPS_LIBDIR);
+	snprintf(modules_path, sizeof(modules_path)-1, "%s", OOPS_LIBDIR);
 
 load_mods:
     printf("Loading modules from %s\n", modules_path);
 #if	!defined(_WIN32)
-    sprintf(glob_mask, "%s/*.so", modules_path);
+    snprintf(glob_mask, sizeof(glob_mask)-1, "%s/*.so", modules_path);
 #else
-    sprintf(glob_mask, "%s/*.dll", modules_path);
+    snprintf(glob_mask, sizeof(glob_mask)-1, "%s/*.dll", modules_path);
 #endif	/* !_WIN32 */
     global_mod_chain = NULL;
     bzero(&globbuf, sizeof(globbuf));
@@ -320,12 +290,15 @@ load_mods:
 	printf("Loading module %s\n", module_path);
 	modh = dlopen(module_path, RTLD_NOW);
 	if ( modh ) {
-	    mod_type = (char*)dlsym(modh, "module_type");
-	    mod_info = (char*)dlsym(modh, "module_info");
-	    if (mod_info) printf("Module: %s ", mod_info);
+	    mod_type = (char*)DLSYM(modh, "module_type");
+	    if ( !mod_type ) {
+		printf("*** loading error: %s: %d: can't find symbolic name `module_type': %s\n", module_path, ERRNO, dlerror());
+		continue;
+	    }
+	    mod_info = (char*)DLSYM(modh, "module_info");
+/*	    if ( mod_info ) printf("Module: %s ", mod_info);*/
 	    switch(*mod_type) {
 	      case MODULE_LOG:
-		printf("(Logger)\n");
 		/* allocate module structure */
 		log_module = (struct log_module*)xmalloc(sizeof(*log_module), "load_modules(): for log_module");
 		if ( !log_module ) {
@@ -333,31 +306,34 @@ load_mods:
 		}
 		bzero(log_module, sizeof(*log_module));
 		log_module->general.handle = modh;
-		log_module->general.load   = (mod_load_t*)dlsym(modh, "mod_load");
-		log_module->general.unload = (mod_load_t*)dlsym(modh, "mod_unload");
-		log_module->general.config = (mod_load_t*)dlsym(modh, "mod_config");
-		log_module->general.config_beg = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		log_module->general.config_end = (mod_load_t*)dlsym(modh, "mod_config_end");
-		log_module->mod_log = (mod_load_t*)dlsym(modh, "mod_log");
-		MOD_RUN(log_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(log_module) = (mod_load_t*)dlsym(modh, "mod_tick");
-		nptr = (char*)dlsym(modh, "module_name");
+		log_module->general.load   = (mod_load_t*)DLSYM(modh, "mod_load");
+		log_module->general.unload = (mod_load_t*)DLSYM(modh, "mod_unload");
+		log_module->general.config = (mod_load_t*)DLSYM(modh, "mod_config");
+		log_module->general.config_beg = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		log_module->general.config_end = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		log_module->mod_log = (mod_load_t*)DLSYM(modh, "mod_log");
+		MOD_RUN(log_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(log_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
+		nptr = (char*)DLSYM(modh, "module_name");
 		*MOD_NAME(log_module) = 0;
 		if ( nptr )
 		    strncpy(MOD_NAME(log_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(log_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(log_module)[0] = 0;
+
 		if ( log_module->general.load )
 			(*log_module->general.load)();
 		log_module->general.type = MODULE_LOG;
-		log_module->mod_reopen = (mod_load_t*)dlsym(modh, "mod_reopen");
+		log_module->mod_reopen = (mod_load_t*)DLSYM(modh, "mod_reopen");
 		insert_module((struct general_module*)log_module,
 			      (struct general_module**)&log_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(log_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(log_module)[0] = 0;
+		printf("(Logger)\n");
 		break;
 	      case MODULE_ERR:
-		printf("(Error handling)\n");
 		/* allocate module structure */
 		err_module = (struct err_module*)xmalloc(sizeof(*err_module), "load_modules(): for err_module");
 		if ( !err_module ) {
@@ -365,29 +341,31 @@ load_mods:
 		}
 		bzero(err_module, sizeof(*err_module));
 		MOD_HANDLE(err_module) = modh;
-		MOD_LOAD(err_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(err_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(err_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(err_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(err_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(err_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(err_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(err_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(err_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(err_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(err_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(err_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(err_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(err_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(err_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(err_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(err_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(err_module)[0] = 0;
 
-		err_module->err	   = (mod_load_t*)dlsym(modh, "err");
+		err_module->err	   = (mod_load_t*)DLSYM(modh, "err");
 		err_module->general.type = MODULE_ERR;
 		insert_module((struct general_module*)err_module,
 			      (struct general_module**)&err_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(err_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(err_module)[0] = 0;
+		printf("(Error handling)\n");
 		break;
 	      case MODULE_AUTH:
-		printf("(Auth module)\n");
 		/* allocate module structure */
 		auth_module = (struct auth_module*)xmalloc(sizeof(*auth_module), "load_modules(): for auth_module");
 		if ( !auth_module ) {
@@ -395,29 +373,31 @@ load_mods:
 		}
 		bzero(auth_module, sizeof(*auth_module));
 		MOD_HANDLE(auth_module) = modh;
-		MOD_LOAD(auth_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(auth_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(auth_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(auth_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(auth_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(auth_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(auth_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(auth_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(auth_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(auth_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(auth_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(auth_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(auth_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(auth_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(auth_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(auth_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(auth_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(auth_module)[0] = 0;
 
-		auth_module->auth = (mod_load_t*)dlsym(modh, "auth");
+		auth_module->auth = (mod_load_t*)DLSYM(modh, "auth");
 		auth_module->general.type = MODULE_AUTH;
 		insert_module((struct general_module*)auth_module,
 			      (struct general_module**)&auth_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(auth_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(auth_module)[0] = 0;
+		printf("(Auth module)\n");
 		break;
 	      case MODULE_REDIR:
-		printf("(Redirect module)\n");
 		/* allocate module structure */
 		redir_module = (struct redir_module*)xmalloc(sizeof(*redir_module), "load_modules(): for redir_module");
 		if ( !redir_module ) {
@@ -425,31 +405,33 @@ load_mods:
 		}
 		bzero(redir_module, sizeof(*redir_module));
 		MOD_HANDLE(redir_module) = modh;
-		MOD_LOAD(redir_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(redir_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(redir_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(redir_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(redir_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(redir_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(redir_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(redir_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(redir_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(redir_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(redir_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(redir_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(redir_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(redir_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(redir_module)[0] = 0;
 
-		redir_module->redir = (mod_load_t*)dlsym(modh, "redir");
-		redir_module->redir_connect = (mod_load_t*)dlsym(modh, "redir_connect");
-		redir_module->redir_rewrite_header = (mod_load_t*)dlsym(modh, "redir_rewrite_header");
+		redir_module->redir = (mod_load_t*)DLSYM(modh, "redir");
+		redir_module->redir_connect = (mod_load_t*)DLSYM(modh, "redir_connect");
+		redir_module->redir_rewrite_header = (mod_load_t*)DLSYM(modh, "redir_rewrite_header");
 		redir_module->general.type = MODULE_REDIR;
 		insert_module((struct general_module*)redir_module,
 			      (struct general_module**)&redir_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(redir_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(redir_module)[0] = 0;
+		printf("(Redirect module)\n");
 		break;
 	      case MODULE_OUTPUT:
-		printf("(Output module)\n");
 		/* allocate module structure */
 		output_module = (struct output_module*)xmalloc(sizeof(*output_module), "load_modules(): for output_module");
 		if ( !output_module ) {
@@ -457,31 +439,34 @@ load_mods:
 		}
 		bzero(output_module, sizeof(*output_module));
 		MOD_HANDLE(output_module) = modh;
-		MOD_LOAD(output_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(output_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(output_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(output_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(output_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(output_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(output_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(output_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(output_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(output_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(output_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(output_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(output_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(output_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(output_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(output_module), nptr, MODNAMELEN-1);
 
-		output_module->output = (mod_load_t*)dlsym(modh, "output");
+		output_module->output = (mod_load_t*)DLSYM(modh, "output");
 		output_module->compare_u_agents = /* for lang only */
-		    (mod_load_t*)dlsym(modh, "compare_u_agents");
-		if ( mod_info )
-		    strncpy(MOD_INFO(output_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(output_module)[0] = 0;
+		    (mod_load_t*)DLSYM(modh, "compare_u_agents");
+
 		output_module->general.type = MODULE_OUTPUT;
 		insert_module((struct general_module*)output_module,
 			      (struct general_module**)&output_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(output_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(output_module)[0] = 0;
+		printf("(Output module)\n");
 		break;
 	      case MODULE_LISTENER:
-		printf("(Listener module)\n");
 		/* allocate module structure */
 		listener_module = (struct listener_module*)xmalloc(sizeof(*listener_module), "load_modules(): for listener_module");
 		if ( !listener_module ) {
@@ -489,29 +474,31 @@ load_mods:
 		}
 		bzero(listener_module, sizeof(*listener_module));
 		MOD_HANDLE(listener_module) = modh;
-		MOD_LOAD(listener_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(listener_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(listener_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(listener_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(listener_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(listener_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(listener_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(listener_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(listener_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(listener_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(listener_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(listener_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(listener_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(listener_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(listener_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(listener_module)[0] = 0;
 
-		listener_module->process_call = (mod_void_ptr_t*)dlsym(modh, "process_call");
+		listener_module->process_call = (mod_void_ptr_t*)DLSYM(modh, "process_call");
 		listener_module->general.type = MODULE_LISTENER;
 		insert_module((struct general_module*)listener_module,
 			      (struct general_module**)&listener_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(listener_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(listener_module)[0] = 0;
+		printf("(Listener module)\n");
 		break;
 	      case MODULE_HEADERS:
-		printf("(Headers match module)\n");
 		/* allocate module structure */
 		headers_module = (struct headers_module*)xmalloc(sizeof(*headers_module), "load_modules(): for header_module");
 		if ( !headers_module ) {
@@ -519,28 +506,31 @@ load_mods:
 		}
 		bzero(headers_module, sizeof(*headers_module));
 		MOD_HANDLE(headers_module) = modh;
-		MOD_LOAD(headers_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(headers_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(headers_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(headers_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(headers_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(headers_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(headers_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(headers_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(headers_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(headers_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(headers_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(headers_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(headers_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(headers_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(headers_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(headers_module)[0] = 0;
-		headers_module->match_headers = (mod_load_t*)dlsym(modh, "match_headers");
+
+		headers_module->match_headers = (mod_load_t*)DLSYM(modh, "match_headers");
 		headers_module->general.type = MODULE_HEADERS;
 		insert_module((struct general_module*)headers_module,
 			      (struct general_module**)&headers_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(headers_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(headers_module)[0] = 0;
+		printf("(Headers match module)\n");
 		break;
 	      case MODULE_PRE_BODY:
-		printf("(Pre-body)\n");
 		/* allocate module structure */
 		pre_body_module = (struct pre_body_module*)xmalloc(sizeof(*pre_body_module), "load_modules(): for pre_body_module");
 		if ( !pre_body_module ) {
@@ -548,29 +538,32 @@ load_mods:
 		}
 		bzero(pre_body_module, sizeof(*pre_body_module));
 		MOD_HANDLE(pre_body_module) = modh;
-		MOD_LOAD(pre_body_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(pre_body_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(pre_body_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(pre_body_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(pre_body_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(pre_body_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(pre_body_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(pre_body_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(pre_body_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(pre_body_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(pre_body_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(pre_body_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(pre_body_module)[0] = 0;
 
-		pre_body_module->pre_body = (mod_load_t*)dlsym(modh, "pre_body");
+		pre_body_module->pre_body = (mod_load_t*)DLSYM(modh, "pre_body");
 		pre_body_module->general.type = MODULE_PRE_BODY;
 		insert_module((struct general_module*)pre_body_module,
 			      (struct general_module**)&pre_body_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(pre_body_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(pre_body_module)[0] = 0;
+
+		printf("(Pre-body)\n");
 		break;
 	      case MODULE_DB_API:
-		printf("(DB API)\n");
 		/* allocate module structure */
 		db_api_module = (struct db_api_module*)xmalloc(sizeof(*db_api_module), "load_modules(): for db_api_module");
 		if ( !db_api_module ) {
@@ -578,47 +571,51 @@ load_mods:
 		}
 		bzero(db_api_module, sizeof(*db_api_module));
 		MOD_HANDLE(db_api_module) = modh;
-		MOD_LOAD(db_api_module)   = (mod_load_t*)dlsym(modh, "mod_load");
-		MOD_UNLOAD(db_api_module) = (mod_load_t*)dlsym(modh, "mod_unload");
-		MOD_CONFIG(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config");
-		MOD_CONFIG_BEG(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
-		MOD_CONFIG_END(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
-		MOD_RUN(db_api_module) = (mod_load_t*)dlsym(modh, "mod_run");
-		MOD_TICK(db_api_module) = (mod_load_t*)dlsym(modh, "mod_tick");
+		MOD_LOAD(db_api_module)   = (mod_load_t*)DLSYM(modh, "mod_load");
+		MOD_UNLOAD(db_api_module) = (mod_load_t*)DLSYM(modh, "mod_unload");
+		MOD_CONFIG(db_api_module) = (mod_load_t*)DLSYM(modh, "mod_config");
+		MOD_CONFIG_BEG(db_api_module) = (mod_load_t*)DLSYM(modh, "mod_config_beg");
+		MOD_CONFIG_END(db_api_module) = (mod_load_t*)DLSYM(modh, "mod_config_end");
+		MOD_RUN(db_api_module) = (mod_load_t*)DLSYM(modh, "mod_run");
+		MOD_TICK(db_api_module) = (mod_load_t*)DLSYM(modh, "mod_tick");
 		*MOD_NAME(db_api_module) = 0;
-		nptr = (char*)dlsym(modh, "module_name");
+		nptr = (char*)DLSYM(modh, "module_name");
 		if ( nptr )
 		    strncpy(MOD_NAME(db_api_module), nptr, MODNAMELEN-1);
-		if ( mod_info )
-		    strncpy(MOD_INFO(db_api_module), mod_info, MODINFOLEN-1);
-		  else
-		    MOD_INFO(db_api_module)[0] = 0;
 
 		db_api_module->general.type = MODULE_DB_API;
-		db_api_module->db_api_open = (mod_load_t*)dlsym(modh, "db_api_open");
-		db_api_module->db_api_close = (mod_load_t*)dlsym(modh, "db_api_close");
-		db_api_module->db_api_get = (mod_load_t*)dlsym(modh, "db_api_get");
-		db_api_module->db_api_del = (mod_load_t*)dlsym(modh, "db_api_del");
-		db_api_module->db_api_put = (mod_load_t*)dlsym(modh, "db_api_put");
-		db_api_module->db_api_cursor_open = (db_api_cursor_f_t*)dlsym(modh, "db_api_cursor_open");
-		db_api_module->db_api_cursor_get = (mod_load_t*)dlsym(modh, "db_api_cursor_get");
-		db_api_module->db_api_cursor_del = (mod_load_t*)dlsym(modh, "db_api_cursor_del");
-		db_api_module->db_api_cursor_close = (mod_load_t*)dlsym(modh, "db_api_cursor_close");
-		db_api_module->db_api_cursor_freeze = (mod_load_t*)dlsym(modh, "db_api_cursor_freeze");
-		db_api_module->db_api_cursor_unfreeze = (mod_load_t*)dlsym(modh, "db_api_cursor_unfreeze");
-		db_api_module->db_api_sync =(mod_load_t*)dlsym(modh, "db_api_sync");
-		db_api_module->db_api_attach =(mod_load_t*)dlsym(modh, "db_api_attach");
-		db_api_module->db_api_detach =(mod_load_t*)dlsym(modh, "db_api_detach");
-		db_api_module->db_api_precommit =(mod_load_t*)dlsym(modh, "db_api_precommit");
+		db_api_module->db_api_open = (mod_load_t*)DLSYM(modh, "db_api_open");
+		db_api_module->db_api_close = (mod_load_t*)DLSYM(modh, "db_api_close");
+		db_api_module->db_api_get = (mod_load_t*)DLSYM(modh, "db_api_get");
+		db_api_module->db_api_del = (mod_load_t*)DLSYM(modh, "db_api_del");
+		db_api_module->db_api_put = (mod_load_t*)DLSYM(modh, "db_api_put");
+		db_api_module->db_api_cursor_open = (db_api_cursor_f_t*)DLSYM(modh, "db_api_cursor_open");
+		db_api_module->db_api_cursor_get = (mod_load_t*)DLSYM(modh, "db_api_cursor_get");
+		db_api_module->db_api_cursor_del = (mod_load_t*)DLSYM(modh, "db_api_cursor_del");
+		db_api_module->db_api_cursor_close = (mod_load_t*)DLSYM(modh, "db_api_cursor_close");
+		db_api_module->db_api_cursor_freeze = (mod_load_t*)DLSYM(modh, "db_api_cursor_freeze");
+		db_api_module->db_api_cursor_unfreeze = (mod_load_t*)DLSYM(modh, "db_api_cursor_unfreeze");
+		db_api_module->db_api_sync =(mod_load_t*)DLSYM(modh, "db_api_sync");
+		db_api_module->db_api_attach =(mod_load_t*)DLSYM(modh, "db_api_attach");
+		db_api_module->db_api_detach =(mod_load_t*)DLSYM(modh, "db_api_detach");
+		db_api_module->db_api_precommit =(mod_load_t*)DLSYM(modh, "db_api_precommit");
 		insert_module((struct general_module*)db_api_module,
 			      (struct general_module**)&db_api_first);
+
+		if ( mod_info ) {
+		    strncpy(MOD_INFO(db_api_module), mod_info, MODINFOLEN-1);
+		    printf("Module: %s ", mod_info);
+		} else
+		    MOD_INFO(db_api_module)[0] = 0;
+
+		printf("(DB API)\n");
 		break;
 	      default:
 		printf(" (Unknown module type. Unload it)\n");
 		dlclose(modh);
 	    }
 	} else {
-	    printf("loading %s: %s\n", module_path, dlerror()); 
+	    printf("*** loading error: %s: %d: %s\n", module_path, ERRNO, dlerror());
 	}
     }
     globfree(&globbuf);
@@ -657,7 +654,8 @@ load_modules(void)
 }
 
 #endif
-void
+
+static void
 insert_module(struct general_module *mod, struct general_module **list) {
 struct	general_module *first = *list;
 

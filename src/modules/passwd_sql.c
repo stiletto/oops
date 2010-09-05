@@ -23,19 +23,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #if defined(__PGSQL)
 #define		MODULE_NAME	"passwd_pgsql"
-#define	MODULE_INFO		"Auth using postgresql"
-#define     PORT_DEFAULT	"5432"
-#define     PORT_TYPE    char *
-#define	STRUCT_NAME	passwd_pgsql
+#define		MODULE_INFO	"Auth using PostgreSQL %s.%s.%s"
+#define		MODULE_BR14	"Auth using PostgreSQL/stopper"
+#define		PORT_DEFAULT	"5432"
+#define		PORT_TYPE	char *
+#define		STRUCT_NAME	passwd_pgsql
 #if defined(HAVE_PGSQL)
 #include        <pgsql/libpq-fe.h>
 #endif
 #elif defined(__MYSQL)
 #define		MODULE_NAME	"passwd_mysql"
-#define	MODULE_INFO		"Auth using mysql"
-#define     PORT_DEFAULT	3306
-#define     PORT_TYPE    short
-#define	STRUCT_NAME	passwd_mysql
+#define		MODULE_INFO	"Auth using mySQL %s"
+#define		MODULE_BR14	"Auth using mySQL/stopper"
+#define		PORT_DEFAULT	3306
+#define		PORT_TYPE	short
+#define		STRUCT_NAME	passwd_mysql
 #if	defined(HAVE_MYSQL)
 #include        <mysql.h> 
 #endif
@@ -48,13 +50,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #else
 #define MODULE_STATIC static
 #endif
-MODULE_STATIC	char		module_type   = MODULE_AUTH ;
-MODULE_STATIC	char		module_name[] = MODULE_NAME ;
-MODULE_STATIC	char		module_info[] = MODULE_INFO ;
+MODULE_STATIC	char		module_type   		= MODULE_AUTH;
+MODULE_STATIC	char		module_name[] 		= MODULE_NAME;
+MODULE_STATIC	char		module_info[MODINFOLEN] = MODULE_BR14;
 
 #if	(defined(__MYSQL) && defined(HAVE_MYSQL)) || (defined(__PGSQL) && defined(HAVE_PGSQL))
-MODULE_STATIC	int		mod_load(),mod_unload();
-MODULE_STATIC	int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+MODULE_STATIC	int		mod_load(void),mod_unload(void);
+MODULE_STATIC	int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 MODULE_STATIC	int		auth(int so, struct group *group, struct request* rq, int *flags);
 
 struct	auth_module STRUCT_NAME = {
@@ -148,27 +150,35 @@ static void     make_sqlselect(void);
 static	int	auth_check_user(char * user, char * pass);
 static	void	send_auth_req(int, struct request *);
 
-/* ------------------------------------------------------------------------ */
 MODULE_STATIC
-int mod_run()
+int mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
-int mod_load()
+int mod_load(void)
 {
-    printf(MODULE_INFO " started\n");
+#if	defined(__PGSQL)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO,
+	     PG_RELEASE, PG_VERSION, PG_SUBVERSION);
+#elif	defined(__MYSQL)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO,
+	     MYSQL_SERVER_VERSION);
+#endif
+
     pthread_rwlock_init(&pwf_lock, NULL);
     pthread_rwlock_init(&sql_lock, NULL);
     std_template_len = strlen(std_template);
     logbuf=malloc(8*1024);
 
+    printf(MODULE_INFO " started\n");
+
     return(MOD_CODE_OK);
 }
-/* ------------------------------------------------------------------------ */
+
 MODULE_STATIC
-int mod_unload()
+int mod_unload(void)
 {
     if (logbuf)         free(logbuf);
     if (template.data)  free(template.data);
@@ -177,12 +187,12 @@ int mod_unload()
     printf(MODULE_INFO " stopped\n");
     return(MOD_CODE_OK);
 }
-/* ------------------------------------------------------------------------ */
+
 MODULE_STATIC
 int mod_config_beg(int i)
 {
     WRLOCK_PWF_CONFIG ;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): config_beg");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): config_beg");
     if ( authreq )        free(authreq);  authreq = 0;
     if ( badsch )         free(badsch);   badsch = 0;
     if ( template.data )  free(template.data); template.data = 0;
@@ -202,7 +212,7 @@ int mod_config_beg(int i)
     UNLOCK_PWF_CONFIG ;
     return(MOD_CODE_OK);
 }
-/* ------------------------------------------------------------------------ */
+
 MODULE_STATIC
 int mod_config_end(int i)
 {
@@ -211,7 +221,7 @@ char    *p;
 
     WRLOCK_PWF_CONFIG ;
     
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): config_end");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): config_end");
 
     if      ( scheme == Basic ) sch = "Basic";
     else if ( scheme == Digest) sch = "Digest";
@@ -250,8 +260,9 @@ char    *p;
 
     return(MOD_CODE_OK);
 }
-/* ------------------------------------------------------------------------ */
-static void getstr_fromcfg(char *dststr,char *srcstr,int dstsize) 
+
+static void
+getstr_fromcfg(char *dststr,char *srcstr,int dstsize) 
 {
     int lastchar;
     while (*srcstr && IS_SPACE(*srcstr) ) srcstr++;
@@ -263,7 +274,8 @@ static void getstr_fromcfg(char *dststr,char *srcstr,int dstsize)
     
 }
 
-static int getint_fromcfg(char *srcstr) 
+static int
+getint_fromcfg(char *srcstr) 
 {
     int lastchar;
     while (*srcstr && IS_SPACE(*srcstr) ) srcstr++;
@@ -271,12 +283,12 @@ static int getint_fromcfg(char *srcstr)
 }
 
 MODULE_STATIC
-int mod_config(char *config, int)
+int mod_config(char *config, int i)
 {
     char	*p = config;
 
     WRLOCK_PWF_CONFIG ;
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): config_");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): config_");
 
     while( *p && IS_SPACE(*p) ) p++;
     if ( !strncasecmp(p, "host", 4) ) {
@@ -317,7 +329,8 @@ int mod_config(char *config, int)
 }
 
 
-void check_age_and_reload(void)
+static void
+check_age_and_reload(void)
 {
 /*
     if ((global_sec_timer - template.check_time) >= 60 && template.filename[0]) {
@@ -333,7 +346,8 @@ void check_age_and_reload(void)
     }
 }
 
-void reload_pwf_file(PWF_FILEINFO *fi)
+static void
+reload_pwf_file(PWF_FILEINFO *fi)
 {
 struct	stat	sb;
 int		rc, size, fd;
@@ -365,14 +379,16 @@ int		rc, size, fd;
     }
 }
 
-void righttrim(char *str)
+static void
+righttrim(char *str)
 { 
     int i;
     for (i=strlen(str);i>0 && str[i-1]==' ';i--) ;
     str[i]=0;
 }
 
-void make_sqlselect(void)
+static void
+make_sqlselect(void)
 {
     int i,rc=0;
 #if defined(__PGSQL)
@@ -386,12 +402,12 @@ void make_sqlselect(void)
 #endif
     int loginfield_n,passfield_n;
 
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): reload select");
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): reload select");
 
     WRLOCK_SELECT;
 
     if (!sqlselect.data) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Select not loaded\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Select not loaded\n");
 	goto exit; 
     }
     
@@ -403,19 +419,19 @@ void make_sqlselect(void)
         sprintf(logbuf,"make_sqlselect(): Connection to database '%s' failed (error=%s)\n",
                sql.database,PQerrorMessage(conn)
 	);
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, logbuf);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, logbuf);
 	goto exit;
     }
 
     res = PQexec(conn,sqlselect.data);
 
     if (res==0) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM,"make_sqlselect(): Result of select is null\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM,"make_sqlselect(): Result of select is null\n");
 	PQfinish(conn);
 	goto exit;
     } 
     if (PQresultStatus(res)!=PGRES_TUPLES_OK) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): select failed\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): select failed\n");
 	goto pgsql_exit;
     }
     
@@ -424,7 +440,7 @@ void make_sqlselect(void)
     loginfield_n=PQfnumber(res,"login");
     passfield_n=PQfnumber(res,"passwd");
     if (loginfield_n==-1 || passfield_n==-1) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Error find field login,passwd inselect\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Error find field login,passwd inselect\n");
         goto pgsql_exit;
     }
 
@@ -434,7 +450,7 @@ void make_sqlselect(void)
     }  
 	
     if (!userlist) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Error allocate memory for userinfo\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Error allocate memory for userinfo\n");
         goto pgsql_exit;
     }
 
@@ -456,7 +472,7 @@ pgsql_exit:
     
     mysql=mysql_init(NULL);
     if (!mysql) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Error init mysql\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Error init mysql\n");
 	goto exit;
     }
 
@@ -466,12 +482,12 @@ pgsql_exit:
 	sprintf(logbuf,"make_sqlselect(): Connection to database '%s' failed (error=%s)\n",
     	               sql.database,mysql_error(mysql)
 	       );
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, logbuf);
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, logbuf);
         goto exit; 	
     }
 
     if (mysql_real_query(mysql, sqlselect.data, sqlselect.len)!=0) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): select failed\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): select failed\n");
 	goto mysql_exit;
     }
     
@@ -481,7 +497,7 @@ pgsql_exit:
     
     fields=mysql_fetch_fields(rs);
     if (!fields) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Error get fields info\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Error get fields info\n");
         goto mysql_free_rs_exit;
     }
     loginfield_n=passfield_n=-1;
@@ -490,7 +506,7 @@ pgsql_exit:
 	  else if (strcmp(fields[i].name,"passwd")==0) passfield_n=i;
     }
     if (loginfield_n==-1 || passfield_n==-1) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Error find field login,passwd inselect\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Error find field login,passwd inselect\n");
         goto mysql_free_rs_exit;
     }
 
@@ -499,7 +515,7 @@ pgsql_exit:
 	userlist=(USERS_INFO *)malloc(mysql_num_rows(rs)*sizeof(USERS_INFO));    
     }
     if (!userlist) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "make_sqlselect(): Error allocate memory for userinfo\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "make_sqlselect(): Error allocate memory for userinfo\n");
         goto mysql_free_rs_exit;
     }
     
@@ -539,7 +555,7 @@ int auth(int so, struct group *group, struct request* rq, int *flags)
     char	*authorization = NULL;
 
     if ( !authreq ) {
-	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth(): Something wrong with passwd_pgsql module.\n");
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth(): Something wrong with passwd_pgsql module.\n");
 	return(MOD_CODE_OK);
     }
 
@@ -554,7 +570,7 @@ int auth(int so, struct group *group, struct request* rq, int *flags)
 		 rq->url.host,
 		 rq->method
 	    );
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM,logbuf);
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM,logbuf);
 
     if ( rq->av_pairs)
 	authorization = attr_value(rq->av_pairs, "Proxy-Authorization");
@@ -610,11 +626,12 @@ au_ok:
     return(MOD_CODE_OK);
 }
 
-int auth_check_user(char *user, char *pass)
+static int
+auth_check_user(char *user, char *pass)
 {
     int i=0;
     if (!user || !pass) {
-        my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "auth_check_user(): Bad user or pass\n");
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "auth_check_user(): Bad user or pass\n");
         return 0;
     }
 
@@ -636,7 +653,7 @@ int auth_check_user(char *user, char *pass)
     return 0;
 }
 
-void
+static void
 send_auth_req(int so, struct request *rq)
 {
 struct	output_object	*obj;

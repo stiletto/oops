@@ -21,9 +21,12 @@ OOPS_WAIT=10                    # Time between attempts to restart Oops
 OOPS_LOG=$OOPS_HOME/oops.out	# Oops log file
 OOPS_DB=$OOPS_HOME/DB		# Oops DB path
 
+LD_LIBRARY_PATH=""
+export LD_LIBRARY_PATH
+
 NAME=`/bin/basename $0`
 PG=`/bin/pgrep -x $NAME`
-if [ `echo $PG | wc -w` -gt 1 ] || /bin/pgrep -x -U $OOPS_USER $OOPS_NAME > /dev/null; then
+if [ `echo $PG | /bin/wc -w` -gt 1 ] || /bin/pgrep -x -U $OOPS_USER $OOPS_NAME > /dev/null; then
     echo "$NAME: Oops is already running"
     exit 1
 fi
@@ -41,15 +44,20 @@ cd $OOPS_HOME
 i=0
 while [ $i -eq 0 ]; do
 	[ -f $OOPS_HOME/core ] && mv $OOPS_HOME/core $OOPS_HOME/core.`date +"%Y.%m.%d-%H:%M:%S"`
-	echo `date`: Starting Oops >> $OOPS_LOG
 	echo `date`: ulimit -a - started >> $OOPS_LOG
 	ulimit -a >> $OOPS_LOG
-	echo `date`: ulimit -a - ended >> $OOPS_LOG
+	echo `date`": ulimit -a - ended\n" >> $OOPS_LOG
+	echo "LD_LIBRARY_PATH = $LD_LIBRARY_PATH\n" >> $OOPS_LOG
+	for mod in ./oops ./oopsctl ./modules/*.so ; do
+	    echo "ldd $mod" >> $OOPS_LOG
+	    /bin/ldd "$mod" >> $OOPS_LOG ; echo "" >> $OOPS_LOG
+	done
+	echo `date`": Starting Oops\n" >> $OOPS_LOG
 	$OOPS_HOME/$OOPS_NAME -c $OOPS_HOME/oops.cfg >> $OOPS_LOG 2>&1
 	[ $i -eq 0 ] && sleep $OOPS_WAIT
 done
 
 echo `date`: Stopping $NAME >> $OOPS_LOG
-rm -f $OOPS_HOME/logs/$NAME.pid
+/bin/rm -f $OOPS_HOME/logs/$NAME.pid
 
 exit 0

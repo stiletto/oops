@@ -36,7 +36,7 @@ typedef	int (mod_load_t)();
 typedef void* (mod_void_ptr_t)(void*);
 typedef void* (db_api_cursor_f_t)();
 
-struct	general_module		*global_mod_chain;
+extern	struct	general_module		*global_mod_chain;
 
 struct	general_module {
 	struct general_module	*next;
@@ -145,3 +145,50 @@ extern	struct	headers_module	vary_header;
 
 extern	struct	db_api_module	berkeley_db_api;
 extern  struct	db_api_module	gigabase_db_api;
+
+extern	struct	redir_module	*redir_first;
+
+inline	static	int	do_redir_rewrite_header(char **hdr, struct request *rq, int *flag);
+inline	static	struct	redir_module *redir_module_by_name(char *name);
+
+inline
+static int
+do_redir_rewrite_header(char **hdr, struct request *rq, int *flag)
+{
+int			rc = MOD_CODE_OK;
+struct	redir_module	*module;
+l_mod_call_list_t	*gr_mods;
+mod_call_t      	*mod_list = NULL;
+int                     instance;
+
+    if ( !rq ) return(rc);
+    if ( flag ) *flag = 0;
+    gr_mods = rq->redir_mods;
+    if ( gr_mods ) mod_list = gr_mods->list;
+
+    while( mod_list && (rc == MOD_CODE_OK) ) {
+	module = redir_module_by_name(mod_list->mod_name);
+        instance = mod_list->mod_instance;
+	if ( module && module->redir_rewrite_header ) {
+	    rc = module->redir_rewrite_header(hdr, rq, flag, instance);
+	}
+	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
+	    return(MOD_CODE_ERR);
+	mod_list = mod_list->next;
+    }
+    return(rc);
+}
+
+inline
+static struct	redir_module *
+redir_module_by_name(char *name)
+{
+struct general_module	*res;
+    res = (struct general_module*)redir_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return((struct redir_module*)res);
+	res = res->next;
+    }
+    return((struct redir_module*)res);
+}

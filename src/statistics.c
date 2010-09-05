@@ -24,7 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define		PURGE_INTERVAL	5
 #define		DSTD_CACHE_TTL	(30*60)
 
-int		purge_old_dstd(hash_entry_t*);
+static	int	purge_old_dstd(hash_entry_t*);
 
 void
 check_transfer_rate(struct request *rq, int size)
@@ -123,11 +123,14 @@ int		 purge = PURGE_INTERVAL;
 ip_hash_entry_t	*he, *next_he;
 
     if ( arg ) return (void *)0;
+
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "Statistics started.\n");
+
     bzero(&oops_stat, sizeof(oops_stat));
     start_time = oops_stat.timestamp0 = oops_stat.timestamp = time(NULL);
 
     forever() {
-	global_sec_timer = time(NULL);
+        global_sec_timer = time(NULL);
 	tick_modules();
 
 	if ( ++counter == 60 ) {	/* once per minute */
@@ -193,7 +196,7 @@ ip_hash_entry_t	*he, *next_he;
 		group->cs_total.requests += group->cs0.requests;
 		group->cs2 = group->cs1;
 		group->cs1 = group->cs0;
-		memset((void*)&group->cs0, 0, sizeof(group->cs0));
+		bzero((void*)&group->cs0, sizeof(group->cs0));
 		pthread_mutex_unlock(&group->group_mutex);
 
 		/* remove stale dstdomain cache entries */
@@ -256,7 +259,7 @@ ip_hash_entry_t	*he, *next_he;
     }
 }
 
-int
+static int
 purge_old_dstd(hash_entry_t *he)
 {
 struct dstdomain_cache_entry *dstd_entry;

@@ -27,9 +27,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 char		module_type   = MODULE_OUTPUT ;
 char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 int		output(int so, struct output_object *obj, struct request *rq, int *flags);
 int		compare_u_agents(char*, char*);
 #define		MODULE_STATIC
@@ -37,9 +37,9 @@ int		compare_u_agents(char*, char*);
 static	char	module_type   = MODULE_OUTPUT ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
-static	int	mod_load();
-static	int	mod_unload();
-static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+static	int	mod_load(void);
+static	int	mod_unload(void);
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 static	int	output(int so, struct output_object *obj, struct request *rq, int *flags);
 static	int	compare_u_agents(char*, char*);
 #define		MODULE_STATIC	static
@@ -74,27 +74,30 @@ static	void		recode_buff(struct buff*, struct charset*);
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_load()
+mod_load(void)
 {
-    printf("Lang started\n");
     if ( charsets ) {
 	free_charsets(charsets);
 	charsets = NULL;
     }
     default_charset[0] = 0;
     pthread_rwlock_init(&lang_config_lock, NULL);
+
+    printf("Lang started\n");
+
     return(MOD_CODE_OK);
 }
+
 MODULE_STATIC
 int
-mod_unload()
+mod_unload(void)
 {
     WRLOCK_LANG_CONFIG ;
     verb_printf("Lang stopped\n");
@@ -245,7 +248,7 @@ struct	av	*ct_av = NULL;
     if ( strncasecmp(p, "text/html", 9) && strncasecmp(p, "text/plain", 10) )
 	return(MOD_CODE_OK);
     /* parse parameters and return if charset is already here */
-    while ( (p=strchr(p, ';')) ) {
+    while ( (p = strchr(p, ';')) ) {
 	p++;
 	while( *p && IS_SPACE(*p) ) p++;
 	if ( !strncasecmp(p, "charset=", 8) )

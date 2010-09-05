@@ -27,13 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define		SPACE_NOT_GOOD(s)		(!s->super.blks_free || \
 		(((s->super.blks_free*100)/s->super.blks_total) < disk_hi_free))
 
-time_t		last_expire = 0;
-
-void		check_expire(void);
-void		sync_storages(void);
-int		forced_cleanup = 0;
-
-hg_entry	hg[] = {
+static	hg_entry	hg[] = {
 	{0,		30*_MINUTE_,	0},
 	{30*_MINUTE_,	   _HOUR_,	0},
 	{   _HOUR_,	3* _HOUR_,	0},
@@ -46,8 +40,25 @@ hg_entry	hg[] = {
 	{-1,		-1,		0}	/* stop */
 };
 
+static	time_t	last_expire = 0;
+static	int	forced_cleanup = 0;
+
+static	void	check_expire(void);
+static	void	clear_hg(hg_entry *table);
+static	int	continue_cleanup(int total_blks, int total_free, int hi_free);
+static	long	count_total_blks(void);
+static	long	count_total_free(void);
+static	void	decrement_hg(int created, int value);
+static	void	hg_print(void);
+static	int	ok_to_delete(int created);
+static	int	start_cleanup(int total_blks, int total_free, int low_free);
+static	void	sync_storages(void);
+
+inline	static	void	increment_hg(hg_entry *table, int arg, int value);
+
+
 /* histogram handling routines */
-void
+static void
 decrement_hg(int created, int value)
 {
 hg_entry *res = &hg[0];
@@ -62,8 +73,8 @@ hg_entry *res = &hg[0];
     }
 }
 
-void
-hg_print()
+static void
+hg_print(void)
 {
 hg_entry *res = &hg[0];
 char	*n[] = {
@@ -86,7 +97,7 @@ char	**np = &n[0];
     }
 }
 
-int
+static int
 ok_to_delete(int created)
 {
     created = global_sec_timer - created;
@@ -109,7 +120,8 @@ ok_to_delete(int created)
     return(1);
 }
 
-void
+inline
+static void
 increment_hg(hg_entry *table, int arg, int value)
 {
 hg_entry *res = table;
@@ -125,7 +137,7 @@ hg_entry *res = table;
     }
 }
 
-void
+static void
 clear_hg(hg_entry *table)
 {
 hg_entry *res = table;
@@ -137,7 +149,7 @@ hg_entry *res = table;
     }
 }
 
-long
+static long
 count_total_free(void)
 {
 struct storage_st *storage;
@@ -151,7 +163,7 @@ long		  res = 0;
     return(res);
 }
 
-long
+static long
 count_total_blks(void)
 {
 struct storage_st *storage;
@@ -165,7 +177,7 @@ long		  res = 0;
     return(res);
 }
 
-int
+static int
 start_cleanup(int total_blks, int total_free, int low_free)
 {
     if ( forced_cleanup )
@@ -177,7 +189,7 @@ start_cleanup(int total_blks, int total_free, int low_free)
     return(0);
 }
 
-int
+static int
 continue_cleanup(int total_blks, int total_free, int hi_free)
 {
     if ( (hi_free > 0) && ((total_free*100)/total_blks < hi_free) )
@@ -197,8 +209,11 @@ int			rc;
 long			total_free, total_blks;
 struct	disk_ref	*disk_ref;
 time_t			now;
+int			sync_counter = 0;
 
     if ( arg ) return (void *)0;
+
+    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "Clean disk started.\n");
 
     forever() {
 	pthread_mutex_lock(&st_check_in_progr_lock);
@@ -208,7 +223,7 @@ time_t			now;
 	now = time(NULL);
 
 	RDLOCK_CONFIG ;
-	if ( !db_in_use || !storages_ready ) {
+	if ( !db_in_use || !storages_ready || broken_db ) {
 	    UNLOCK_CONFIG;
 	    my_sleep(10);
 	    continue;
@@ -226,6 +241,7 @@ time_t			now;
 	}
 	if (TEST(verbosity_level, OOPS_LOG_STOR)) hg_print();
 	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
+            snprintf(disk_state_string, sizeof(disk_state_string)-1, "Cleanup: %d free", total_free);
 	    my_xlog(OOPS_LOG_STOR|OOPS_LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n",
 		    total_free, total_blks);
 	    /* 1. create db cursor */
@@ -274,8 +290,8 @@ time_t			now;
 		    }
 		    decrement_hg(disk_ref->created, disk_ref->blk);
 		}
-		free(key.data);
-		free(data.data);
+		xfree(key.data);
+		xfree(data.data);
 		if ( global_sec_timer - now >= KEEP_NO_LONGER_THAN ) {
 		    db_mod_cursor_freeze(dbcp);
 		    db_mod_sync();
@@ -298,14 +314,19 @@ time_t			now;
 done:
 err:
 	UNLOCK_CONFIG ;
+        snprintf(disk_state_string, sizeof(disk_state_string)-1, "Cleanup finished");
 	my_sleep(10);
-	sync_storages();
+        sync_counter++;
+	if ( !(sync_counter%6) ) {
+	    sync_storages();
+	    sync_counter=0;
+        }
 	continue;
     }
 }
 
 
-void
+static void
 check_expire(void)
 {
 time_t			started, now = time(NULL);
@@ -319,7 +340,11 @@ struct	storage_st	*storage;
 	return ;
 
     RDLOCK_CONFIG ;
-    if ( !db_in_use || !storages_ready || !storages ) {
+    if ( !db_in_use || !storages_ready || !storages || broken_db ) {
+	UNLOCK_CONFIG ;
+	return ;
+    }
+    if ( expiretime && !denytime_check(expiretime) ) {
 	UNLOCK_CONFIG ;
 	return ;
     }
@@ -341,6 +366,7 @@ run_locked:
 	    UNLOCK_CONFIG ;
 	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	    	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);
+            snprintf(disk_state_string, sizeof(disk_state_string)-1, "Expire finished: %d expired", expired_cnt);
 	    return ;
 	}
     }
@@ -377,8 +403,8 @@ run_locked:
 	    /* not expired, update histogram */
 	    increment_hg(&hg[0], disk_ref->created, disk_ref->blk);
 	}
-	free(key.data);
-	free(data.data);
+	xfree(key.data);
+	xfree(data.data);
 	if ( (get_counter > 20) &&
 	     (global_sec_timer-now >= KEEP_NO_LONGER_THAN) ) {
 		/* must break */
@@ -389,6 +415,9 @@ run_locked:
 	    my_sleep(5);
 	    WRLOCK_DB ;
 	    db_mod_cursor_unfreeze(dbcp);
+    	    if ( expiretime && !denytime_check(expiretime) ) {
+		goto done;
+    	    }
 	    goto run_locked ;
 	}
     }
@@ -400,9 +429,10 @@ done:
     UNLOCK_CONFIG ;
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);
+    snprintf(disk_state_string, sizeof(disk_state_string)-1, "Expire finished: %d expired", expired_cnt);
 }
 
-void
+static void
 sync_storages(void)
 {
 struct	storage_st *storage = storages;

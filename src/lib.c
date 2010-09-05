@@ -21,16 +21,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"oops.h"
 #include	"modules.h"
 
-char	*days[] = {"Sun", "Mon","Tue","Wed","Thu","Fri","Sat"};
-char	*months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-void	flush_log(void);
-int	lookup_dns_cache(char* name, struct dns_cache_item *items, int counter);
-int	free_charset(struct charset *charsets);
-int	find_bind_acl(struct request *rq);
-int	readt(int, char*, int, int);
-int	my_gethostbyname(char *name);
-char	*my_gethostbyaddr(int);
-void	get_hash_stamp(char*, int*, int*);
+static	char	*days[] = {"Sun", "Mon","Tue","Wed","Thu","Fri","Sat"};
+static	char	*months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+static	void	flush_log(void);
+static	int	lookup_dns_cache(char* name, struct dns_cache_item *items, int counter);
+static	int	my_gethostbyname(char *name);
+static	char	*my_gethostbyaddr(int);
+static	void	get_hash_stamp(char*, int*, int*);
+static	int	free_charset(struct charset *charset);
+
+inline	static	int	find_bind_acl(struct request *rq);
+inline	static	void    put_str_in_filebuff(char *, filebuff_t *);
+inline	static	void    short_flushout_fb(filebuff_t *);
+inline	static	int	tm_to_time(struct tm *, time_t *);
+
 
 void
 CTIME_R(time_t *a, char *b, size_t l)
@@ -44,20 +48,10 @@ CTIME_R(time_t *a, char *b, size_t l)
 #else
 	struct	tm	tm;
 	localtime_r(a, &tm);
-#if	defined(HAVE_SNPRINTF)
 	snprintf(b, l, "%s, %02d %s %d %02d:%02d:%02d\n",
 		 days[tm.tm_wday], tm.tm_mday,
 		 months[tm.tm_mon], tm.tm_year+1900,
 		 tm.tm_hour, tm.tm_min, tm.tm_sec);
-#else
-	if ( l >=25 )
-	    sprintf(b, "%s, %02d %s %d %02d:%02d:%02d\n",
-		 days[tm.tm_wday], tm.tm_mday,
-		 months[tm.tm_mon], tm.tm_year+1900,
-		 tm.tm_hour, tm.tm_min, tm.tm_sec);
-	else
-	    printf("%d\n", *a);
-#endif
 #endif /* HAVE_CTIME_R */
 }
 
@@ -134,7 +128,6 @@ ERRBUF ;
 	    char	*b1;
 	    int		b1len;
 
-#if	defined(HAVE_SNPRINTF)
 	    b1len = strlen(ctbuf) + 20;
 	    b1 = malloc(b1len);
 	    if ( b1 ) {
@@ -146,15 +139,6 @@ ERRBUF ;
 		put_str_in_filebuff(buf, &logbuff);
 		free(b1);
 	    }
-#else
-		/* we can do nothing, just fprintf to file	*/
-		pthread_mutex_lock(&logbuff.lock);
-		if ( logbuff.File ) {
-		    fprintf(logbuff.File, "%s [%p]", ctbuf, self);
-		    vfprintf(logbuff.File, fbuf, ap);
-		}
-		pthread_mutex_unlock(&logbuff.lock);
-#endif
     }
 
     if ( TEST(lvl, OOPS_LOG_PRINT) )
@@ -169,7 +153,7 @@ ERRBUF ;
     return;
 }
 
-void
+static void
 flush_log(void)
 {
     flushout_fb(&logbuff);
@@ -192,8 +176,10 @@ char			*proto, *host, *path, *user, *htmlized_path = NULL;
     meth	= rq->method;
     tag		= rq->tag;
     hierarchy	= rq->hierarchy;
-    size	= rq->received;
+    size	= rq->doc_sent;
     code	= rq->code;
+
+    if ( size < 0 ) size = 0;
 
     if ( obj && obj->headers && (content = attr_value(obj->headers, "Content-Type")) ) {
 	char *p;
@@ -282,7 +268,7 @@ sa_to_str(struct sockaddr_in *sa)
 int
 str_to_sa(char *val, struct sockaddr *sa)
 {
-	if ( (((struct sockaddr_in*)sa)->sin_addr.s_addr = inet_addr(val)) != -1 ) {
+	if ( (signed)(((struct sockaddr_in*)sa)->sin_addr.s_addr = inet_addr(val)) != -1 ) {
 		/* it is */
 		struct	sockaddr_in *sin = (struct sockaddr_in*)sa;
 		sin->sin_family = AF_INET;
@@ -367,11 +353,11 @@ struct	group	*gr;
 #endif
 	    r = bind(server_so, (struct sockaddr*)&sa, sizeof(sa));
 	    if ( r ) {
-		char *s = my_inet_ntoa(&gr->conn_from_sa);
+		char *s = my_inet_ntoa(&rq->conn_from_sa);
 		my_xlog(OOPS_LOG_SEVERE, "bind_server_so(): Can't bind by bind_acl to %s: %m\n", s);
 		free(s);
-	    } else
-		return(r);
+	    }
+	    return(r);
 	}
 	if ( rq->conn_from_sa.sin_addr.s_addr ) {
 	    r = bind(server_so, (struct sockaddr*)&rq->conn_from_sa, sizeof(struct sockaddr_in));
@@ -379,8 +365,8 @@ struct	group	*gr;
 		char *s = my_inet_ntoa(&rq->conn_from_sa);
 		my_xlog(OOPS_LOG_SEVERE, "bind_server_so(): Can't bind by group connect_from to %s: %m\n", s);
 		free(s);
-	    } else
-		return(r);
+	    }
+	    return(r);
 	}
     } else {
 	if ( !connect_from_sa_p )
@@ -389,8 +375,9 @@ struct	group	*gr;
 	if ( r ) {
 	    my_xlog(OOPS_LOG_SEVERE, "bind_server_so(): Can't bind: %m\n");
 	}
-    return(r);
+	return(r);
     }
+    return(0);
 }
 
 void
@@ -460,7 +447,7 @@ int	ip_addr;
 }
 
 static u_short	q_id = 0;
-char*
+static char*
 my_gethostbyaddr(int addr)
 {
 struct	dnsqh {
@@ -489,7 +476,7 @@ u_char		dnsa[512];
     return(NULL);
 }
 
-int
+static int
 my_gethostbyname(char *name)
 {
 struct	dnsqh {
@@ -714,7 +701,7 @@ find_IN_A:
     return(answers[0]);
 }
 
-int
+static int
 lookup_dns_cache(char* name, struct dns_cache_item *items, int counter)
 {
 int			result = 0;
@@ -787,7 +774,7 @@ free_dns_hash_entry(struct dns_cache* cp)
     xfree(cp);
 }
 
-void
+static void
 get_hash_stamp(char *name, int *hash, int *stamp)
 {
 char		*c = name;
@@ -1039,7 +1026,8 @@ char		tbuf[80];
 }
 
 /* accept tm for GMT, return time */
-int
+inline
+static int
 tm_to_time(struct tm *tm, time_t *time)
 {
 struct		tm ttm;
@@ -1058,9 +1046,9 @@ time_t		res, dst;
     res -= timezone + dst;
 #elif	defined(_WIN32)
     res -= _timezone + dst;
-#elif	defined(FREEBSD) || (defined(LINUX) && !defined(HAVE__GMTOFF__) )
+#elif	defined(FREEBSD) || (defined(LINUX) && !defined(HAVE_STRUCT_TM___TM_GMTOFF__) )
     res += ttm.tm_gmtoff;
-#elif	defined(HAVE__GMTOFF__)
+#elif	defined(HAVE_STRUCT_TM___TM_GMTOFF__)
     res += ttm.__tm_gmtoff__ - dst;
 #else
     res += ttm.tm_gmtoff - dst;
@@ -1227,14 +1215,7 @@ int
 strerror_r(int err, char *errbuf, size_t lerrbuf)
 {
     if (err < 0 || err >= sys_nerr) {
-#if	defined(HAVE_SNPRINTF)
 	snprintf(errbuf, lerrbuf, "Unknown error: (%d)", err);
-#else
-	char	b[80];
-	sprintf(b, "Unknown error: (%d)", err);
-	if ( lerrbuf > 0 ) strncpy(errbuf, b, lerrbuf-1);
-	errbuf[lerrbuf-1] = 0;
-#endif  /* HAVE_SNPRINTF */
 	return(-1);
     }
     else
@@ -1305,86 +1286,6 @@ int	rc;
     } else {
 	my_xlog(OOPS_LOG_SEVERE, "decrease_hash_size(): Can't lock hash entry for decrease size\n");
     }
-}
-
-void
-remove_limits(void)
-{
-#if	!defined(_WIN32)
-struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
-
-#if	defined(RLIMIT_DATA)
-	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
-	    rl.rlim_cur = rl.rlim_max;
-	    if ( !setrlimit(RLIMIT_DATA, &rl) ) {
-		printf("RLIMIT_DATA changed to maximum: %u\n", (unsigned)rl.rlim_max);
-	    } else {
-		printf("warning: Can't change RLIMIT_DATA\n");
-	    }
-	}
-#endif
-#if	defined(RLIMIT_NOFILE)
-	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
-	    rl.rlim_cur = rl.rlim_max = OPEN_FILES_MAXIMUM;
-	    if ( !setrlimit(RLIMIT_NOFILE, &rl) ) {
-		printf("RLIMIT_NOFILE changed to maximum: %u\n", (unsigned)rl.rlim_max);
-	    } else {
-		printf("warning: Can't change RLIMIT_NOFILE\n");
-	    }
-	}
-#endif
-#if	defined(_RLIMIT_CORE)
-	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
-	    rl.rlim_cur = 0;
-	    if ( !setrlimit(RLIMIT_CORE, &rl) ) {
-		printf("RLIMIT_CORE changed to minimum: %u\n", (unsigned)rl.rlim_cur);
-	    } else {
-		printf("warning: Can't change RLIMIT_CORE\n");
-	    }
-	}
-#endif
-#if	defined(RLIMIT_NPROC) && defined(LINUX)
-	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
-	    rl.rlim_cur = RLIM_INFINITY;
-	    if ( !setrlimit(RLIMIT_NPROC, &rl) ) {
-		printf("RLIMIT_NPROC changed to maximum: %u\n", (unsigned)rl.rlim_cur);
-	    } else {
-		printf("warning: Can't change RLIMIT_NPROC\n");
-	    }
-	}
-#endif
-#endif	/* !_WIN32 */
-}
-
-void
-report_limits(void)
-{
-#if	!defined(_WIN32)
-struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
-
-#if	defined(RLIMIT_DATA)
-	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
-	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
-	}
-#endif
-#if	defined(RLIMIT_NOFILE)
-	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
-	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
-	}
-#endif
-#if	defined(RLIMIT_CORE)
-	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
-	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
-	}
-#endif
-#if	defined(RLIMIT_NPROC) && defined(LINUX)
-	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
-	    if ( !getrlimit(RLIMIT_NPROC, &rl) ) /* ??? same condition ??? */    {
-		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "report_limits(): RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
-	    }
-	}
-#endif
-#endif	/* !_WIN32 */
 }
 
 int
@@ -1657,182 +1558,6 @@ int	rc = -1;
 }
 #endif	/* FREEBSD */
 
-char*
-my_inet_ntoa(struct sockaddr_in * sa)
-{
-char * res = xmalloc(20, "my_inet_ntoa(): 1");
-uint32_t	ia = ntohl(sa->sin_addr.s_addr);
-uint32_t	a, b, c, d;
-
-    if ( !res ) return(NULL);
-    a =  ia >> 24;
-    b = (ia & 0x00ff0000) >> 16;
-    c = (ia & 0x0000ff00) >> 8;
-    d = (ia & 0x000000ff);
-    sprintf(res, "%d.%d.%d.%d",
-	(unsigned)(ia >> 24),
-	(unsigned)((ia & 0x00ff0000) >> 16),
-	(unsigned)((ia & 0x0000ff00) >> 8),
-	(unsigned)((ia & 0x000000ff)));
-    return(res);
-}
-
-void
-free_container(struct buff *buff)
-{
-struct buff *next;
-
-    while(buff) {
-	next = buff->next;
-	/*my_xlog(OOPS_LOG_DBG, "free_container(): Free buffer: %d of %d, next: %p\n", buff->size, buff->curr_size, buff->next);*/
-	if ( buff->data ) free(buff->data);
-	free(buff);
-	buff = next;
-    }
-}
-
-void
-analyze_header(char *p, struct server_answ *a)
-{
-char	*t;
-
-    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "analyze_header(): ---> `%s'.\n", p);
-    if ( !a->status_code ) {
-	/* check HTTP/X.X XXX */
-	if ( !strncasecmp(p, "HTTP/", 5) ) {
-	    int	httpv_major, httpv_minor;
-	    if ( sscanf(p+5, "%d.%d", &httpv_major, &httpv_minor) == 2 ) {
-		a->httpv_major = httpv_major;
-		a->httpv_minor = httpv_minor;
-	    }
-	    t = strchr(p, ' ');
-	    if ( !t ) {
-		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Wrong_header: %s\n", p);
-		return;
-	    }
-	    a->status_code = atoi(t);
-	    my_xlog(OOPS_LOG_DBG, "analyze_header(): Status code: %d\n", a->status_code);
-	}
-	return;
-    }
-    if ( !strncasecmp(p, "X-oops-internal-request-time: ", 30) ) {
-	char        *x;
-
-	x=p + 30;
-	while( *x && IS_SPACE(*x) ) x++;
-	a->request_time = atoi(x);
-	return;
-    }
-    if ( !strncasecmp(p, "X-oops-internal-response-time: ", 31) ) {
-	char        *x;
-
-	x=p + 31;
-	while( *x && IS_SPACE(*x) ) x++;
-	a->response_time = atoi(x);
-	return;
-    }
-    if ( !strncasecmp(p, "X-oops-internal-content-length: ", 32) ) {
-	char        *x;
-
-	x=p + 31;
-	while( *x && IS_SPACE(*x) ) x++;
-	a->x_content_length = atoi(x);
-	return;
-    }
-    if ( !strncasecmp(p, "X-oops-internal-alt-expires: ", 29) ) {
-	char        *x;
-
-	x=p + 29;
-	while( *x && IS_SPACE(*x) ) x++;
-	a->times.expires = atoi(x);
-	SET(a->flags, ANSW_EXPIRES_ALTERED | ANSW_HAS_EXPIRES);
-	return;
-    }
-    if ( !strncasecmp(p, "Content-length: ", 16) ) {
-	char        *x;
-	/* length */
-	x=p + 16; /* strlen("content-length: ") */
-	while( *x && IS_SPACE(*x) ) x++;
-	a->content_len = atoi(x);
-	return;
-    }
-    if ( !strncasecmp(p, "Date: ", 6) ) {
-	char        *x;
-	/* length */
-	x=p + 6; /* strlen("date: ") */
-	while( *x && IS_SPACE(*x) ) x++;
-	a->times.date  = global_sec_timer;
-	if (http_date(x, &a->times.date) ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
-	return;
-    }
-    if ( !strncasecmp(p, "Last-Modified: ", 15) ) {
-	char        *x;
-	/* length */
-	x=p + 15; /* strlen("date: ") */
-	while( *x && IS_SPACE(*x) ) x++;
-	if (http_date(x, &a->times.last_modified) ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
-	    else
-		a->flags |= ANSW_LAST_MODIFIED;
-	return;
-    }
-    if ( !strncasecmp(p, "Pragma: ", 8) ) {
-	char        *x;
-	/* length */
-	x=p + 8; /* strlen("Pragma: ") */
-	if ( strstr(x, "no-cache") ) a->flags |= ANSW_NO_STORE;
-	return;
-    }
-    if ( !strncasecmp(p, "Age: ", 5) ) {
-	char        *x;
-	/* length */
-	x=p + 5; /* strlen("Age: ") */
-	a->times.age = atoi(x);
-	return;
-    }
-    if ( !strncasecmp(p, "Cache-Control: ", 15) ) {
-	char        *x;
-	/* length */
-	x=p + 15; /* strlen("Cache-Control: ") */
-	while( *x && IS_SPACE(*x) ) x++;
-	if ( strstr(x, "no-store") )
-		a->flags |= ANSW_NO_STORE;
-	if ( strstr(x, "no-cache") )
-		a->flags |= ANSW_NO_STORE;
-	if ( strstr(x, "private") )
-		a->flags |= ANSW_NO_STORE;
-	if ( strstr(x, "must-revalidate") )
-		a->flags |= ANSW_MUST_REVALIDATE;
-	if ( !strncasecmp(x, "proxy-revalidate", 15) )
-		a->flags |= ANSW_PROXY_REVALIDATE;
-	if ( sscanf(x, "max-age = %d", (int*)&a->times.max_age) == 1 )
-		a->flags |= ANSW_HAS_MAX_AGE;
-    }
-    if ( !strncasecmp(p, "Connection: ", 12) ) {
-	char        *x;
-	/* length */
-	x = p + 12; /* strlen("Connection: ") */
-	while( *x && IS_SPACE(*x) ) x++;
-	if ( !strncasecmp(x, "keep-alive", 10) )
-		a->flags |= ANSW_KEEP_ALIVE;
-	if ( !strncasecmp(x, "close", 5) )
-		a->flags &= ~ANSW_KEEP_ALIVE;
-    }
-    if (    !TEST(a->flags, ANSW_HAS_EXPIRES) 
-         && !strncasecmp(p, "Expires: ", 9) ) {
-	char        *x;
-	/* length */
-	x = p + 9; /* strlen("Expires: ") */
-	while( *x && IS_SPACE(*x) ) x++;
-	a->times.expires  = time(NULL);
-	if (http_date(x, &a->times.expires)) {
-		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
-		return;
-	}
-	a->flags |= ANSW_HAS_EXPIRES;
-	return;
-    }
-}
-
 struct av*
 lookup_av_by_attr(struct av *avp, char *attr)
 {
@@ -1843,23 +1568,6 @@ struct av	*res = NULL;
     while( avp ) {
 	if ( avp->attr && !strncasecmp(avp->attr, attr, strlen(attr)) ) {
 	    res = avp;
-	    break;
-	}
-	avp = avp->next;
-    }
-    return(res);
-}
-
-char*
-attr_value(struct av *avp, char *attr)
-{
-char	*res = NULL;
-
-    if ( !attr ) return(NULL);
-
-    while( avp ) {
-	if ( avp->attr && !strncasecmp(avp->attr, attr, strlen(attr)) ) {
-	    res = avp->val;
 	    break;
 	}
 	avp = avp->next;
@@ -1899,311 +1607,6 @@ failed:
     if ( new_val ) xfree(new_val);
     return(1);
 }
-
-int
-add_header_av(char* avtext, struct mem_obj *obj)
-{
-struct	av	*new = NULL, *next;
-char		*attr = avtext, *sp = avtext, *val, holder;
-char		*new_attr = NULL, *new_val = NULL;
-char		nullstr[1];
-
-    if ( *sp == 0 ) return(-1);
-    while( *sp && IS_SPACE(*sp) ) sp++;
-    while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
-    if ( !*sp ) {
-	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "add_header_av(): Invalid header string: '%s'\n", avtext);
-	nullstr[0] = 0;
-	sp = nullstr;
-    }
-    if ( *sp == ':' ) sp++;
-    holder = *sp;
-    *sp = 0;
-    if ( !strlen(attr) ) return(-1);
-    new = xmalloc(sizeof(*new), "add_header_av(): for av pair");
-    if ( !new ) goto failed;
-    new_attr = xmalloc( strlen(attr)+1, "add_header_av(): for new_attr" );
-    if ( !new_attr ) goto failed;
-    strcpy(new_attr, attr);
-    *sp = holder;
-    val = sp; while( *val && IS_SPACE(*val) ) val++;
-    /*if ( !*val ) goto failed;*/
-    new_val = xmalloc( strlen(val) + 1, "add_header_av(): for new_val");
-    if ( !new_val ) goto failed;
-    strcpy(new_val, val);
-    new->attr = new_attr;
-    new->val  = new_val;
-    new->next = NULL;
-    if ( !obj->headers ) {
-	obj->headers = new;
-    } else {
-	next = obj->headers;
-	while (next->next) next=next->next;
-	next->next=new;
-    }
-    return(0);
-
-failed:
-    *sp = holder;
-    if ( new ) free(new);
-    if ( new_attr ) free(new_attr);
-    if ( new_val ) free(new_val);
-    return(-1);
-}
-
-int
-check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b, struct request *rq)
-{
-char	*start, *beg, *end, *p;
-char	holder, its_here = 0, off = 2;
-char	*p1 = NULL;
-
-    if ( !b || !b->data ) return(0);
-    beg = b->data;
-    end = b->data + b->used;
-
-go:
-    if ( a->state & GOT_HDR ) return(0);
-    start = beg + a->checked;
-    if ( !a->checked ) {
-	p = memchr(beg, '\n', end-beg);
-	holder = '\n';
-	if ( !p ) {
-	    p = memchr(beg, '\r', end-beg);
-	    holder = '\r';
-	}
-	if ( !p ) return(0);
-	if ( *p == '\n' ) {
-	    if ( *(p-1) == '\r' ) {
-		p1 = p-1;
-		*p1 = 0;
-	    }
-	}
-	*p = 0;
-	a->checked = strlen(start);
-	/* this is HTTP XXX yyy "header", which we will never rewrite */
-	analyze_header(start, a);
-	if ( add_header_av(start, obj) ) {
-	    *p = holder;
-	    if ( p1 ) {*p1 = '\r'; p1=NULL;}
-	    return(-1);
-	}
-	*p = holder;
-	if ( p1 ) {*p1 = '\r'; p1=NULL;}
-	goto go;
-    }
-    if ( (end - start >= 2) && !memcmp(start, "\n\n", 2) ) {
-	its_here = 1;
-	off = 2;
-    }
-    if ( (end - start >= 3) && !memcmp(start, "\r\n\n", 3) ) {
-	its_here = 1;
-	off = 3;
-    }
-    if ( (end - start >= 3) && !memcmp(start, "\n\r\n", 3) ) {
-	its_here = 1;
-	off = 3;
-    }
-    if ( (end - start >= 4) && !memcmp(start, "\r\n\r\n", 4) ) {
-	its_here = 1;
-	off = 4;
-    }
-    if ( its_here ) {
-	struct buff	*body;
-	int		all_siz;
-
-	obj->insertion_point = start-beg;
-	obj->tail_length = off;
-	a->state |= GOT_HDR ;
-	obj->httpv_major = a->httpv_major;
-	obj->httpv_minor = a->httpv_minor;
-	obj->content_length = a->content_len;
-	b->used = ( start + off ) - beg;	/* trunc first buf to header siz	*/
-	/* if requested don't cache documents without "Last-Modified" */
-	if ( dont_cache_without_last_modified
-		&& !TEST(a->flags, ANSW_LAST_MODIFIED) ) {
-	    SET(obj->flags, ANSW_NO_STORE|ANSW_NO_CACHE);
-	}
-	/* allocate data storage */
-	if ( a->content_len ) {
-	    if ( a->content_len > maxresident ) {
-		/*
-		 -  This object will not be stored, we will receive it in
-		 -  small parts, in syncronous mode
-		 -  allocate as much as we need now...
-		*/
-		all_siz = ROUND_CHUNKS(end-start-off);
-		/*
-		 - mark object as 'not for store' and 'don't expand container'
-		*/
-		a->flags |= (ANSW_NO_STORE | ANSW_SHORT_CONTAINER);
-	    } else /* obj is not too large */
-		all_siz = a->content_len;
-	} else /* no Content-Len: */
-	    all_siz = ROUND_CHUNKS(end-start-off);
-	body = alloc_buff(all_siz);
-	if ( !body ) {
-	    return(-1);
-	}
-	b->next = body;
-	obj->hot_buff = body;
-	attach_data(start+off, end-start-off, obj->hot_buff);
-	return(0);
-    }
-    p = start;
-    while( (p < end) && ( *p == '\r' || *p == '\n' ) ) p++;
-    if ( p < end && *p ) {
-	char *t = memchr(p, '\n', end-p);
-	char *tmp, *saved_tmp;
-
-	holder = '\n';
-	if ( !t ) {
-	    t = memchr(p, '\r', end-p);
-	    holder = '\r';
-	}
-	if ( !t ) return(0);
-	if ( *t == '\n' ) {
-	    if ( *(t-1) == '\r' ) {
-		p1 = t-1;
-		*p1 = 0;
-	    }
-	}
-	*t = 0;
-	saved_tmp = tmp = strdup(p);
-	if ( !tmp )
-	    return(-1);
-	do_redir_rewrite_header(&tmp, rq, NULL);
-	analyze_header(tmp, a);
-	if ( add_header_av(tmp, obj) ) {
-	    free(tmp);
-	    return(-1);
-	}
-	if ( saved_tmp != tmp ) {
-	    /* header was changed */
-	    if ( obj ) SET(obj->flags, ANSW_HDR_CHANGED);
-	}
-	free(tmp);
-	*t = holder;
-	if ( p1 ) { *p1 = '\r'; t=p1; p1 = NULL;}
-	a->checked = t - beg;
-	goto go;
-    }
-    return(0);
-}
-
-struct	buff*
-alloc_buff(int size)
-{
-char		*t, *d;
-struct buff	*b;
-
-    if ( size <=0 ) return(NULL);
-    t = xmalloc(sizeof(struct buff), "alloc_buff(): 1");
-    if ( !t ) return(NULL);
-    bzero(t, sizeof(struct buff));
-    d = xmalloc(size, "alloc_buff(): 2");
-    if ( !d ) {
-	free(t);
-	return(NULL);
-    }
-    b = (struct buff*)t;
-    b->data = d;
-    b->curr_size = size;
-    b->used = 0;
-    return(b);
-}
-
-/* store in hot_buff, allocate buffs if need*/
-int
-store_in_chain(char *src, int size, struct mem_obj *obj)
-{
-struct buff *hot = obj->hot_buff, *new;
-
-    if (!hot) {
-	my_xlog(OOPS_LOG_SEVERE, "store_in_chain(): hot == NULL!\n");
-	return(-1);
-    }
-    if (!obj) {
-	my_xlog(OOPS_LOG_SEVERE, "store_in_chain(): obj == NULL!\n");
-	return(-1);
-    }
-    if ( size < 0 ) {
-	my_xlog(OOPS_LOG_SEVERE, "store_in_chain(): size = %d!\n", size);
-	return(-1);
-    }
-    if ( hot->used + size <= hot->curr_size ) {
-	memcpy( hot->data + hot->used, src, size);
-	hot->used += size;
-    } else {
-	int	moved, to_move;
-	/* copy part */
-	memcpy(hot->data + hot->used, src, hot->curr_size - hot->used);
-	moved=hot->curr_size - hot->used;
-	hot->used = hot->curr_size;
-	to_move = size - moved;
-	/* allocate  */
-	new = alloc_buff(ROUND_CHUNKS(to_move));
-	if ( !new ) return(-1);
-	/* copy rest */
-	memcpy(new->data, src+moved, to_move);
-	new->used = to_move;
-	hot->next = new;
-	obj->hot_buff = new;
-    }
-    return(0);
-}
-
-int
-attach_av_pair_to_buff(char* attr, char *val, struct buff *buff)
-{
-    if ( !attr || !val || !buff )return(-1);
-
-    if ( *attr ) {
-	attach_data(attr, strlen(attr), buff);
-	attach_data(" ", 1, buff);
-	attach_data(val, strlen(val), buff);
-    }
-    attach_data("\r\n", 2, buff);
-    return(0);
-}
-
-/* concatenate bata in continuous buffer */
-int
-attach_data(char* src, int size, struct buff *buff)
-{
-char	*t;
-int	tot;
-
-    if ( size <= 0 ) return(-1);
-    if ( !buff->data ) {
-	t = xmalloc(((size / CHUNK_SIZE) + 1) * CHUNK_SIZE, "attach_data(): 1");
-	if (!t) return(-1);
-	buff->data = t;
-	memcpy(t, src, size);
-	buff->curr_size = ((size / CHUNK_SIZE) + 1) * CHUNK_SIZE;
-	buff->used = size;
-	return(0);
-    }
-    if ( buff->used + size <= buff->curr_size ) {
-	memcpy(buff->data+buff->used, src, size);
-	buff->used += size;
-    } else {
-	tot = buff->used + size;
-	tot = ((tot / CHUNK_SIZE) + 1) * CHUNK_SIZE;
-	t = xmalloc(tot, "attach_data(): 2");
-	if (!t ) {
-	    my_xlog(OOPS_LOG_SEVERE, "attach_data(): No mem in attach data.\n");
-	    return(-1);
-	}
-	memcpy(t, buff->data, buff->used);
-	memcpy(t+buff->used, src, size);
-	free(buff->data);buff->data = t;
-	buff->used += size;
-	buff->curr_size = tot;
-    }
-    return(0);
-}
-
 
 #undef	malloc
 
@@ -2291,7 +1694,7 @@ xmalloc(size_t size, char *d)
 #if	!defined(MALLOCDEBUG)
 char	*p;
 
-	if ( size < 0 ) {
+	if ( (signed) size < 0 ) {
 	    my_xlog(OOPS_LOG_DBG, "xmalloc(): Alloc %d for %s\n", size, d);
 	    do_exit(1);
 	}
@@ -2500,7 +1903,7 @@ char		   *ext;
 int	      base64_value[BASE64_VALUE_SZ];
 unsigned char alphabet[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 void
-base_64_init()
+base_64_init(void)
 {
 int i;
 
@@ -2661,7 +2064,7 @@ struct	charset *next;
     return(0);
 }
 
-int
+static int
 free_charset(struct charset *charset)
 {
 
@@ -2853,7 +2256,7 @@ struct	listen_so_list	*ls = listen_so_list;
 void
 memcpy_to_lower(char *d, char *s, size_t size)
 {
-    if ( !s || !d || (size <= 0) ) return;
+    if ( !s || !d || ((signed)size <= 0) ) return;
     while(size) {
 	*d = tolower(*s);
 	d++;s++;size--;
@@ -2977,7 +2380,8 @@ set_refresh_pattern(struct request *rq, refresh_pattern_t *list)
     }
 }
 
-int
+inline
+static int
 find_bind_acl(struct request *rq)
 {
 bind_acl_t	*curr;
@@ -3130,11 +2534,8 @@ init_filebuff(filebuff_t *fb)
 {
     if ( !fb )
 	return(1);
-    fb->fd == -1;
+    fb->fd = -1;
     fb->buff = NULL;
-#if	!defined(HAVE_SNPRINTF)
-    fb->File = NULL;
-#endif
     pthread_mutex_init(&fb->lock, NULL);
     dataq_init(&fb->queue,128);
     return(1);
@@ -3146,7 +2547,6 @@ reopen_filebuff(filebuff_t *fb, char *filename, int flag)
     if ( !fb || !filename )
 	return(1);
     pthread_mutex_lock(&fb->lock);
-#if	defined(HAVE_SNPRINTF)
     if ( fb->fd != -1 ) close(fb->fd);
     fb->fd = open(filename, O_WRONLY|O_APPEND|O_CREAT, 0660);
     if ( flag ) {
@@ -3160,15 +2560,6 @@ reopen_filebuff(filebuff_t *fb, char *filename, int flag)
 	    fb->buff = NULL;
 	}
     }
-#else
-    fb->File = fopen(filename,"a");
-    fb->fd = -1;
-    if ( fb->File ) {
-	fb->fd = fileno(fb->File);
-	setbuf(fb->File, NULL);
-    }
-    flag = 0;
-#endif
     pthread_mutex_unlock(&fb->lock);
     fb->buffered = flag;
     return(1);
@@ -3207,7 +2598,8 @@ struct	buff	*b;
     pthread_mutex_unlock(&fb->lock);
 }
 
-void
+inline
+static void
 short_flushout_fb(filebuff_t *fb)
 {
 struct	buff	*b;
@@ -3220,7 +2612,8 @@ int		i = 0;
     }
 }
 
-void
+inline
+static void
 put_str_in_filebuff(char *str, filebuff_t *fb)
 {
 int		strl;

@@ -21,18 +21,141 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"oops.h"
 
 #define		ST_LSEEK(a,b,c)		lseek(a,storage->i_off + b,c)
-#define		ST_PREAD(a,b,c,d)	pread(a,b,c,d+storage->i_off)
-#define		ST_PWRITE(a,b,c,d)	pwrite(a,b,c,d+storage->i_off)
+#define		ST_PREAD(a,b,c,d)	st_pread(a,b,c,d+storage->i_off, storage)
+#define		ST_PREAD_ALIGNED(a,b,c,d) st_pread_aligned(a,b,c,d+storage->i_off, storage)
+#define		ST_PWRITE(a,b,c,d)	st_pwrite(a,b,c,d+storage->i_off, storage)
 
 #define		ROUNDPG(x)		(((x)/STORAGE_PAGE_SIZE + ((x)%STORAGE_PAGE_SIZE?1:0))*STORAGE_PAGE_SIZE)
 #define		BLKSIZE			STORAGE_PAGE_SIZE
 #define		MAGIC			(0xdeadfeed)
+#define		BLK_SEG_SIZE		(64*1024)
+#define		BIT_TO_SEG(i)		(i/BLK_SEG_SIZE)
 
-int		buff_to_blks(struct buff *b, struct storage_st * storage, uint32_t *n, uint32_t needed);
+#define		IS_CHARDEV(s)		(((s)->statb.st_mode) & S_IFCHR)
+#define		ROUND_UP(a,b)		((b%a)?(((b)/(a)+1)*a):(b))
+
+#if             !defined(PAGE_SIZE)
+#define         PAGE_SIZE               (4096)
+#endif
 
 int		skip_check;
 
-void
+static	int	buff_to_blks(struct buff *, struct storage_st *, uint32_t *, uint32_t);
+static	int	buff_to_blks_o(struct buff *, struct storage_st *, uint32_t *, uint32_t);
+static	void	check_storages(struct storage_st *);
+static	void	free_storage(struct storage_st *);
+static	int	init_storages(struct storage_st *);
+static	char	*request_free_blks(struct storage_st *, uint32_t);
+
+inline	static	int	calc_free_bits(char *, int, int);
+inline	static	void	clr_bits(char *, int, int);
+inline  static	int	find_free_bit(struct storage_st *, char *, int, int);
+inline	static	void	set_bits(char *, int, int);
+inline	static	int	test_map_bit(char *, int);
+
+
+static
+ssize_t
+st_pread(int fd, void *buf, size_t nbyte, off_t off, struct storage_st *st)
+{
+char	localbuf[2*512], *start_b, *rounded_b;
+char    *rounded_data;
+ssize_t	res, rnbyte;
+
+    if ( !IS_CHARDEV(st) ) {
+	return(pread(fd,buf,nbyte,off));
+    }
+    if ( nbyte < 512 ) {
+        start_b = &localbuf[0];
+        rounded_b = (char*)(((uintptr_t)start_b/512)*512);
+        if ( rounded_b < &localbuf[0] ) rounded_b += 512;
+	res = pread(fd,rounded_b, 512, off);
+	if ( res > 0 ) {
+	    memcpy(buf, rounded_b, MIN(nbyte, res));
+	    return(MIN(nbyte, res));
+        }
+	my_xlog(OOPS_LOG_SEVERE, "st_pread(%d, %d): %m\n", fd, nbyte);
+	return(res);
+    }
+    rnbyte = (nbyte/512)*512;
+    if ( rnbyte < nbyte ) rnbyte+=512;
+#if	defined(SOLARIS)
+    rounded_data = memalign(512, rnbyte);
+#else
+    rounded_data = malloc(ROUND_UP(PAGE_SIZE, rnbyte));
+#endif
+    if ( !rounded_data ) {
+        return(-1);
+    }
+    res = pread(fd,rounded_data,rnbyte,off);
+    if ( res <= 0 ) {
+        return(res);
+    }
+    memcpy(buf, rounded_data, MIN(res,nbyte));
+    return(MIN(res,nbyte));
+}
+
+static
+ssize_t
+st_pread_aligned(int fd, void *buf, size_t nbyte, off_t off, struct storage_st *st)
+{
+ssize_t	res, rnbyte;
+
+    if ( !IS_CHARDEV(st) ) {
+	return(pread(fd,buf,nbyte,off));
+    }
+    rnbyte = ROUND_UP(512, nbyte);
+    res = pread(fd, buf,rnbyte,off);
+    if ( res <= 0 ) {
+        return(res);
+    }
+    return(MIN(res,nbyte));
+}
+
+static
+ssize_t
+st_pwrite(int fd, void *buf, size_t nbyte, off_t off, struct storage_st *st)
+{
+char	localbuf[2*512], *start_b, *rounded_b;
+char    *rounded_data;
+ssize_t	res, rnbyte;
+
+    if ( !IS_CHARDEV(st) )  {
+	return(pwrite(fd,buf,nbyte,off));
+    }
+    if ( nbyte < 512 ) {
+        start_b = &localbuf[0];
+        rounded_b = (char*)(((uintptr_t)start_b/512)*512);
+        if ( rounded_b < &localbuf[0] ) rounded_b += 512;
+	memcpy(rounded_b, buf, nbyte);
+	res = pwrite(fd,rounded_b, 512, off);
+	if ( res > 0 ) {
+	    return(MIN(nbyte, res));
+        }
+	my_xlog(OOPS_LOG_SEVERE, "st_pread(%d, %d): %m\n", fd, nbyte);
+	return(res);
+    }
+    rnbyte = (nbyte/512)*512;
+    if ( rnbyte < nbyte ) rnbyte+=512;
+#if	defined(SOLARIS)
+    rounded_data = memalign(512, rnbyte);
+#else
+    rounded_data = malloc(ROUND_UP(PAGE_SIZE,rnbyte));
+#endif
+    if ( !rounded_data ) {
+        return(-1);
+    }
+    memcpy(rounded_data, buf, nbyte);
+    res = pwrite(fd,rounded_data,rnbyte,off);
+    free(rounded_data);
+    if ( res > 0 ) {
+        return(MIN(nbyte, res));
+    }
+    return(res);
+}
+
+inline
+static void
 set_bits(char *map, int from, int num)
 {
 int		cur_bit = from;
@@ -66,7 +189,8 @@ uint32_t	mask, mask2, *pvalue;
     }
 }
 
-void
+inline
+static void
 clr_bits(char *map, int from, int num)
 {
 int		cur_bit = from;
@@ -100,7 +224,8 @@ uint32_t	mask, mask2, *pvalue;
     }
 }
 
-int
+inline
+static int
 test_map_bit(char *map, int from)
 {
 int		cur_bit = from;
@@ -115,8 +240,9 @@ uint32_t	mask, *pvalue;
     return(*pvalue & mask);
 }
 
-int
-find_free_bit(char *map, int from, int to)
+inline
+static int
+find_free_bit(struct storage_st *st, char *map, int from, int to)
 {
 int		cur_bit = from;
 int		cur_word, i ;
@@ -125,6 +251,17 @@ uint32_t	mask, mask2, pvalue;
 
     leave_to_find = to-from;
     if ( leave_to_find <= 0 ) return(0);
+    if ( st->segmap ) {
+	while ( st->segmap[BIT_TO_SEG(from)] <=0 ) {
+	    from = (BIT_TO_SEG(from)+1)*BLK_SEG_SIZE;
+    	    leave_to_find = to-from;
+    	    if ( leave_to_find <= 0 ) {
+    	        return(0);
+	    }
+	}
+    }
+    leave_to_find = to-from;
+    cur_bit = from;
     while( leave_to_find ) {
 	cur_word = cur_bit/32;
 	bit_off  = cur_bit%32;
@@ -153,10 +290,12 @@ uint32_t	mask, mask2, pvalue;
 	leave_to_find -= find_here;
 	cur_bit	  += find_here;
     }
+    my_xlog(OOPS_LOG_SEVERE, "find_free_bit(): Failed to find\n");
     return(0);
 }
 
-int
+inline
+static int
 calc_free_bits(char *map, int from, int to)
 {
 int		cur_bit = from;
@@ -209,9 +348,9 @@ void
 init_storage(struct storage_st *storage)
 {
 fd_t		fd = (fd_t)-1;
-int		map_words;
+int		map_words, seg_words;
 uint32_t	blk_num;
-char		*map_ptr=NULL;
+char		*map_ptr=NULL, *seg_ptr=NULL;
 
 
     pthread_rwlock_init(&storage->storage_lock, NULL);
@@ -231,6 +370,7 @@ char		*map_ptr=NULL;
     directio(fd, DIRECTIO_ON);
 #endif
     storage->fd = fd;
+    fstat(fd, &storage->statb);
     /* read super */
 #if	defined(HAVE_PREAD) && defined(HAVE_PWRITE)
     if ( ST_PREAD(fd, &storage->super, sizeof(storage->super), 0) !=
@@ -265,7 +405,19 @@ char		*map_ptr=NULL;
     storage->map = map_ptr;
     storage->size = (off_t)STORAGE_PAGE_SIZE*blk_num;
     /* ready */
-
+    seg_words = blk_num/BLK_SEG_SIZE + 1;
+    seg_ptr = (char*)calloc(seg_words, sizeof(unsigned int));
+    if ( seg_ptr ) {
+        int		i;
+	unsigned int 	*seg_map = (unsigned int*)seg_ptr;
+	storage->segmap = seg_map;
+        my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "init_storage(): Build seg map.\n");
+	for (i=0;i<storage->super.blks_total;i++) {
+	    if ( !test_map_bit(storage->map, i) ) {
+	        seg_map[BIT_TO_SEG(i)]++;
+	    }
+	}
+    }
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "init_storage(): Storage %s ready.\n", storage->path);
     storage->flags = ST_READY;
     UNLOCK_STORAGE(storage);
@@ -280,7 +432,7 @@ error:
     return;
 }
 
-void
+static void
 free_storage(struct storage_st *storage)
 {
 
@@ -295,6 +447,7 @@ free_storage(struct storage_st *storage)
     }
     if ( storage->path ) xfree(storage->path) ;
     if ( storage->map) xfree(storage->map);
+    if ( storage->segmap) xfree(storage->segmap);
     pthread_rwlock_destroy(&storage->storage_lock);
     free(storage);
 }
@@ -305,7 +458,7 @@ free_storage(struct storage_st *storage)
  * if succeed - return reference to start block of the allocated chain
  * Must be called for locked storage
  */
-char*
+static char*
 request_free_blks(struct storage_st * storage, uint32_t n)
 {
 uint32_t	current, o = n, *p, *po, i;
@@ -323,7 +476,9 @@ char		*allocated = NULL;
     p = po = (uint32_t*)(allocated+sizeof(struct disk_ref));
     current = 0;
     while ( n ) {
-	current = find_free_bit(storage->map, current+1, storage->super.blks_total) ;
+	MY_TNF_PROBE_0(find_free_bit_start, "contention", "find_free_bit begin");
+	current = find_free_bit(storage, storage->map, current+1, storage->super.blks_total) ;
+	MY_TNF_PROBE_0(find_free_bit_stop, "contention", "find_free_bit end");
 	if ( !current ) {
 	    my_xlog(OOPS_LOG_SEVERE, "request_free_blks(): Severe error on block %u\n", n);
 	    goto error;
@@ -343,6 +498,10 @@ char		*allocated = NULL;
 	    do_exit(1);
 	}
 	set_bits(storage->map, *po, 1);
+	if ( storage->segmap ) {
+	    storage->segmap[BIT_TO_SEG(*po)]--;
+	    assert(storage->segmap[BIT_TO_SEG(*po)] >=0 );
+	}
     }
     return allocated;
 
@@ -386,6 +545,14 @@ int	 released;
 	    do_exit(1);
 	}
 	clr_bits(storage->map, *next_blk, 1);
+	if ( storage->segmap ) {
+	    storage->segmap[BIT_TO_SEG(*next_blk)]++;
+	    if ( storage->segmap[BIT_TO_SEG(*next_blk)]>BLK_SEG_SIZE) {
+		my_xlog(OOPS_LOG_SEVERE, "release_blks(): segmap[%d]=%d\n",*next_blk,
+				storage->segmap[BIT_TO_SEG(*next_blk)]);
+	    }
+	    assert(storage->segmap[BIT_TO_SEG(*next_blk)]<=BLK_SEG_SIZE);
+	}
 	released--;
 	next_blk++;
     }
@@ -429,6 +596,9 @@ uint32_t	blk_num;
 	return(1);
     rc = write(storage->fd, storage->map, map_words*4);
 #endif	/* PREAD && PWRITE */
+    if ( rc != map_words*4 ) {
+	my_xlog(OOPS_LOG_SEVERE, "Can't sync map\n");
+    }
     return(0);
 }
 
@@ -465,7 +635,9 @@ struct	disk_ref	*disk_ref;
 	if ( (storage->flags & ST_READY) && !(storage->flags & ST_FORCE_CLEANUP) ) {
 	    if ( (disk_ref = (struct disk_ref*)request_free_blks(storage, needed_blocks)) !=0 ) {
 		blk = (uint32_t*)((char*)disk_ref + sizeof(struct disk_ref));
+		MY_TNF_PROBE_0(buff_to_blks_start, "contention", "buff_to_blks begin");
 		buff_to_blks(obj->container, storage, blk, needed_blocks);
+		MY_TNF_PROBE_0(buff_to_blks_stop, "contention", "buff_to_blks stop");
 		*st = storage;
 		UNLOCK_STORAGE(storage);
 		next_alloc_storage = storage->next;
@@ -481,8 +653,130 @@ struct	disk_ref	*disk_ref;
     return 0;
 }
 
-int
+static int
 buff_to_blks(struct buff *b, struct storage_st * storage, uint32_t *n, uint32_t needed)
+{
+char		*c;
+int		to_move, rc, space=0, bpos, blockwptr, blockbuffree;
+uint32_t	*nn, *nnn, tneeded;
+#if	defined(HAVE_PWRITE)
+off_t		next_position;
+#endif
+char		blockbuf[BLKSIZE];
+int             cb, left;
+
+    blockwptr = 0; blockbuffree = BLKSIZE;
+    while ( b && needed ) {
+        bpos = 0;
+    cwb:
+        if ( space <= 0 ) {
+            space = BLKSIZE;
+#if	defined(HAVE_PWRITE)
+	    next_position = *n*BLKSIZE;
+#else
+	    ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
+#endif	/* HAVE_PWRITE */
+            nn = n; nnn = n+1;
+            /*
+        	this 'while' count contig. space we can use for write.
+        	'space' is free space for write in current block(s).
+            */
+            while(needed > 1) {
+        	if ( (*nn + 1) == (*nnn) ) {
+        	    space += BLKSIZE;
+        	    nn = nnn;
+        	    nnn = nnn+1;
+        	    needed--;
+        	} else
+        	    break;
+            };
+            n = nn+1;
+        }
+        c = b->data+bpos;
+        to_move = b->used - bpos;
+        /* part of this block can go to blockbuf */
+        if ( blockwptr != 0 ) {
+            /* add part of this block to blockbuf */
+            if ( to_move <= blockbuffree ) {
+                /* we can add whole this block */
+                memcpy(blockbuf + blockwptr, c, to_move);
+                blockwptr+=to_move;
+                blockbuffree-=to_move;
+                space -= to_move;
+                assert(space>=0);
+                b = b->next;
+                continue;
+            }
+            /* add part */
+            memcpy(blockbuf + blockwptr, c, blockbuffree);
+#if	defined(HAVE_PWRITE)
+	    rc = ST_PWRITE(storage->fd, blockbuf, BLKSIZE, next_position);
+	    next_position += BLKSIZE;
+#else
+	    rc = write(storage->fd, blockbuf, BLKSIZE);
+#endif	/* HAVE_PWRITE */
+            space -= blockbuffree;
+            bpos += blockbuffree;
+            blockwptr=0;
+            blockbuffree=BLKSIZE;
+            if ( bpos >= b->used ) {
+                b = b->next;
+                continue;
+            }
+            goto cwb;
+        }
+        /* at this point we always stay on disk block boundary */
+        if ( to_move < space ) {
+            /* look how much contig blocks we can write */
+            cb = (to_move/BLKSIZE)*BLKSIZE;
+            if ( cb > 0 )  {
+#if	defined(HAVE_PWRITE)
+               rc = ST_PWRITE(storage->fd, c, cb, next_position);
+	       next_position += cb;
+#else
+               rc = write(storage->fd, c, cb);
+#endif	/* HAVE_PWRITE */
+                bpos += cb;
+                space -= cb;
+            }
+            left = to_move-cb;
+            assert(blockwptr==0);
+            memcpy(blockbuf, c+cb, left);
+            blockwptr=left;
+            blockbuffree=BLKSIZE-left;
+            bpos+=left;
+            space-=left;
+            if ( bpos >= b->used ) {
+                b = b->next;
+                continue;
+            }
+            goto cwb;
+        }
+        /* to_move > space */
+        cb = space;
+#if	defined(HAVE_PWRITE)
+        rc = ST_PWRITE(storage->fd, c, cb, next_position);
+        next_position += cb;
+#else
+        rc = write(storage->fd, c, cb);
+#endif	/* HAVE_PWRITE */
+        bpos+=cb;
+        space-=cb;
+        goto cwb;
+    }
+done:
+    if ( blockwptr != 0 ) {
+#if	defined(HAVE_PWRITE)
+        rc = ST_PWRITE(storage->fd, blockbuf, blockwptr, next_position);
+#else
+        rc = write(storage->fd, blockbuf, blockwptr);
+#endif	/* HAVE_PWRITE */
+    }
+    return 0;
+}
+
+static int
+buff_to_blks_o(struct buff *b, struct storage_st * storage, uint32_t *n, uint32_t needed)
 {
 char		*c;
 int		to_move, rc, space;
@@ -490,14 +784,20 @@ uint32_t	*nn, *nnn, tneeded;
 #if	defined(HAVE_PWRITE)
 off_t		next_position;
 #endif
+char		blockbuf[BLKSIZE], *blockwptr;
 
     space = BLKSIZE;
+    blockwptr = blockbuf;
 #if	defined(HAVE_PWRITE)
     next_position = *n*BLKSIZE;
 #else
     ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif	/* HAVE_PWRITE */
     nn = n; nnn = n+1; tneeded = needed;
+    /*
+	this 'while' count contig. space we can use for write.
+	'space' is free space for write in current block(s).
+    */
     while(tneeded > 1) {
 	if ( (*nn + 1) == (*nnn) ) {
 	    space += BLKSIZE;
@@ -604,7 +904,7 @@ struct storage_st	*storage;
 char			http_p;
 
     *disk_ref = NULL;
-    if ( (db_in_use == FALSE) || !storages_ready )
+    if ( (db_in_use == FALSE) || !storages_ready || (broken_db == TRUE) )
 	return(-1);
 
     urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
@@ -641,6 +941,9 @@ char			http_p;
 	default:
 		my_xlog(OOPS_LOG_SEVERE, "locate_url_on_disk(): Unknown answer from db->get(%s): %d\n",
 			key.data, rc);
+		my_xlog(OOPS_LOG_SEVERE, "locate_url_on_disk(): Force close_db.\n");
+                broken_db = TRUE;
+                strncpy(disk_state_string, "DB closed because of get() error", sizeof(disk_state_string)-1);
 		xfree(url_str);
 		return(-1);
     }
@@ -650,14 +953,16 @@ int
 load_obj_from_disk(struct mem_obj *obj, struct disk_ref *disk_ref)
 {
 struct 	buff		*b;
-size_t			to_load;
+size_t			to_load, space;
 size_t			next_read;
 uint32_t		*n;
 int			rc;
 fd_t			fd = (fd_t)-1;
 struct	storage_st	*storage;
 struct	server_answ	a;
-char			answer[BLKSIZE+1];
+char			answer[BLKSIZE+1], *read_data;
+uint32_t	        *nn, *nnn;
+off_t                   next_offset;
 
     if ( !obj )
 	return(-1);
@@ -682,23 +987,51 @@ char			answer[BLKSIZE+1];
     bzero(&a, sizeof(a));
 
 s:  
-#if	!defined(HAVE_PREAD)
+#if	defined(HAVE_PREAD)
+    next_offset = *n*BLKSIZE;
+#else
     rc = ST_LSEEK(fd, *n*BLKSIZE, SEEK_SET);
     if ( rc == -1 )
 	goto err;
 #endif
-
-r:
+    nn = n; nnn = n+1;
+    /*
+	this 'while' count contig. space we can use for read.
+    */
     next_read = MIN(BLKSIZE, to_load);
-#if	defined(HAVE_PREAD)
-    rc = ST_PREAD(fd, answer, next_read, *n*BLKSIZE);
+    if ( !(a.state & GOT_HDR) ) 
+               /* want to read in small parts until we read body */
+                space = BLKSIZE;
+        else
+                space = to_load;
+    while(space > BLKSIZE) {
+	if ( (*nn + 1) == (*nnn) ) {
+            space -= BLKSIZE;
+            nn = nnn;
+            nnn = nnn+1;
+            next_read += BLKSIZE;
+        } else
+	    break;
+    };
+    n = nn + 1;
+    next_read = MIN(to_load, next_read);
+#if	defined(SOLARIS)
+    read_data = memalign(512, ROUND_UP(512,next_read));
 #else
-    rc =  read(fd, answer, next_read);
+    read_data = malloc(ROUND_UP(PAGE_SIZE,next_read));
+#endif
+    if ( !read_data )
+        goto err;
+#if	defined(HAVE_PREAD)
+    rc = ST_PREAD_ALIGNED(fd, read_data, next_read, next_offset);
+#else
+    rc =  read(fd, read_data, next_read);
 #endif	/* HAVE_PREAD */
     if ( rc != next_read )
 	goto err;
     if ( !(a.state & GOT_HDR) ) {
-	attach_data(answer, rc, obj->container);
+	attach_data(read_data, rc, obj->container);
+	free(read_data);
 	if ( check_server_headers(&a, obj, b, NULL) )
 	    goto err;
         if ( a.state & GOT_HDR ) {
@@ -710,18 +1043,18 @@ r:
 	    obj->x_content_length = a.x_content_length;
 	}
     } else {
-	if ( store_in_chain(answer, rc, obj) )
-	    goto err;
+        struct buff *b = obj->container;
+        while ( b && b->next ) b = b->next;
+        if ( !b ) goto err;
+        b->next = calloc(1,sizeof(*b));
+        if ( !b->next ) goto err;
+        b->next->data = read_data;
+        b->next->curr_size = b->next->used = rc;
+        obj->hot_buff = b->next;
     }
     to_load 	-= rc;
     if ( (int)to_load > 0 ) {
-	if ( *(n+1) == (*n)+1 ) {
-	    n++;
-	    goto r;
-	} else {
-	    n++;
-	    goto s;
-	}
+	goto s;
     }
     obj->state = OBJ_READY;
     obj->size  = disk_ref->size;
@@ -745,7 +1078,7 @@ int			rc;
 db_api_arg_t		key, data;
 struct	storage_st	*storage;
 
-    if ( !db_in_use || !url_str || !disk_ref)
+    if ( !db_in_use || !url_str || !disk_ref || broken_db)
 	return(-1);
 
     storage = locate_storage_by_id(disk_ref->id);
@@ -839,12 +1172,14 @@ int			gets_counter = 0;
     tstorage.fd = open_storage(tstorage.path, O_RDWR|O_SUPPL);
     if ( tstorage.fd == (fd_t)-1 )
 	return;
+    snprintf(disk_state_string, sizeof(disk_state_string),"Checking storage %s", tstorage.path);
 #if	defined(HAVE_DIRECTIO)
     directio(fd, DIRECTIO_ON);
 #endif
     fd = tstorage.fd;
+    fstat(fd, &tstorage.statb);
 #if	defined(HAVE_PREAD) && defined(HAVE_PWRITE)
-    if ( ST_PREAD(fd, &tstorage.super, sizeof(tstorage.super), 0) != 
+    if ( st_pread(fd, &tstorage.super, sizeof(tstorage.super), tstorage.i_off+0, &tstorage) != 
 #else
     if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
 	my_xlog(OOPS_LOG_SEVERE, "check_storage(): seek(%s, %u): %m\n", tstorage.path, 0);
@@ -873,18 +1208,18 @@ int			gets_counter = 0;
     map_words = blk_num/32 + (blk_num%32?1:0);
     tstorage.size = tstorage.super.blks_total*(off_t)STORAGE_PAGE_SIZE;
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_storage(): Read map.\n");
-    bitmap = calloc(map_words*4, 1);
+    bitmap = malloc(map_words*4);
     if ( !bitmap ) {
 	my_xlog(OOPS_LOG_SEVERE, "check_storage(): Can't allocate memory for map.\n");
 	goto abor;
     }
 #if	defined(HAVE_PREAD) && defined(HAVE_PWRITE)
-    if ( ST_PREAD(fd, bitmap, map_words*4, BLKSIZE) != map_words*4 ) {
+    if ( st_pread(fd, bitmap, map_words*4, tstorage.i_off+BLKSIZE, &tstorage) != map_words*4 ) {
 #else
     ST_LSEEK(fd, BLKSIZE, SEEK_SET);
-    if ( read(fd, bitmap, map_words*4) != map_words*4 ) {
+    if ( (rc=read(fd, bitmap, map_words*4)) != map_words*4 ) {
 #endif	/* PREAD && PWRITE */
-	my_xlog(OOPS_LOG_SEVERE, "check_storage(): Can't read map.\n");
+	my_xlog(OOPS_LOG_SEVERE, "check_storage(): Can't read map %d to %x: %d, %m.\n", map_words*4,bitmap,rc);
 	goto abor;
     }
     tstorage.map = bitmap;
@@ -1030,6 +1365,7 @@ fix_unrefs:
 	tstorage.super.blks_free = blk_num - 1 - map_blks - busy_b ;
 	flush_super(&tstorage);
 	flush_map(&tstorage);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_storage(): Fixed.\n");
     } else {
 	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "check_storage(): Free list ok.\n");
     }
@@ -1042,7 +1378,7 @@ abor:
     if ( bitmap ) free(bitmap);
 }
 
-void
+static void
 check_storages(struct storage_st *storage)
 {
     pthread_mutex_lock(&st_check_in_progr_lock);
@@ -1075,7 +1411,9 @@ prep_storages(void *arg)
 	}
     }
     init_storages(storages);
+    st_check_in_progr = FALSE;
     storages_ready = TRUE;
+    snprintf(disk_state_string, sizeof(disk_state_string),"Storages checked");
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "prep_storages(): Storages checked.\n");
     UNLOCK_CONFIG;
     return(0);
@@ -1231,6 +1569,7 @@ char		*map_ptr;
 		    storage->path);
 	    goto try_next;
 	}
+    fstat(fd, &storage->statb);
 	if ( ST_LSEEK(fd, size-1, SEEK_SET) == -1 ) {
 	    my_xlog(OOPS_LOG_SEVERE, "do_format_storages(): seek(%s, %u): %m\n",
 		    storage->path, size-1);
@@ -1248,6 +1587,13 @@ char		*map_ptr;
 	map_words = blk_num/32 + (blk_num%32?1:0);
 	super.blks_free -= ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE;
 
+#if	defined(HAVE_PWRITE)
+	if ( ST_PWRITE(fd, &super, sizeof(super), 0) != sizeof(super) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "do_format_storages(): write super for %s: %m\n",
+		    storage->path);
+	    goto try_next;
+	}
+#else
 	if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
 	    my_xlog(OOPS_LOG_SEVERE, "do_format_storages(): seek(%s, %u): %m\n",
 		    storage->path, 0);
@@ -1258,6 +1604,7 @@ char		*map_ptr;
 		    storage->path);
 	    goto try_next;
 	}
+#endif
 	/* how much 32-bit word we need for map? */
 	map_bits  = blk_num;
 	map_ptr = xmalloc(map_words*4,"do_format_storages(): map_ptr");
@@ -1267,9 +1614,12 @@ char		*map_ptr;
 	}
 	bzero(map_ptr, map_words*4);
 	set_bits(map_ptr, 0, ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE+1);
+#if	defined(HAVE_PWRITE)
+	ST_PWRITE(fd, map_ptr, map_words*4, STORAGE_PAGE_SIZE);
+#else
 	ST_LSEEK(fd, STORAGE_PAGE_SIZE, SEEK_SET);
 	write(fd, map_ptr, map_words*4);
-
+#endif
         if ( oops_user )
             chown(storage->path, oops_uid, -1);
 
@@ -1283,4 +1633,28 @@ try_next:
     }
     if ( oops_user )
         set_euser(oops_user);
+}
+
+static int
+init_storages(struct storage_st *current)
+{
+struct storage_st * next = NULL;
+    while (current) {
+        next = current->next;
+        init_storage( current ) ;
+        current=next;
+    }
+    return 0;
+}
+
+void
+free_storages(struct storage_st *current)
+{
+struct storage_st *next=NULL;
+
+    while (current) {
+        next = current->next;
+        free_storage( current ) ;
+        current=next;
+    }
 }

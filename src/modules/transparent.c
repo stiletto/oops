@@ -43,18 +43,18 @@ int		natfd;
 char		module_type   = MODULE_REDIR ;
 char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
-int		mod_load();
-int     	mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+int		mod_load(void);
+int     	mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 int		redir(int so, struct group *group, struct request *rq, int *flags, int);
 #define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_REDIR ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
-static  int     mod_load();
-static  int     mod_unload();
-static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+static  int     mod_load(void);
+static  int     mod_unload(void);
+static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 static	int	redir(int so, struct group *group, struct request *rq, int *flags, int);
 #define		MODULE_STATIC	static
 #endif
@@ -83,27 +83,31 @@ static	pthread_rwlock_t	tp_lock;
 #define	WRLOCK_TP_CONFIG	pthread_rwlock_wrlock(&tp_lock)
 #define	UNLOCK_TP_CONFIG	pthread_rwlock_unlock(&tp_lock)
 
-#define	NMYPORTS	4
-static	myport_t	myports[NMYPORTS];	/* my ports		*/
-static	int		nmyports;		/* actual number	*/
-static	char		*myports_string;
+#define	NMYPORTS	        4
+static	myport_t	        myports[NMYPORTS];	/* my ports		*/
+static	int		        nmyports;		/* actual number	*/
+static	char		        *myports_string;
+static  int                     broken_browser(struct request *rq);
+static  acl_chk_list_hdr_t      *broken_browsers = NULL;
 /* static	char		*build_src(struct request*); */
 
 int
-mod_load()
+mod_load(void)
 {
-    printf("Transparent started\n");
     pthread_rwlock_init(&tp_lock, NULL);
     nmyports = 0;
 #if	defined(HAVE_IPF)
     natfd = -1;
 #endif
     myports_string = NULL;
+
+    printf("Transparent started\n");
+
     return(MOD_CODE_OK);
 }
 
 int
-mod_unload()
+mod_unload(void)
 {
     verb_printf("Transparent stopped\n");
     return(MOD_CODE_OK);
@@ -120,13 +124,15 @@ mod_config_beg(int i)
     if ( natfd != -1 ) close(natfd);
     natfd = -1;
 #endif
+    if ( broken_browsers ) free_acl_access(broken_browsers);
+    broken_browsers = NULL;
     UNLOCK_TP_CONFIG ;
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
     if ( myports_string ) {
 	WRLOCK_TP_CONFIG ;
@@ -152,9 +158,13 @@ char		*p = config;
     while( *p && IS_SPACE(*p) ) p++;
 
     if ( !strncasecmp(p, "myport", 6) ) {
-	p += 6;
+        p += 6;
 	while (*p && IS_SPACE(*p) ) p++;
 	myports_string = strdup(p);
+    }
+    if ( !strncasecmp(p, "broken_browsers", 15) ) {
+        p += 15;
+        parse_acl_access(&broken_browsers, p);
     }
     UNLOCK_TP_CONFIG ;
     return(MOD_CODE_OK);
@@ -168,7 +178,7 @@ u_short			port;
 char			*dd = NULL;
 
     RDLOCK_TP_CONFIG ;
-    my_xlog(OOPS_LOG_DBG, "redir(): redir/transparent called.\n");
+    my_xlog(OOPS_LOG_DBG, "transparent/redir() called.\n");
     if ( !rq ) goto done;
     port = ntohs(rq->my_sa.sin_port);
     if ( nmyports > 0 ) {
@@ -189,7 +199,7 @@ char			*dd = NULL;
     if ( rq->url.host )	   /* it have hostpart in url already */
 	goto notdone;
 
-    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "redir(): transparent: my.\n");
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "transparent/redir(): my.\n");
     if ( rq->av_pairs)
 	host = attr_value(rq->av_pairs, "host");
     if ( !host ) {
@@ -206,7 +216,7 @@ char			*dd = NULL;
 	if (natfd < 0) {
 	    natfd = open(IPL_NAT, O_RDONLY, 0);
 	    if (natfd < 0) {
-		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "redir(): transparent: NAT open failed: %m\n");
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "transparent/redir(): NAT open failed: %m\n");
 		goto notdone;
 	    }
 	}
@@ -217,7 +227,7 @@ char			*dd = NULL;
 		r = ioctl(natfd, SIOCGNATL, &natLookup);
 #undef	NEWSIOCGNATLCMD
         if ( r < 0 ) {
-	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "redir(): transparent: NAT lookup failed: ioctl(SIOCGNATL).\n");
+	    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "transparent/redir(): NAT lookup failed: %m.\n");
 	    goto notdone;
 	} else {
 	    struct sockaddr_in	sa;
@@ -227,7 +237,7 @@ char			*dd = NULL;
 	    rq->url.port = ntohs(natLookup.nl_realport);
 	    goto done;
 	}
-#else
+#else /* no HAVE_IPF */
 	/* last resort - take destination ip from my_sa */
 	rq->url.host = my_inet_ntoa(&rq->my_sa);
 	rq->url.port = ntohs(rq->my_sa.sin_port);
@@ -238,11 +248,46 @@ char			*dd = NULL;
     if ( (dd = strchr(host, ':')) ) {
 	u_short host_port;
 	*dd = 0;
-	host_port = atoi(dd+1);
+	host_port = (u_short)atoi(dd+1);
 	if ( host_port ) port = host_port;
     } else
-	    port = 80;
+        port = 80;
+
     rq->url.host = strdup(host);
+
+    if ( broken_browser(rq) ) {
+        /* some versions of IE can use different ports
+           for Host: header and for server connect.
+           This code is workaround for IE bug.
+        */
+#if	defined(HAVE_IPF)
+	struct natlookup natLookup, *natLookupP = &natLookup;
+	static int natfd = -1, r;
+
+	natLookup.nl_inport = rq->my_sa.sin_port;
+	natLookup.nl_outport = rq->client_sa.sin_port;
+	natLookup.nl_inip = rq->my_sa.sin_addr;
+	natLookup.nl_outip = rq->client_sa.sin_addr;
+	natLookup.nl_flags = IPN_TCP;
+	if (natfd < 0) {
+	    natfd = open(IPL_NAT, O_RDONLY, 0);
+	    if (natfd < 0) {
+		my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG|OOPS_LOG_SEVERE, "transparent/redir(): NAT open failed: %m\n");
+		goto notdone;
+	    }
+	}
+#define	NEWSIOCGNATLCMD	_IOWR('r', 63, struct natlookup *)
+        if ( SIOCGNATL == NEWSIOCGNATLCMD)
+		r = ioctl(natfd, SIOCGNATL, &natLookupP);
+        else
+		r = ioctl(natfd, SIOCGNATL, &natLookup);
+#undef	NEWSIOCGNATLCMD
+        if ( r >= 0 )
+	    port = ntohs(natLookup.nl_realport);
+#else /* no HAVE_IPF */
+	port = ntohs(rq->my_sa.sin_port);
+#endif
+    }
     rq->url.port = port;
     if ( dd ) *dd = ':';
     if ( !TEST(rq->flags, RQ_HAS_HOST) && rq->url.host) {
@@ -255,4 +300,11 @@ done:
 notdone:
     UNLOCK_TP_CONFIG ;
     return(MOD_CODE_OK);
+}
+
+int
+broken_browser(struct request *rq)
+{
+    if ( !broken_browsers ) return(FALSE);
+    return(check_acl_access(broken_browsers, rq));
 }

@@ -25,11 +25,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"config.h"
 #include	"environment.h"
 #endif
-
+/*
 #if	DB_VERSION_MAJOR >= 3
 #undef	USE_INTERNAL_DB_LOCKS
 #endif
-
+*/
 #define	forever()	for(;;)
 
 #if	defined(REGEX_H)
@@ -48,13 +48,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 /* :libpcre3/libpcre2/libpcre1 backward compatibility */
 
-#include "llt.h"
 #include "hash.h"
+#include "llt.h"
 #include "workq.h"
 
 typedef struct	tm	tm_t;
 
-#if	!defined(HAVE_UINT32_T)
+#if	!defined(HAVE_UINT32_T) && !defined(_UINT32_T)
 typedef	unsigned	uint32_t;
 #endif
 
@@ -62,7 +62,7 @@ typedef	unsigned	uint32_t;
 typedef	unsigned short	uint16_t;
 #endif
 
-#if   defined(BSDOS) || defined(LINUX) || defined(FREEBSD) || defined(OSF)
+#if   defined(BSDOS) || defined(LINUX) || defined(FREEBSD) || defined(OSF) || defined(OPENBSD)
 #define       flock_t struct flock
 #endif
 
@@ -321,6 +321,9 @@ typedef	unsigned short	uint16_t;
 #define	OOPS_LOG_INFORM		4096
 #define	OOPS_LOG_NOTICE		8192
 #define	OOPS_LOG_SEVERE		16384
+#define	OOPS_LOG_CACHE		(OOPS_LOG_SEVERE*2)
+
+#define MAX_DOC_HDR_SIZE    (32*1024)
 
 #define	SET(a,b)		(a|=(b))
 #define	CLR(a,b)		(a&=~b)
@@ -548,15 +551,17 @@ struct	superb {
 #define	ST_FORCE_CLEANUP	4	/* force cleanup on storage	*/
 
 struct	storage_st {
-	struct	storage_st	*next;
-	char			*path;		/* path to storage	*/
-	off_t			size;		/* size			*/
-	int			flags;		/* flags, like ready	*/
-	pthread_rwlock_t	storage_lock;	/* locks for writings	*/
-	struct	superb		super;		/* in-memory super	*/
-	fd_t			fd;		/* descriptor for access*/
-	char			*map;		/* busy map		*/
-	off_t			i_off;		/* initial offset in file*/
+	struct  storage_st  *next;
+	char                *path;		/* path to storage	*/
+	off_t               size;		/* size			*/
+	int                 flags;		/* flags, like ready	*/
+	pthread_rwlock_t    storage_lock;	/* locks for writings	*/
+	struct  superb      super;      /* in-memory super	*/
+	fd_t                fd;         /* descriptor for access*/
+	char                *map;       /* busy map		*/
+	off_t               i_off;      /* initial offset in file*/
+        struct stat         statb;
+        unsigned            *segmap;
 };
 
 struct	disk_ref {
@@ -575,8 +580,8 @@ struct	disk_ref {
 struct	mem_obj {
 	struct	mem_obj		*next;		/* in hash			*/
 	struct	mem_obj		*prev;		/* in hash			*/
-	struct	mem_obj		*older;		/* older object			*/
-	struct	mem_obj		*younger;	/* younger			*/
+/*	struct	mem_obj		*older;		/ * older object    */
+/*	struct	mem_obj		*younger;	/ * younger			*/
 	struct	obj_hash_entry	*hash_back;	/* back pointer to hash chain	*/
 	pthread_mutex_t		lock;		/* for refs and obj as whole	*/
 	int			refs;		/* references			*/
@@ -766,22 +771,22 @@ struct	acl_ip_data {
 };
 
 
-#define	ACL_URLREGEX		1
-#define	ACL_PATHREGEX		2
-#define	ACL_URLREGEXI		3
-#define	ACL_PATHREGEXI		4
-#define	ACL_USERCHARSET		5
-#define	ACL_SRC_IP		6
-#define	ACL_METHOD		7
-#define	ACL_PORT		8
-#define	ACL_DSTDOM		9
-#define	ACL_DSTDOMREGEX		10
-#define	ACL_SRCDOM		11
-#define	ACL_SRCDOMREGEX		12
-#define	ACL_TIME		13
+#define	ACL_URLREGEX        1
+#define	ACL_PATHREGEX       2
+#define	ACL_URLREGEXI       3
+#define	ACL_PATHREGEXI      4
+#define	ACL_USERCHARSET     5
+#define	ACL_SRC_IP          6
+#define	ACL_METHOD          7
+#define	ACL_PORT            8
+#define	ACL_DSTDOM          9
+#define	ACL_DSTDOMREGEX     10
+#define	ACL_SRCDOM          11
+#define	ACL_SRCDOMREGEX     12
+#define	ACL_TIME            13
 #define	ACL_CONTENT_TYPE	14
-#define	ACL_USERNAME	        15
-
+#define	ACL_USERNAME        15
+#define ACL_HEADER_SUBSTR   16
 
 struct	acl {
 #define	ACL_DOMAINDST		1
@@ -798,6 +803,13 @@ struct	group_stat {
 	int	requests;
 	int	bytes;
 };
+
+struct  header_substr_data {
+    char    *header;
+    char    *substr;
+};
+
+typedef struct  header_substr_data header_substr_data_t;
 
 struct  dstdomain_cache_entry {
 #define	DSTDCACHE_NOTFOUND	0
@@ -924,6 +936,7 @@ typedef	struct	u_charset {
 	char		name[16];
 	charset_t	*cs;
 } u_charset_t;
+
 #define	WORK_NORMAL	1
 #define	WORK_MODULE	2
 typedef	struct	work {
@@ -931,6 +944,7 @@ typedef	struct	work {
 	void*	(*f)(void*);	/* processor or NULL	*/
 	int	flags;
 	int	accepted_so;	/* on which socket connection was accepted	*/
+        struct  sockaddr_in sa;
 } work_t;
 
 #define LISTEN_AND_NO_ACCEPT    1
@@ -943,7 +957,7 @@ struct	listen_so_list	{
 	void                    *(*process_call)(void*);/* this will be called after accept()	*/
 	struct	listen_so_list	*next;		/* link to next					*/
 	int                     requests;	/* requests we accepted during curr. second	*/
-    int                     flags;      /* do we need accept or not on this fd  */
+        int                     flags;      /* do we need accept or not on this fd  */
 };
 
 #define	LOCK_STATISTICS(s)	pthread_mutex_lock(&s.s_lock)
@@ -1002,9 +1016,6 @@ struct	pollarg {
 #define	FILEBUFFSZ	(16*1024)
 typedef	struct	filebuff_ {
 	int		fd;
-#if	!defined(HAVE_SNPRINTF)
-	FILE		*File;
-#endif
 	int		buffered;
 	pthread_mutex_t	lock;
 	struct	buff	*buff;
@@ -1041,3 +1052,6 @@ typedef struct  icp_job_tag {
         char                    *icp_buf;
         int                     icp_buf_len;
 } icp_job_t;
+
+
+#include "lib.h"

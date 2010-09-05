@@ -1,4 +1,4 @@
-char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.1 2000/11/11 13:00:01 ai Exp $";
+char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.2 2001/07/31 06:52:57 ai Exp $";
 #ifdef REGEX
 
 #define REGEX_MALLOC
@@ -61,7 +61,7 @@ void	abort(void);
 
 /* We used to test for `BSTRING' here, but only GCC and Emacs define
    `BSTRING', as far as I know, and neither of them use this code.  */
-#if HAVE_STRING_H || STDC_HEADERS || _MSC_VER
+#if HAVE_STRING_H || HAVE_STDLIB_H || _MSC_VER
 #include <string.h>
 #ifndef bcmp
 #define bcmp(s1, s2, n)	memcmp ((s1), (s2), (n))
@@ -76,7 +76,7 @@ void	abort(void);
 #include <strings.h>
 #endif
 
-#if defined(STDC_HEADERS) || defined(_AIX)
+#if defined(HAVE_STDLIB_H)
 #include <stdlib.h>
 #else
 char *free ();

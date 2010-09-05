@@ -22,32 +22,33 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include        "workq.h"
 /*#include	"dataq.h"*/
 
-static	int	startup = TRUE;
+extern	struct		sockaddr_in	Me;
 
-struct		sockaddr_in	Me;
-pthread_t 	gc_thread, rl_thread;
-pthread_t 	dc_thread, stat_thread;
-pthread_t 	dl_thread, eraser_thread;
-
-int		wq_init = 0;
 volatile int	killed, huped, logrotate;
-
-sigset_t	newset, oset;
-pthread_attr_t	p_attr;
 
 struct	run_mod_arg {
 	int	(*f)(int);
 	int	so;
 };
 
-void	*run_client(void*);
-void	*run_module(int, void *(f)(void*), int);
-void	cleanup(void);
-void	worker(void*);
-void	set_stack_size(pthread_attr_t*);
-void	set_large_stack_size(pthread_attr_t*);
-int	blacklist_is_full(void);
-int	put_in_blacklist(int, void *(f)(void*), int);
+static	int		startup = TRUE;
+static	int		wq_init = 0;
+static	pthread_t 	dc_thread	= (pthread_t)NULL;
+static	pthread_t	eraser_thread	= (pthread_t)NULL;
+static	pthread_t	gc_thread	= (pthread_t)NULL;
+static	pthread_t	gd_thread	= (pthread_t)NULL;
+static	pthread_t 	rl_thread	= (pthread_t)NULL;
+static	pthread_t	stat_thread	= (pthread_t)NULL;
+static	pthread_attr_t	p_attr;
+static	sigset_t	newset, oset;
+
+static	int	blacklist_is_full(void);
+static	void	cleanup(void);
+static	int	put_in_blacklist(int, void *(f)(void*), int);
+static	void	*run_module(int, void *(f)(void*), int, struct sockaddr *);
+static	void	set_large_stack_size(pthread_attr_t*);
+static	void	set_stack_size(pthread_attr_t*);
+
 
 #if	!defined(_WIN32)
 void
@@ -180,18 +181,37 @@ skip_socket_opens:
     set_large_stack_size(&p_attr);
 
     if ( startup == TRUE ) {
+	int	rc = 0;
 	my_xlog(OOPS_LOG_SEVERE, "Starting threads\n");
 	startup = FALSE;
 	/* start statistics collector */
-	pthread_create(&stat_thread, &p_attr, statistics, NULL);
+	if ( (rc = pthread_create(&stat_thread, &p_attr, statistics, NULL)) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "Can't create statistics thread: %m\n");
+	}
 	/* start garbage collector */
-	pthread_create(&gc_thread, &p_attr, garbage_collector, NULL);
+	if ( (rc = pthread_create(&gc_thread, &p_attr, garbage_collector, NULL)) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "Can't create garbage_collector thread: %m\n");
+	}
+	/* start garbage drop */
+	if ( (rc = pthread_create(&gd_thread, &p_attr, garbage_drop, NULL)) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "Can't create garbage_drop thread: %m\n");
+	}
 	/* strart log rotator */
-	pthread_create(&rl_thread, &p_attr, rotate_logs, NULL);
+	if ( (rc = pthread_create(&rl_thread, &p_attr, rotate_logs, NULL)) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "Can't create rotate_logs thread: %m\n");
+	}
 	/* strart disk cleaner */
-	pthread_create(&dc_thread, &p_attr, clean_disk, NULL);
+	if ( (rc = pthread_create(&dc_thread, &p_attr, clean_disk, NULL)) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "Can't create clean_disk thread: %m\n");
+	}
 	/* strart disk cleaner */
-	pthread_create(&eraser_thread, &p_attr, eraser, NULL);
+	if ( (rc = pthread_create(&eraser_thread, &p_attr, eraser, NULL)) ) {
+	    my_xlog(OOPS_LOG_SEVERE, "Can't create eraser thread: %m\n");
+	}
+	if (rc) {
+	    my_xlog(OOPS_LOG_SEVERE, "Critical error. Some treads not created. Oops stopped.\n");
+	    do_exit(1);
+	}
 	my_sleep(1);
     }
 
@@ -362,6 +382,7 @@ wait_clients:
 		work->so = rc;
 		work->f  = run_client;
 		work->flags = WORK_NORMAL;
+		memcpy(&work->sa, &cli_addr, sizeof(work->sa));
 		work->accepted_so = -1 ; /* this is http_port socket */
 	    }
 	    if ( use_workers ) {
@@ -376,7 +397,7 @@ wait_clients:
 		/* well, process with this client */
 		res = pthread_create(&cli_thread, &p_attr, run_client, (void*)work);
 		if ( res ) {
-		    my_xlog(OOPS_LOG_SEVERE, "run(): Can't pthread_create(): %m\n");
+		    my_xlog(OOPS_LOG_SEVERE, "run(): Can't create run_client thread: %m\n");
 		    CLOSE(rc);
 		}
 		pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
@@ -450,9 +471,9 @@ wait_clients:
                     if ( TEST(list->flags, LISTEN_AND_DO_SYNC) )
                         list->process_call((void*)pollarg[k].fd);
                       else
-		        run_module(rc, list->process_call, pollarg[k].fd);
+		        run_module(rc, list->process_call, pollarg[k].fd, &cli_addr);
 		} else {
-		    run_module(rc, run_client, pollarg[k].fd);
+		    run_module(rc, run_client, pollarg[k].fd, &cli_addr);
 		}
 	    }
 	acc_f:
@@ -464,7 +485,7 @@ wait_clients:
 }
 
 void*
-run_module(int so, void *(f)(void*), int accepted_so)
+run_module(int so, void *(f)(void*), int accepted_so, struct sockaddr *sa)
 {
 pthread_t 	cli_thread;
 int		res;
@@ -474,6 +495,7 @@ work_t		*work = xmalloc(sizeof(*work),"run_module(): 1");
 	work->so = so;
 	work->f  = f;
 	work->flags = WORK_MODULE;
+        if ( sa ) memcpy(&work->sa, sa, sizeof(work->sa));
 	work->accepted_so = accepted_so;
     }
     if ( use_workers ) {
@@ -503,11 +525,11 @@ struct storage_st	*storage;
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "cleanup(): Clean up and exit.\n");
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "cleanup(): Flushing mem_cache.\n");
     lo_mark_val = 0;
-    /*flush_mem_cache(1);*/
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "cleanup(): Locking config.\n");
     kill_request = 1;
     WRLOCK_CONFIG ;
     my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "cleanup(): Locking config...Done.\n");
+
     if ( db_in_use ) {
 	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "cleanup(): Locking DB.\n");
 	WRLOCK_DB ;
@@ -525,25 +547,26 @@ struct storage_st	*storage;
 		close_storage(storage->fd);
 	    }
 	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "cleanup(): Storage %s closed.\n", storage->path);
+	    printf("Storage %s closed\n", storage->path);
 	    storage=storage->next;
 	}
     }
     flushout_fb(&logbuff);
 }
 
-int
+static int
 blacklist_is_full(void)
 {
     return(TRUE);
 }
 
-int
+static int
 put_in_blacklist(int so, void *(f)(void*), int accepted_so)
 {
     return(0);
 }
 
-void
+static void
 set_stack_size(pthread_attr_t *attr)
 {
 #if	defined(SOLARIS)
@@ -568,7 +591,7 @@ ERRBUF ;
 #endif	/* SOLARIS */
 }
 
-void
+static void
 set_large_stack_size(pthread_attr_t *attr)
 {
 #if	defined(FREEBSD)

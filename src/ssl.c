@@ -35,7 +35,7 @@ ERRBUF ;
 
     my_xlog(OOPS_LOG_DBG, "send_ssl(): Connecting %s:%d\n", rq->url.host, rq->url.port);
     gettimeofday(&start_tv, NULL);
-    if ( parent_port ) {
+    if ( parent_port && !is_local_dom(rq->url.host) ) {
         server_so = parent_connect_silent(so, parent_host, parent_port, rq);
     } else {
         server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -45,7 +45,7 @@ ERRBUF ;
 			ERR_INTERNAL, rq);
 	goto done;
     }
-    if ( parent_port ) {
+    if ( parent_port && !is_local_dom(rq->url.host)) {
         parent_req = malloc(64 + strlen(url->host));
         if ( parent_req ) {
             sprintf(parent_req, "CONNECT %s:%d HTTP/1.0\r\n\r\n", url->host, url->port);

@@ -17,43 +17,59 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
+#define	NO_NEED_XMALLOC		1
+#define	_LIB_H_INCLUDED_	1
+
 #if	defined(SOLARIS)
 #undef  _LARGEFILE_SOURCE
 #undef  WITH_LARGE_FILES
 #undef  _FILE_OFFSET_BITS
 #endif
 
+#if	defined(_AIX)
+#undef  _LARGE_FILES
+#undef  _LARGE_FILE_API
+#undef  WITH_LARGE_FILES
+#endif
+
 #include "../oops.h"
 #include "../modules.h"
 
+#if !defined(HAVE_SNPRINTF)
+extern "C" int snprintf(char *str, size_t size, const char *format, ...);
+#endif
+
+
 #define	MODULE_NAME	"gigabase_db"
-#define	MODULE_INFO	"GigaBASE API"
+#define	MODULE_INFO	"GigaBASE %d.%d API"
+#define	MODULE_BR14	"GigaBASE API/stopper"
 
 #if	defined(MODULES)
-char		module_type 	= MODULE_DB_API;
-char		module_info[]	= MODULE_INFO  ;
-char		module_name[]	= MODULE_NAME  ;
+char		module_type 		= MODULE_DB_API;
+char		module_info[MODINFOLEN] = MODULE_BR14;
+char		module_name[]		= MODULE_NAME;
 #else
-static	char	module_type 	= MODULE_DB_API ;
-static	char	module_info[]	= MODULE_INFO	;
-static	char	module_name[]	= MODULE_NAME	;
+static	char	module_type 		= MODULE_DB_API;
+static	char	module_info[MODINFOLEN] = MODULE_BR14;
+static	char	module_name[]		= MODULE_NAME;
 #endif
 
 #if	defined(HAVE_GIGABASE)
-#include "/usr/local/include/gigabase/gigabase.h"
+#include <gigabase.h>
 
+#define	COMMIT_DELAY	180
 
 #if	defined(MODULES)
 extern	"C" {
-int		mod_run();
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
-int		db_api_open(int*), db_api_close();
+int		mod_run(void);
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int);
+int		db_api_open(int*), db_api_close(void);
 int		db_api_get(db_api_arg_t*, db_api_arg_t*, int*);
 int		db_api_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*,int*);
 int		db_api_del(db_api_arg_t*, int*);
-int		db_api_sync();
+int		db_api_sync(void);
 void*		db_api_cursor_open(int, int*);
 int		db_api_cursor_get(void*, db_api_arg_t*, db_api_arg_t*, int*);
 int		db_api_cursor_del(void*, int*);
@@ -66,15 +82,15 @@ int		db_api_precommit(int*);
 }
 #else
 extern	"C" {
-static	int	mod_run();
-static	int	mod_load();
-static	int	mod_unload();
-static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
-static	int	db_api_open(int*), db_api_close();
+static	int	mod_run(void);
+static	int	mod_load(void);
+static	int	mod_unload(void);
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int);
+static	int	db_api_open(int*), db_api_close(void);
 static	int	db_api_get(db_api_arg_t*, db_api_arg_t*, int*);
 static	int	db_api_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*, int*);
 static	int	db_api_del(db_api_arg_t*, int*);
-static	int	db_api_sync();
+static	int	db_api_sync(void);
 static	void*	db_api_cursor_open(int, int*);
 static	int	db_api_cursor_get(void*, db_api_arg_t*, db_api_arg_t*, int*);
 static	int	db_api_cursor_del(void*, int*);
@@ -136,7 +152,7 @@ class	URL_Info {
 
 REGISTER(URL_Info);
 
-dbDatabase	*db = NULL;
+static	dbDatabase	*db = NULL;
 
 struct dbcp_ {
 	dbCursor<URL_Info>	*cursor;
@@ -144,10 +160,11 @@ struct dbcp_ {
 	int			type;
 };
 typedef	struct	dbcp_	dbcp_t;
-static	int		gdb_in_use = FALSE;
-static	char		dbhome[MAXPATHLEN];
-static	char		dbname[MAXPATHLEN];
-static	int		db_cache_mem;
+
+static	int			gdb_in_use = FALSE;
+static	char			dbhome[MAXPATHLEN];
+static	char			dbname[MAXPATHLEN];
+static	int			db_cache_mem;
 static  pthread_rwlock_t	giga_db_config_lock;
 
 #define RDLOCK_GDB_CONFIG       pthread_rwlock_rdlock(&giga_db_config_lock)
@@ -155,23 +172,35 @@ static  pthread_rwlock_t	giga_db_config_lock;
 #define UNLOCK_GDB_CONFIG       pthread_rwlock_unlock(&giga_db_config_lock)
 
 int
-mod_run()
+mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 int
-mod_load()
+mod_load(void)
 {
-    printf("%s started\n", module_name);
+#if	defined(GIGABASE_MAJOR_VERSION)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO,
+             GIGABASE_MAJOR_VERSION, GIGABASE_MINOR_VERSION);
+#else
+#define	GIGABASE_MAJOR_VERSION	(int)(GIGABASE_VERSION/100)
+#define	GIGABASE_MINOR_VERSION	(int)(GIGABASE_VERSION%100)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO,
+             GIGABASE_MAJOR_VERSION, GIGABASE_MINOR_VERSION);
+#endif
+
     dbname[0] = dbhome[0] = 0;
     gdb_in_use = FALSE;
     pthread_rwlock_init(&giga_db_config_lock, NULL);
+
+    printf("%s started\n", module_name);
+
     return(MOD_CODE_OK);
 }
 
 int
-mod_unload()
+mod_unload(void)
 {
     printf("%s stopped\n", module_name);
     return(MOD_CODE_OK);
@@ -219,26 +248,34 @@ char	*p = config;
 	    db_cache_mem = atoi(p);
 	    if (tolower(p[strlen(p)-1]) == 'k') db_cache_mem *= 1024;
 	    if (tolower(p[strlen(p)-1]) == 'm') db_cache_mem *= 1024*1024;
-	    db_cache_mem /= 4096; /* gigabase accept this in pages */
+	    db_cache_mem /= dbPageSize; /* gigabase accept this in pages */
 	}
     }
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
 }
+
 int
 db_api_open(int *aflag)
 {
 
     WRLOCK_GDB_CONFIG ;
+    if ( !dbhome[0] || !dbname[0] ) {
+        UNLOCK_GDB_CONFIG ;
+	return(MOD_CODE_OK);
+    }
+    printf("GigaBASE interface\n");
+    my_xlog(OOPS_LOG_STOR, "db_api_open()\n");
+
     if ( gdb_in_use == TRUE ) {
 	db->close();
-	delete(db);
+	delete db;
 	db = NULL;
 	gdb_in_use = FALSE;
     }
     if ( dbname[0] && dbhome[0] ) {
 	char	path[2*MAXPATHLEN];
-	sprintf(path, "%s/%s", dbhome, dbname);
+	snprintf(path, sizeof(path)-1, "%s/%s", dbhome, dbname);
 	db = new dbDatabase(dbDatabase::dbAllAccess, db_cache_mem);
 	if ( db->open(path) ) {
 	    gdb_in_use = TRUE;
@@ -253,16 +290,18 @@ db_api_open(int *aflag)
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
 }
+
 int
-db_api_close()
+db_api_close(void)
 {
     WRLOCK_GDB_CONFIG ;
     if ( gdb_in_use == TRUE ) {
-	my_xlog(OOPS_LOG_STOR, "gigabase_db_api_close(): GigaBASE closed\n");
 	db->close();
-	delete(db);
+	delete db;
 	db = NULL;
 	gdb_in_use = FALSE;
+	my_xlog(OOPS_LOG_STOR, "gigabase_db_api_close(): GigaBASE closed\n");
+	printf("GigaBASE closed\n");
     }
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
@@ -271,147 +310,168 @@ db_api_close()
 int
 db_api_get(db_api_arg_t *arg, db_api_arg_t *res, int *aflag)
 {
-dbQuery			q;
+dbQuery			query;
 dbCursor<URL_Info>	cursor;
 URL_Info		*rec;
-int			r, blks;
 char			*url = NULL;
-void			*result;
-uint32_t		*cblk;
 
     if ( !arg || !res || !aflag ) return(MOD_CODE_ERR);
 
     RDLOCK_GDB_CONFIG ;
     if ( (gdb_in_use == FALSE) || !db ) goto done;
+
     *aflag = MOD_AFLAG_BRK;
 
-    url = (char*)malloc(arg->size + 1);
-    if ( !url ) goto done;
+    url = new char[arg->size + 1];
+    if ( !url ) goto error;
     memcpy(url, arg->data, arg->size);
     url[arg->size] = 0;
 
-    q = "url=", url;
-    r = cursor.select(q);
-    if ( r <= 0 ) {
-	res->flags= DB_API_RES_CODE_NOTFOUND;
-	goto done;
+    query = "url=", url;
+
+    if ( cursor.select(query) > 0 ) {
+	if ( (rec = cursor.get()) != 0 ) {
+	    int blks = rec->disk_ref.blk;
+	    void* result = malloc(sizeof(struct disk_ref) + blks * sizeof(uint32_t));
+	    if ( !result ) {
+		db->precommit();
+		delete url;
+		goto error;
+	    }
+
+	    memcpy(result, &rec->disk_ref, sizeof(struct disk_ref));
+	    uint32_t* cblk = (uint32_t*)((struct disk_ref*)result + 1);
+	    for ( int i = 0; i < blks; i++, cblk++ )
+		*cblk = (rec->blocks)[i];
+
+	    db->precommit();
+
+	    res->data = result;
+	    res->size = sizeof(struct disk_ref) + blks * sizeof(uint32_t);
+	    res->flags= DB_API_RES_CODE_OK;
+	    delete url;
+	    goto done;
+	}
     }
-    rec = cursor.get();
-    if ( !rec ) {
-	res->flags= DB_API_RES_CODE_NOTFOUND;
-	goto done;
-    }
-    blks = rec->disk_ref.blk;
-    result = malloc(sizeof(struct disk_ref) + blks * sizeof(uint32_t));
-    if ( !result ) goto done;
-    memcpy(result, &rec->disk_ref, sizeof(struct disk_ref));
-    cblk = (uint32_t*)((struct disk_ref*)result + 1);
-    for ( r=0;r<blks; r++,cblk++)
-	*cblk = (rec->blocks)[r];
-    res->data = result;
-    res->size = sizeof(struct disk_ref) + blks * sizeof(uint32_t);
-    res->flags= DB_API_RES_CODE_OK;
+
+    db->precommit();
+    res->flags = DB_API_RES_CODE_NOTFOUND;
+
 done:
     UNLOCK_GDB_CONFIG ;
-    if ( url ) free(url);
     return(MOD_CODE_OK);
-}
 
+error:
+    UNLOCK_GDB_CONFIG ;
+    return(MOD_CODE_ERR);
+}
 
 int
 db_api_put(db_api_arg_t *key, db_api_arg_t *data, struct mem_obj *obj, int *aflag)
 {
-int			blks, i;
-uint32_t		*cblk;
-dbArray<int8>		*blocks = NULL;
-int			r;
-dbQuery			q;
-dbCursor<URL_Info>	cursor;
+dbQuery			query;
+dbCursor<URL_Info>	cursor(dbCursorForUpdate);
 URL_Info		UI;
 
     if ( !key || !data || !obj ) return(MOD_CODE_ERR);
 
     RDLOCK_GDB_CONFIG ;
-    UI.url = NULL;
-    
     if ( (gdb_in_use == FALSE) || !db ) goto done;
 
+    *aflag = MOD_AFLAG_BRK;
+
+    UI.url = NULL;
+    UI.url = new char[key->size + 1];
+    if ( !UI.url ) goto error1;
+    memcpy(UI.url, key->data, key->size);
+    *(UI.url + key->size) = 0;
+
     memcpy(&UI.disk_ref, data->data, sizeof(disk_ref));
-    UI.accessed = obj?obj->accessed:0;
-    UI.url = new (char[key->size + 1]);
-    if ( UI.url ) {
-	memcpy(UI.url, key->data, key->size);
-	*(UI.url + key->size) = 0;
-    }
-    q = "url=", UI.url;
-    r = cursor.select(q);
-    if ( r > 0 ) {
+    UI.accessed = obj ? obj->accessed : 0;
+
+    query = "url=", UI.url;
+
+    if ( cursor.select(query) == 0 ) {
+	if ( UI.disk_ref.blk <= 0 ) goto error;
+
+	int blks = UI.disk_ref.blk;
+	uint32_t* cblk = (uint32_t*)((struct disk_ref*)data->data + 1);
+
+	dbArray<int8>	*blocks = NULL;
+	blocks = new dbArray<int8>;
+	if ( !blocks ) goto error;
+
+	for( int i = 0; i < blks; i++, cblk++ )
+	    blocks->append((int8)(*cblk));
+	UI.blocks = *blocks;
+
+	insert(UI);
+	db->precommit();
+
+	data->flags = 0;
+	delete blocks;
+    } else {
+	db->precommit();
 	data->flags = DB_API_RES_CODE_EXIST;
-	goto done;
     }
-    if ( UI.disk_ref.blk <= 0 )
-	goto error;
-    blks = UI.disk_ref.blk;
-    cblk = (uint32_t*)((struct disk_ref*)data->data + 1);
 
-    blocks = new (dbArray<int8>);
-    for(i=0;i<blks;i++,cblk++)
-	blocks->append((int8)(*cblk));
-    UI.blocks = *blocks;
-
-    insert(UI);
-    data->flags = 0;
+    delete UI.url;
 
 done:
     UNLOCK_GDB_CONFIG ;
-    *aflag = MOD_AFLAG_BRK;
-    if ( blocks ) delete(blocks);
-    if ( UI.url ) delete(UI.url);
     return(MOD_CODE_OK);
+
 error:
+    db->precommit();
+    delete UI.url;
+error1:
     UNLOCK_GDB_CONFIG ;
-    *aflag = MOD_AFLAG_BRK;
-    if ( blocks ) delete(blocks);
-    if ( UI.url ) delete(UI.url);
     return(MOD_CODE_ERR);
 }
 
 int
 db_api_del(db_api_arg_t *key, int *aflag)
 {
-dbQuery			q;
+dbQuery			query;
 dbCursor<URL_Info>	cursor(dbCursorForUpdate);
 char			*url = NULL;
-int			r;
 
     if ( !key || !aflag ) return(MOD_CODE_ERR);
 
     RDLOCK_GDB_CONFIG ;
     if ( (gdb_in_use == FALSE) || !db ) goto done;
+
     *aflag = MOD_AFLAG_BRK;
 
-    url = (char*)malloc(key->size + 1);
-    if ( !url ) goto done;
+    url = new char[key->size + 1];
+    if ( !url ) goto error;
     memcpy(url, key->data, key->size);
     url[key->size] = 0;
 
-    q = "url=", url;
-    r = cursor.select(q);
-    if ( r <= 0 ) {
+    query = "url=", url;
+
+    if ( cursor.select(query) > 0 ) {
+	cursor.remove();
+	db->precommit();
+	key->flags= DB_API_RES_CODE_OK;
+    } else {
+	db->precommit();
 	key->flags= DB_API_RES_CODE_NOTFOUND;
-	goto done;
     }
 
-    cursor.remove();
-    key->flags= DB_API_RES_CODE_OK;
+    delete url;
 
 done:
-    if ( url ) free(url);
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
+
+error:
+    UNLOCK_GDB_CONFIG ;
+    return(MOD_CODE_ERR);
 }
 
-void*	db_api_cursor_open(int type, int* aflag)
+void*
+db_api_cursor_open(int type, int* aflag)
 {
 void			*res = NULL;
 dbcp_t			*newc;
@@ -427,19 +487,19 @@ int			r;
     db->attach();
 
     dbCursor<URL_Info>	*dbcp = new dbCursor<URL_Info>(dbCursorForUpdate);
-
     if ( !dbcp ) {
 	UNLOCK_GDB_CONFIG ;
 	return(NULL);
     }
+
     UNLOCK_GDB_CONFIG ;
     newc = (dbcp_t*)malloc(sizeof(*newc));
     newc->cursor = dbcp;
     newc->type = type;
     r = dbcp->select();
-    newc->next_status = (r>0)?TRUE:FALSE;
+    newc->next_status = ( r > 0) ? TRUE : FALSE;
     res = newc;
-    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_cursor_open'ed(): %d entries\n", r);
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_cursor_open(): %d entries.\n", r);
     *aflag = MOD_AFLAG_BRK;
     return(res);
 }
@@ -454,7 +514,7 @@ dbCursor<URL_Info>      *dbcp;
     dbcp = cursor_data->cursor;
     RDLOCK_GDB_CONFIG ;
     if ( (gdb_in_use == TRUE) && dbcp ) {
-	delete(dbcp);
+	delete dbcp;
 	*aflag = MOD_AFLAG_BRK;
     }
     free(cursor_data);
@@ -468,37 +528,39 @@ int
 db_api_cursor_get(void *cursor, db_api_arg_t *key, db_api_arg_t *data, int *aflag)
 {
 dbcp_t			*curs = (dbcp_t*)cursor;
-dbCursor<URL_Info>      *dbcp;
+dbCursor<URL_Info>	*dbcp;
 URL_Info		rec;
-struct	disk_ref	disk_ref;
-int			blks, i;
-uint32_t		*d;
-char			*allocated;
 
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE )
-	goto done;
+    if ( gdb_in_use == FALSE ) 	goto done;
+
     *aflag = MOD_AFLAG_BRK;
 
-    if ( !curs ) goto done;
+    if ( !curs ) goto error;
 
     dbcp = curs->cursor;
+
     if ( (curs->next_status != FALSE) ) {
+	struct disk_ref disk_ref = (*dbcp)->disk_ref;
+	int blks = disk_ref.blk;
+
+	char* allocated = (char*)malloc(sizeof(disk_ref) + blks*sizeof(uint32_t));
+	if ( !allocated ) goto error;
+
+	memcpy(allocated, &disk_ref, sizeof(disk_ref));
+	uint32_t* d = (uint32_t*)((struct disk_ref*)allocated + 1);
+	for( int i = 0; i < blks; i++, d++ )
+	    *d = (uint32_t)((*dbcp)->blocks[i]);
+
 	key->size = strlen((*dbcp)->url);
 	key->data = strdup((*dbcp)->url);
-	disk_ref = (*dbcp)->disk_ref;
-	blks = disk_ref.blk;
-	allocated = (char*)xmalloc(sizeof(disk_ref) + blks*sizeof(uint32_t), "");
-	memcpy(allocated, &disk_ref, sizeof(disk_ref));
-	d = (uint32_t*)((struct disk_ref*)allocated + 1);
-	for(i=0;i<blks;i++,d++)
-	    *d = (uint32_t)((*dbcp)->blocks[i]);
+
 	data->size = sizeof(disk_ref) + blks*sizeof(uint32_t);
 	data->data = allocated;
-	data->flags = DB_API_RES_CODE_OK ;
-	curs->next_status = dbcp->next()?TRUE:FALSE;
+	data->flags = DB_API_RES_CODE_OK;
+	curs->next_status = dbcp->next() ? TRUE : FALSE;
     } else {
-	my_xlog(OOPS_LOG_STOR, "Cursor empty\n");
+	my_xlog(OOPS_LOG_STOR, "db_api_cursor_get(): Cursor empty.\n");
 	key->data = data->data = NULL;
 	key->size = data->size = 0;
 	data->flags = DB_API_RES_CODE_NOTFOUND ;
@@ -507,6 +569,10 @@ char			*allocated;
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
+
+error:
+    UNLOCK_GDB_CONFIG ;
+    return(MOD_CODE_ERR);
 }
 
 int
@@ -516,9 +582,10 @@ dbcp_t			*curs = (dbcp_t*)cursor;
 dbCursor<URL_Info>      *dbcp;
 
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-	goto done;
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
     *aflag = MOD_AFLAG_BRK;
+
     if ( !curs ) goto error;
 
     dbcp = curs->cursor;
@@ -539,13 +606,14 @@ error:
 }
 
 int
-db_api_sync()
+db_api_sync(void)
 {
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-	goto done;
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
     my_xlog(OOPS_LOG_STOR, "gigabase_db_api_sync()\n");
     db->commit();
+
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);    
@@ -555,11 +623,13 @@ int
 db_api_attach(int *aflag)
 {
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-        goto done;
-    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_attach()\n");
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
     *aflag = MOD_AFLAG_BRK;
+
+    my_xlog(OOPS_LOG_DBG, "gigabase_db_api_attach()\n");
     db->attach();
+
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);    
@@ -570,11 +640,13 @@ db_api_detach(int *aflag)
 {
 
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-	goto done;
-    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_detach()\n");
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
     *aflag = MOD_AFLAG_BRK;
+
+    my_xlog(OOPS_LOG_DBG, "gigabase_db_api_detach()\n");
     db->detach();
+
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
@@ -585,11 +657,13 @@ db_api_precommit(int *aflag)
 {
 
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-	goto done;
-    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_precommit()\n");
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
     *aflag = MOD_AFLAG_BRK;
+
+    my_xlog(OOPS_LOG_STOR, "gigabase_db_api_precommit()\n");
     db->precommit();
+
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
@@ -601,16 +675,16 @@ db_api_cursor_freeze(void *cursor, int *aflag)
 dbcp_t			*curs = (dbcp_t*)cursor;
 
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-	goto done;
-    if ( !curs || !curs->cursor )
-	goto error;
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
+    if ( !curs || !curs->cursor ) goto error;
 
     curs->cursor->freeze();
 
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
+
 error:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_ERR);
@@ -622,16 +696,16 @@ db_api_cursor_unfreeze(void *cursor, int *aflag)
 dbcp_t			*curs = (dbcp_t*)cursor;
 
     RDLOCK_GDB_CONFIG ;
-    if ( gdb_in_use == FALSE || !db )
-	goto done;
-    if ( !curs || !curs->cursor )
-	goto error;
+    if ( gdb_in_use == FALSE || !db ) goto done;
+
+    if ( !curs || !curs->cursor ) goto error;
 
     curs->cursor->unfreeze();
 
 done:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_OK);
+
 error:
     UNLOCK_GDB_CONFIG ;
     return(MOD_CODE_ERR);

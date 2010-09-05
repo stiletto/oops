@@ -1,5 +1,5 @@
-#if     !defined(__WORKQ_INCLUDED__)
-#define __WORKQ_INCLUDED__
+#if	!defined(_WORKQ_H_INCLUDED_)
+#define _WORKQ_H_INCLUDED_
 
 #include	<time.h>
 #include	<pthread.h>
@@ -30,4 +30,4 @@ extern	int workq_add(workq_t *wq, void *data);
 #define	WORKQ_VALID	0x0decca62
 #define	IDLE_TIMEOUT	10
 
-#endif
+#endif	/* !_WORKQ_H_INCLUDED_ */

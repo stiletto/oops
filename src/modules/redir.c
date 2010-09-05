@@ -26,20 +26,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #if	defined(MODULES)
 char		module_type   = MODULE_REDIR ;
 char		module_name[] = MODULE_NAME ;
-char		module_info[] = MODULE_INFO ;
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+char		module_info[MODINFOLEN];
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run(void);
 int		redir(int so, struct group *group, struct request *rq, int *flags, int);
 #define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_REDIR ;
 static	char	module_name[] = MODULE_NAME ;
-static	char	module_info[] = MODULE_INFO ;
-static  int     mod_load();
-static  int     mod_unload();
+static	char	module_info[MODINFOLEN];
+static  int     mod_load(void);
+static  int     mod_unload(void);
 static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*, int), 
-                mod_run();
+                mod_run(void);
 static	int	redir(int so, struct group *group, struct request *rq, int *flags, int);
 #define		MODULE_STATIC	static
 #endif
@@ -190,11 +190,20 @@ static	int	default_template_size;
 
 MODULE_STATIC
 int
-mod_load()
+mod_load(void)
 {
 int     i;
 
-    printf("Redirector started\n");
+#if	defined(REGEX_BUILTIN)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO "/builtin regex");
+#elif	defined(REGEX_PCRE)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO "/PCRE %s", pcre_version());
+#elif	defined(REGEX_SYSTEM)
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO "/system regex");
+#else
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO);
+#endif
+
     pthread_rwlock_init(&redir_lock, NULL);
     for(i=0;i<NREDIRCONFIGS;i++) {
         redir_configs[i].redir_rules_file[0] = 0;
@@ -212,12 +221,14 @@ int     i;
     }
     default_template_size = strlen(default_template);
 
+    printf("Redirector started\n");
+
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_unload()
+mod_unload(void)
 {
     verb_printf("redir stopped\n");
     return(MOD_CODE_OK);
@@ -266,7 +277,7 @@ int     i;
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
 int i;
     WRLOCK_REDIR_CONFIG;
@@ -329,7 +340,7 @@ regmatch_t		pmatch[MAXMATCH];
 int                     i = instance;
 
     if ( (i<0) || (i>=NREDIRCONFIGS) ) i=0;
-    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "redir(): redir called.\n");
+    my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "redir/redir() called.\n");
     if ( !rq ) return(MOD_CODE_OK);
     if ( redir_configs[i].nmyports > 0 ) {
 	int		n = redir_configs[i].nmyports;
@@ -360,7 +371,7 @@ int                     i = instance;
     url = malloc(url_len);
     if ( !url )
 	return(MOD_CODE_OK);
-    sprintf(url,"%s://%s%s", rq->url.proto, rq->url.host, rq->url.path);
+    snprintf(url, url_len, "%s://%s%s", rq->url.proto, rq->url.host, rq->url.path);
     decoded_url = dehtmlize(url);
     check_rules_age(i);
     check_template_age(i);
@@ -369,7 +380,7 @@ int                     i = instance;
     INIT_PMATCH(pmatch);
     while ( rr ) {
 	if ( !regexec(&rr->preg, decoded_url?decoded_url:url, MAXMATCH, (regmatch_t*)&pmatch, 0) ) {
-	    if ( rr->orig_regex ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "redir(): %s matched %s\n", url, rr->orig_regex);
+	    if ( rr->orig_regex ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "redir/redir(): %s matched %s\n", url, rr->orig_regex);
 	    /* matched */
 
             if ( TEST(rr->flags, RULE_ALLOW) ) {
@@ -389,7 +400,7 @@ int                     i = instance;
 
 			put_av_pair(&oobj->headers, "HTTP/1.0", "200 Internal document");
 			put_av_pair(&oobj->headers, "Content-Type:", internal->content_type);
-			sprintf(buf, "%d", internal->content_len);
+			snprintf(buf, sizeof(buf)-1, "%d", internal->content_len);
 			put_av_pair(&oobj->headers, "Content-Length:", buf);
 			if ( internal->expire_shift != -1 ) {
 			    mk1123time(global_sec_timer + internal->expire_shift, buf, sizeof(buf));
@@ -524,7 +535,7 @@ done:
     return(MOD_CODE_OK);
 }
 
-void
+static void
 free_rules(struct redir_rule *rr)
 {
 struct redir_rule *next;
@@ -539,7 +550,7 @@ struct redir_rule *next;
     }
 }
 
-void
+static void
 reload_redir_rules(int i)
 {
 struct stat sb;
@@ -656,7 +667,7 @@ struct	redir_rule	*new_rr, *last;
     }
 }
 
-void
+static void
 reload_redir_template(int i)
 {
 struct stat sb;
@@ -670,9 +681,9 @@ char	*in_mem;
 	    return;
 	if ( !redir_configs[i].redir_template[0] )
 	    return;
-	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_redir_template(): Loading template from `%s'\n", redir_configs[i].redir_template);
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "redir/reload_redir_template(): Loading template from `%s'\n", redir_configs[i].redir_template);
 
-	size   = sb.st_size;
+	size   = (int)sb.st_size;
 	WRLOCK_REDIR_CONFIG ;
 	if ( redir_configs[i].template ) xfree(redir_configs[i].template);
 	redir_configs[i].template = NULL;
@@ -701,7 +712,7 @@ char	*in_mem;
     } /* stat() != -1 */
 }
 
-void
+static void
 check_template_age(int i)
 {
     if ( global_sec_timer - redir_configs[i].template_check_time < 60 ) /* once per minute */
@@ -709,7 +720,7 @@ check_template_age(int i)
     reload_redir_template(i);
 }
 
-void
+static void
 check_rules_age(int i)
 {
     if ( global_sec_timer - redir_configs[i].rules_check_time < 60 ) /* once per minute */
@@ -717,7 +728,7 @@ check_rules_age(int i)
     reload_redir_rules(i);
 }
 
-char*
+static char*
 build_destination(char *src, regmatch_t *pmatch, char *target)
 {
 char		*result = NULL, *s, *d, esc, doll;
@@ -788,4 +799,3 @@ int		length = 0, subs = 0, n;
 
     return(result);
 }
-

@@ -58,40 +58,33 @@ int		no_direct_connections	= FALSE;
 
 static  unsigned int rnd_ctx = 1;
 
-int		str_to_sa(char*, struct sockaddr*);
-void		analyze_header(char*, struct server_answ *);
-int		attach_data(char* src, int size, struct buff *buff);
-struct	buff*	alloc_buff(int size);
-int		send_data_from_buff(int, struct buff **, int *, unsigned int *, int *, int, struct mem_obj *, char *);
-void		send_data_from_obj(struct request*, int, struct mem_obj *, int);
-void		unlock_obj(struct mem_obj *);
-void		lock_obj(struct mem_obj *);
-void		unlock_obj_state(struct mem_obj *);
-void		lock_obj_state(struct mem_obj *);
-void		unlock_decision(struct mem_obj *);
-void		lock_decision(struct mem_obj *);
-void		change_state(struct mem_obj*, int);
-void		change_state_notify(struct mem_obj *obj);
-void		free_chain(struct buff *);
-void		destroy_obj(struct mem_obj *);
-void		process_vary_headers(struct mem_obj*, struct request*);
-void		pump_data(struct mem_obj*, struct request *, int, int);
-int		continue_load(struct request*, int, int, struct mem_obj *);
-int		parent_connect(int, char *, int , struct request *);
-int		parent_connect_silent(int, char *, int, struct request *);
-int		peer_connect(int, struct sockaddr_in*, struct request *);
-int		srv_connect(int, struct url *url, struct request*);
-int		srv_connect_silent(int, struct url *url, struct request*);
-struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
-char*		build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags);
-void		check_new_object_expiration(struct request*, struct mem_obj*);
-char*		check_rewrite_charset(char *, struct request *, struct av *, int*);
-pthread_mutex_t	icp_so_lock;
-int		can_recode_rq_content(struct request*);
-int		is_oops_internal_header(struct av *);
-int		downgrade(struct request *, struct mem_obj *);
-int		content_chunked(struct mem_obj *);
-int		loop_detected(char*);
+static	char	*build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags);
+static	char	*build_parent_request(char*, struct url*, char *, struct request *, int);
+static	int	can_recode_rq_content(struct request*);
+static	void	change_state(struct mem_obj*, int);
+static	void	check_new_object_expiration(struct request*, struct mem_obj*);
+static	char	*check_rewrite_charset(char *, struct request *, struct av *, int*);
+static	int	content_chunked(struct mem_obj *);
+static	int	continue_load(struct request*, int, int, struct mem_obj *);
+static	int	downgrade(struct request *, struct mem_obj *);
+static	int	loop_detected(char*);
+static	struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
+static	void	process_vary_headers(struct mem_obj*, struct request*);
+static	void	pump_data(struct mem_obj*, struct request *, int, int);
+static	void	send_data_from_obj(struct request*, int, struct mem_obj *, int);
+static	int	srv_connect(int, struct url *url, struct request*);
+static	int	srv_connect_silent(int, struct url *url, struct request*);
+
+inline	static	int	add_header_av(char* avtext, struct mem_obj *obj);
+inline	static	void	analyze_header(char *p, struct server_answ *a);
+inline	static	void	change_state_notify(struct mem_obj *obj);
+inline	static	int	is_attr(struct av*, char*);
+inline	static	int	is_oops_internal_header(struct av *);
+inline	static	void	lock_obj_state(struct mem_obj *);
+inline	static	void	unlock_obj_state(struct mem_obj *);
+inline	static	void	lock_decision(struct mem_obj *);
+inline	static	void	unlock_decision(struct mem_obj *);
+
 
 void
 send_not_cached(int so, struct request *rq, char *headers)
@@ -272,6 +265,11 @@ ERRBUF ;
 	    }
 	    if ( check_server_headers(&answ_state, obj, obj->container, rq) ) {
 		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "send_not_cached(): check_server_headers().\n");
+                if ( obj->container ) {
+                    writet(so, obj->container->data, obj->container->used, READ_ANSW_TIMEOUT);
+                    pump_data(obj, rq, so, server_so);
+                    received = rq->received;
+                }
 		goto done;
 	    }
 	    if ( answ_state.state & GOT_HDR ) {
@@ -595,9 +593,8 @@ revalidate:
                 && ((new_obj->status_code == STATUS_GATEWAY_TIMEOUT)
                      || (new_obj->status_code == STATUS_FORBIDEN)) ) {
                 /* peer was not able... */
-                printf("Switch to direct\n");
 	        SET(new_obj->flags, FLAG_DEAD);
-                leave_obj(new_obj);
+                leave_obj(new_obj); new_obj = NULL;
                 SET(rq->flags, RQ_GO_DIRECT);
                 if ( server_so != -1 ) close(server_so);
                 server_so = -1;
@@ -671,7 +668,7 @@ done:
     return;
 }
 
-void
+static void
 send_data_from_obj(struct request *rq, int so, struct mem_obj *obj, int flags)
 {
 int 		r, received, send_hot_pos, pass = 0, sf = 0;
@@ -767,7 +764,7 @@ send_ready:
 		    /* any valid document. So we simply ajust values	*/
 		    rq->range_from = osize;
 		}
-		sprintf(buff, "bytes %d-%d/%d", rq->range_from, osize, osize);
+		snprintf(buff, sizeof(buff)-1, "bytes %d-%d/%d", rq->range_from, osize, osize);
 		attach_av_pair_to_buff("Content-Range:", buff, hdrs_to_send);
 	} else {
 	    /* first must be "HTTP/1.x 200 ..." */
@@ -839,25 +836,25 @@ send_ready:
 	}
 	if ( !content_length_sent && partial_content ) {
 	    char clbuf[32];
-	    sprintf(clbuf, "%d", osize-rq->range_from);
+	    snprintf(clbuf, sizeof(clbuf)-1,"%d", osize-rq->range_from);
 	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
 	    content_length_sent = TRUE;
 	}
 	if ( !content_length_sent && ungzip && obj->ungzipped_cont_len) {
 	    char clbuf[32];
-	    sprintf(clbuf, "%d", obj->ungzipped_cont_len);
+	    snprintf(clbuf, sizeof(clbuf)-1, "%d", obj->ungzipped_cont_len);
 	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
 	    content_length_sent = TRUE;
 	}
 	if ( obj->x_content_length && !content_length_sent ) {
 	    char clbuf[32];
-	    sprintf(clbuf, "%d", obj->x_content_length);
+	    snprintf(clbuf, sizeof(clbuf)-1, "%d", obj->x_content_length);
 	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
 	    content_length_sent = TRUE;
 	}
 	{
 	    char agebuf[32];
-	    sprintf(agebuf, "%d", (int)current_obj_age(obj));
+	    snprintf(agebuf, sizeof(agebuf)-1, "%d", (int)current_obj_age(obj));
 	    attach_av_pair_to_buff("Age:", agebuf, hdrs_to_send);
 	}
 	rq->doc_size = obj->content_length;
@@ -905,7 +902,7 @@ send_ready:
 	if ( !partial_content) pre_body(so, obj, rq, NULL);
 #if	defined(HAVE_ZLIB)
 	if ( ungzip ) {
-	    memset(&rq->strm, sizeof(rq->strm), 0);
+	    bzero(&rq->strm, sizeof(rq->strm));
 	    rq->decoding_buff = xmalloc(DECODING_BUF_SZ, "decoding");
 	    rq->strmp = &rq->strm;
 	    if ( Z_OK != inflateInit2(rq->strmp, -MAX_WBITS) ) {
@@ -976,7 +973,7 @@ done:
 
 /* return new object if old is invalid	*/
 /* otherwise returns NULL		*/
-struct mem_obj *
+static struct mem_obj *
 check_validity(int server_so,
 	struct request	*rq,
 	char		*meth,
@@ -1184,7 +1181,7 @@ struct	buff		*to_server_request = NULL;
 char			origin[MAXHOSTNAMELEN];
 struct	sockaddr_in	peer_sa;
 int			source_type, downgrade_flags=0;
-int			body_size, sf = 0, rest_in_chunk = 0;
+int			body_size, sf = 0, rest_in_chunk = 0, on_chunk_border=TRUE;
 char			*table = NULL;
 struct	av		*header = NULL;
 int			convert_charset = FALSE;
@@ -1435,6 +1432,10 @@ retry:
 		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(2, r/100);
+                if ( fetch_with_client_speed && (obj->refs==1) && !on_chunk_border ) {
+                    my_msleep(tv.tv_sec*1000+tv.tv_usec/1000);
+                    continue;
+                }
 		r = poll_descriptors(1, &pollarg[0],
 			tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) {
@@ -1458,6 +1459,10 @@ retry:
 		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(3,r/100);
+                if ( fetch_with_client_speed && (obj->refs==1) && !on_chunk_border ) {
+                    my_msleep(tv.tv_sec*1000+tv.tv_usec/1000);
+                    continue;
+                }
 		r = poll_descriptors(1, &pollarg[0],
 			tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) {
@@ -1472,6 +1477,18 @@ retry:
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
 	}
+
+        if ( fetch_with_client_speed && (obj->refs == 1) ) {
+            /* If single user read this doc - then load with user speed */
+            if ( (received > sended) && (pollarg[1].fd > 0) 
+                 && !on_chunk_border) {
+                /* want only send */
+                pollarg[0].fd = -1;
+                pollarg[0].request = pollarg[0].answer = 0;
+                last_read = global_sec_timer;
+            }
+        }
+
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
@@ -1501,7 +1518,7 @@ retry:
 		my_xlog(OOPS_LOG_DBG, "fill_mem_obj(): was last chunk.\n");
 		goto done;
 	    }
-
+            on_chunk_border = FALSE;
 	    rq->doc_sent += sended-ssended;
 	    if ( !rc && (sended == ssended) ) {
 		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
@@ -1514,7 +1531,8 @@ retry:
 		    goto error;
 		}
 		/* we stay on chunk border, server data not ready - sleep */
-		my_sleep(1);
+                on_chunk_border = TRUE;
+		my_msleep(5);
 		/* and wait again */
 		continue;
 	    }
@@ -1672,6 +1690,13 @@ retry:
 		sended = 0;
 		obj->flags |= FLAG_DEAD;
 		change_state(obj, OBJ_INPROGR);
+		if ( obj->container ) {
+		    writet(so, obj->container->data, obj->container->used,
+		        READ_ANSW_TIMEOUT);
+		    pump_data(obj, rq, so, server_so);
+		    received = rq->received;
+		    goto done;
+                }
 		continue;
 	    }
 	    if ( answ_state.state & GOT_HDR ) {
@@ -1915,7 +1940,7 @@ done1:
     return;
 }
 
-int
+static int
 continue_load(struct request *rq, int so, int server_so, struct mem_obj *obj)
 {
 int			maxfd, pass = 0, sf = 0;
@@ -1928,7 +1953,7 @@ char			*answer=NULL;
 struct	av		*header;
 char			*table = NULL;
 struct	buff		*hdrs_to_send = NULL;
-int			convert_charset = FALSE;
+int			convert_charset = FALSE, on_chunk_border = TRUE;
 time_t			last_read = global_sec_timer;
 
     received = received0 = obj->size;
@@ -2005,6 +2030,27 @@ time_t			last_read = global_sec_timer;
     if (TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) sf |= RQ_HAS_BANDWIDTH;
     if ( !(obj->flags & ANSW_NO_STORE) )
 	obj->flags &= ~ANSW_NO_CACHE;
+
+    if ( TEST(obj->flags, ANSW_SHORT_CONTAINER) ) {
+	my_xlog(OOPS_LOG_SEVERE, "continue_load(): pumping.\n");
+        if ( obj->container->next ) {
+            if ( convert_charset && rq->cs_to_client_table
+		        && rq->cs_to_client_table->list
+                        && rq->cs_to_client_table->list->string)
+                writet_cv_cs(so, obj->container->next->data,
+                        obj->container->next->used,
+                        READ_ANSW_TIMEOUT,
+                        rq->cs_to_client_table->list->string, TRUE);
+        else
+            writet(so, obj->container->next->data, 
+	        obj->container->next->used, READ_ANSW_TIMEOUT);
+            rq->doc_sent += obj->container->next->used;
+        }
+        pump_data(obj, rq, so, server_so);
+        received = rq->received;
+        goto error;
+    }
+
     answer = xmalloc(ANSW_SIZE+1, "continue_load(): 1");
     if ( ! answer )  {
 	my_xlog(OOPS_LOG_SEVERE, "continue_load(): no mem.\n");
@@ -2033,6 +2079,10 @@ time_t			last_read = global_sec_timer;
 		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(2, r/100);
+                if ( fetch_with_client_speed && (obj->refs==1) && !on_chunk_border ) {
+                    my_msleep(tv.tv_sec*1000+tv.tv_usec/1000);
+                    continue;
+                }
 		r = poll_descriptors(1, &pollarg[0], tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) {
 		    obj->flags |= FLAG_DEAD;
@@ -2055,6 +2105,10 @@ time_t			last_read = global_sec_timer;
 		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(3,r/100);
+                if ( fetch_with_client_speed && (obj->refs==1) && !on_chunk_border ) {
+                    my_msleep(tv.tv_sec*1000+tv.tv_usec/1000);
+                    continue;
+                }
 		r = poll_descriptors(1, &pollarg[0], tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) {
 		    obj->flags |= FLAG_DEAD;
@@ -2069,6 +2123,18 @@ time_t			last_read = global_sec_timer;
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
 	}
+
+        if ( fetch_with_client_speed && (obj->refs == 1) ) {
+            /* If single user read this doc - then load with user speed */
+            if ( (received > sended) && (pollarg[1].fd > 0) 
+                 && !on_chunk_border) {
+                /* want only send */
+                pollarg[0].fd = -1;
+                pollarg[0].request = pollarg[0].answer = 0;
+                last_read = global_sec_timer;
+            }
+        }
+
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
@@ -2094,6 +2160,7 @@ time_t			last_read = global_sec_timer;
 		so = -1;
 		goto are_we_alone;
 	    }
+            on_chunk_border = FALSE;
 	    if ( !rc && (sended == ssended) && TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
 		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
 		    goto read_s;
@@ -2105,7 +2172,8 @@ time_t			last_read = global_sec_timer;
 		    goto error;
 		}
 		/* we stay on chunk border, server data not ready - sleep */
-		my_sleep(1);
+                on_chunk_border = TRUE;
+		my_msleep(5);
 		/* and wait again */
 		continue;
 	    }
@@ -2657,7 +2725,6 @@ do_it_chunked:
     }
 }
 
-
 void
 lock_obj(struct mem_obj *obj)
 {
@@ -2670,25 +2737,29 @@ unlock_obj(struct mem_obj *obj)
     pthread_mutex_unlock(&obj->lock);
 }
 
-void
+inline
+static void
 lock_obj_state(struct mem_obj *obj)
 {
     pthread_mutex_lock(&obj->state_lock);
 }
 
-void
+inline
+static void
 unlock_obj_state(struct mem_obj *obj)
 {
     pthread_mutex_unlock(&obj->state_lock);
 }
 
-void
+inline
+static void
 lock_decision(struct mem_obj *obj)
 {
     pthread_mutex_lock(&obj->decision_lock);
 }
 
-void
+inline
+static void
 unlock_decision(struct mem_obj *obj)
 {
     pthread_mutex_unlock(&obj->decision_lock);
@@ -2703,7 +2774,8 @@ change_state(struct mem_obj *obj, int new_state)
     change_state_notify(obj);
 }
 
-void
+inline
+static void
 change_state_notify(struct mem_obj *obj)
 {
     pthread_cond_broadcast(&obj->state_cond);
@@ -2751,14 +2823,16 @@ char	*hdr = NULL;
     return;
 }
 
-int
+inline
+static int
 is_attr(struct av *av, char *attr)
 {
     if ( !av || !av->attr || !attr ) return(FALSE);
     return(!strncasecmp(av->attr, attr, strlen(attr)));
 }
 
-int
+inline
+static int
 is_oops_internal_header(struct av *av)
 {
     if ( !av || !av->attr ) return(FALSE);
@@ -2862,7 +2936,7 @@ struct	sockaddr_in	dst_sa;
     return(FALSE);
 }
 
-int
+static int
 srv_connect(int client_so, struct url *url, struct request *rq)
 {
 int 			server_so = -1, r;
@@ -2902,7 +2976,7 @@ ERRBUF ;
     return(server_so);
 }
 
-int
+static int
 srv_connect_silent(int client_so, struct url *url, struct request *rq)
 {
 int 			server_so = -1, r;
@@ -3076,7 +3150,7 @@ struct	peer		*peer;
     return(server_so);
 }
 
-char*
+static char*
 build_direct_request(char *meth, struct url *url, char *headers, struct request *rq, int flags)
 {
 int	rlen, authorization_done = FALSE;
@@ -3230,7 +3304,7 @@ fail:
     return NULL;
 }
 
-char*
+static char*
 build_parent_request(char *meth, struct url *url, char *headers, struct request *rq, int flags)
 {
 int	rlen, via_inserted = FALSE;
@@ -3393,7 +3467,7 @@ fail:
     return NULL;
 }
 
-int
+static int
 content_chunked(struct mem_obj *obj)
 {
 char	*transfer_encoding = NULL;
@@ -3406,7 +3480,7 @@ char	*transfer_encoding = NULL;
     return(FALSE);
 }
 
-int
+static int
 downgrade(struct request *rq, struct mem_obj *obj)
 {
 int	res = 0;
@@ -3482,7 +3556,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
     }
 }
 
-void
+static void
 check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 {
 	if ( !rq || !obj ) return;
@@ -3540,7 +3614,7 @@ check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 	}
 }
 
-char*
+static char*
 check_rewrite_charset(char *s, struct request *rq, struct av *header, int* convert_charset)
 {
 char	*p, *t, *d=NULL, *delim, text = FALSE;
@@ -3583,7 +3657,7 @@ not_text:
     return(d);
 }
 
-int
+static int
 can_recode_rq_content(struct request *rq)
 {
 int	res = FALSE;
@@ -3601,7 +3675,7 @@ char	*cont_type;
     return(res);
 }
 
-void
+static void
 pump_data(struct mem_obj *obj, struct request *rq, int so, int server_so)
 {
 int		r, pass = 0;
@@ -3668,7 +3742,7 @@ done:
 }
 
 /* form out Via: value and check if it is already in request via */
-int
+static int
 loop_detected(char *rq_via)
 {
 char	*buf;
@@ -3677,11 +3751,362 @@ char	*buf;
     buf = malloc(strlen(host_name) + 10 + strlen(version) +8 + 1);
     if ( !buf )
 	return(FALSE);
-    sprintf(buf, "%s:%d (Oops %s)" , host_name, http_port, version);
+    sprintf(buf, " %s:%d (Oops %s)" , host_name, http_port, version);
+    if ( strstr(rq_via, buf) ) {
+	xfree(buf);
+	return(TRUE);
+    }
+    sprintf(buf, ",%s:%d (Oops %s)" , host_name, http_port, version);
     if ( strstr(rq_via, buf) ) {
 	xfree(buf);
 	return(TRUE);
     }
     xfree(buf);
     return(FALSE);
+}
+
+inline
+static void
+analyze_header(char *p, struct server_answ *a)
+{
+char	*t;
+
+    my_xlog(OOPS_LOG_HTTP|OOPS_LOG_DBG, "analyze_header(): ---> `%s'.\n", p);
+    if ( !a->status_code ) {
+	/* check HTTP/X.X XXX */
+	if ( !strncasecmp(p, "HTTP/", 5) ) {
+	    int	httpv_major, httpv_minor;
+	    if ( sscanf(p+5, "%d.%d", &httpv_major, &httpv_minor) == 2 ) {
+		a->httpv_major = httpv_major;
+		a->httpv_minor = httpv_minor;
+	    }
+	    t = strchr(p, ' ');
+	    if ( !t ) {
+		my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Wrong_header: %s\n", p);
+		return;
+	    }
+	    a->status_code = atoi(t);
+	    my_xlog(OOPS_LOG_DBG, "analyze_header(): Status code: %d\n", a->status_code);
+	}
+	return;
+    }
+    if ( !strncasecmp(p, "X-oops-internal-request-time: ", 30) ) {
+	char        *x;
+
+	x=p + 30;
+	while( *x && IS_SPACE(*x) ) x++;
+	a->request_time = atoi(x);
+	return;
+    }
+    if ( !strncasecmp(p, "X-oops-internal-response-time: ", 31) ) {
+	char        *x;
+
+	x=p + 31;
+	while( *x && IS_SPACE(*x) ) x++;
+	a->response_time = atoi(x);
+	return;
+    }
+    if ( !strncasecmp(p, "X-oops-internal-content-length: ", 32) ) {
+	char        *x;
+
+	x=p + 31;
+	while( *x && IS_SPACE(*x) ) x++;
+	a->x_content_length = atoi(x);
+	return;
+    }
+    if ( !strncasecmp(p, "X-oops-internal-alt-expires: ", 29) ) {
+	char        *x;
+
+	x=p + 29;
+	while( *x && IS_SPACE(*x) ) x++;
+	a->times.expires = atoi(x);
+	SET(a->flags, ANSW_EXPIRES_ALTERED | ANSW_HAS_EXPIRES);
+	return;
+    }
+    if ( !strncasecmp(p, "Content-length: ", 16) ) {
+	char        *x;
+	/* length */
+	x=p + 16; /* strlen("content-length: ") */
+	while( *x && IS_SPACE(*x) ) x++;
+	a->content_len = atoi(x);
+	return;
+    }
+    if ( !strncasecmp(p, "Date: ", 6) ) {
+	char        *x;
+	/* length */
+	x=p + 6; /* strlen("date: ") */
+	while( *x && IS_SPACE(*x) ) x++;
+	a->times.date  = global_sec_timer;
+	if (http_date(x, &a->times.date) ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
+	return;
+    }
+    if ( !strncasecmp(p, "Last-Modified: ", 15) ) {
+	char        *x;
+	/* length */
+	x=p + 15; /* strlen("date: ") */
+	while( *x && IS_SPACE(*x) ) x++;
+	if (http_date(x, &a->times.last_modified) ) my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
+	    else
+		a->flags |= ANSW_LAST_MODIFIED;
+	return;
+    }
+    if ( !strncasecmp(p, "Pragma: ", 8) ) {
+	char        *x;
+	/* length */
+	x=p + 8; /* strlen("Pragma: ") */
+	if ( strstr(x, "no-cache") ) a->flags |= ANSW_NO_STORE;
+	return;
+    }
+    if ( !strncasecmp(p, "Age: ", 5) ) {
+	char        *x;
+	/* length */
+	x=p + 5; /* strlen("Age: ") */
+	a->times.age = atoi(x);
+	return;
+    }
+    if ( !strncasecmp(p, "Cache-Control: ", 15) ) {
+	char        *x;
+	/* length */
+	x=p + 15; /* strlen("Cache-Control: ") */
+	while( *x && IS_SPACE(*x) ) x++;
+	if ( strstr(x, "no-store") )
+		a->flags |= ANSW_NO_STORE;
+	if ( strstr(x, "no-cache") )
+		a->flags |= ANSW_NO_STORE;
+	if ( strstr(x, "private") )
+		a->flags |= ANSW_NO_STORE;
+	if ( strstr(x, "must-revalidate") )
+		a->flags |= ANSW_MUST_REVALIDATE;
+	if ( !strncasecmp(x, "proxy-revalidate", 15) )
+		a->flags |= ANSW_PROXY_REVALIDATE;
+	if ( sscanf(x, "max-age = %d", (int*)&a->times.max_age) == 1 )
+		a->flags |= ANSW_HAS_MAX_AGE;
+    }
+    if ( !strncasecmp(p, "Connection: ", 12) ) {
+	char        *x;
+	/* length */
+	x = p + 12; /* strlen("Connection: ") */
+	while( *x && IS_SPACE(*x) ) x++;
+	if ( !strncasecmp(x, "keep-alive", 10) )
+		a->flags |= ANSW_KEEP_ALIVE;
+	if ( !strncasecmp(x, "close", 5) )
+		a->flags &= ~ANSW_KEEP_ALIVE;
+    }
+    if (    !TEST(a->flags, ANSW_HAS_EXPIRES) 
+         && !strncasecmp(p, "Expires: ", 9) ) {
+	char        *x;
+	/* length */
+	x = p + 9; /* strlen("Expires: ") */
+	while( *x && IS_SPACE(*x) ) x++;
+	a->times.expires  = time(NULL);
+	if (http_date(x, &a->times.expires)) {
+		my_xlog(OOPS_LOG_DBG|OOPS_LOG_INFORM, "analyze_header(): Can't parse date: %s\n", x);
+		return;
+	}
+	a->flags |= ANSW_HAS_EXPIRES;
+	return;
+    }
+}
+
+inline
+static int
+add_header_av(char* avtext, struct mem_obj *obj)
+{
+struct	av	*new = NULL, *next;
+char		*attr = avtext, *sp = avtext, *val, holder;
+char		*new_attr = NULL, *new_val = NULL;
+char		nullstr[1];
+
+    if ( *sp == 0 ) return(-1);
+    while( *sp && IS_SPACE(*sp) ) sp++;
+    while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
+    if ( !*sp ) {
+	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "add_header_av(): Invalid header string: '%s'\n", avtext);
+	nullstr[0] = 0;
+	sp = nullstr;
+    }
+    if ( *sp == ':' ) sp++;
+    holder = *sp;
+    *sp = 0;
+    if ( !strlen(attr) ) return(-1);
+    new = xmalloc(sizeof(*new), "add_header_av(): for av pair");
+    if ( !new ) goto failed;
+    new_attr = xmalloc( strlen(attr)+1, "add_header_av(): for new_attr" );
+    if ( !new_attr ) goto failed;
+    strcpy(new_attr, attr);
+    *sp = holder;
+    val = sp; while( *val && IS_SPACE(*val) ) val++;
+    /*if ( !*val ) goto failed;*/
+    new_val = xmalloc( strlen(val) + 1, "add_header_av(): for new_val");
+    if ( !new_val ) goto failed;
+    strcpy(new_val, val);
+    new->attr = new_attr;
+    new->val  = new_val;
+    new->next = NULL;
+    if ( !obj->headers ) {
+	obj->headers = new;
+    } else {
+	next = obj->headers;
+	while (next->next) next=next->next;
+	next->next=new;
+    }
+    return(0);
+
+failed:
+    *sp = holder;
+    if ( new ) free(new);
+    if ( new_attr ) free(new_attr);
+    if ( new_val ) free(new_val);
+    return(-1);
+}
+
+int
+check_server_headers(struct server_answ *a, struct mem_obj *obj, struct buff *b, struct request *rq)
+{
+char	*start, *beg, *end, *p;
+char	holder, its_here = 0, off = 2;
+char	*p1 = NULL;
+
+    if ( !b || !b->data ) return(0);
+    beg = b->data;
+    end = b->data + b->used;
+
+    if ( end - beg > MAX_DOC_HDR_SIZE ) {
+        /* Header is too large */
+        return(1);
+    }
+go:
+    if ( a->state & GOT_HDR ) return(0);
+    start = beg + a->checked;
+    if ( !a->checked ) {
+	p = memchr(beg, '\n', end-beg);
+	holder = '\n';
+	if ( !p ) {
+	    p = memchr(beg, '\r', end-beg);
+	    holder = '\r';
+	}
+	if ( !p ) return(0);
+	if ( *p == '\n' ) {
+	    if ( *(p-1) == '\r' ) {
+		p1 = p-1;
+		*p1 = 0;
+	    }
+	}
+	*p = 0;
+	a->checked = strlen(start);
+	/* this is HTTP XXX yyy "header", which we will never rewrite */
+	analyze_header(start, a);
+	if ( add_header_av(start, obj) ) {
+	    *p = holder;
+	    if ( p1 ) {*p1 = '\r'; p1=NULL;}
+	    return(-1);
+	}
+	*p = holder;
+	if ( p1 ) {*p1 = '\r'; p1=NULL;}
+	goto go;
+    }
+    if ( (end - start >= 2) && !memcmp(start, "\n\n", 2) ) {
+	its_here = 1;
+	off = 2;
+    }
+    if ( (end - start >= 3) && !memcmp(start, "\r\n\n", 3) ) {
+	its_here = 1;
+	off = 3;
+    }
+    if ( (end - start >= 3) && !memcmp(start, "\n\r\n", 3) ) {
+	its_here = 1;
+	off = 3;
+    }
+    if ( (end - start >= 4) && !memcmp(start, "\r\n\r\n", 4) ) {
+	its_here = 1;
+	off = 4;
+    }
+    if ( its_here ) {
+	struct buff	*body;
+	int		all_siz;
+
+	obj->insertion_point = start-beg;
+	obj->tail_length = off;
+	a->state |= GOT_HDR ;
+	obj->httpv_major = a->httpv_major;
+	obj->httpv_minor = a->httpv_minor;
+	obj->content_length = a->content_len;
+	b->used = ( start + off ) - beg;	/* trunc first buf to header siz	*/
+	/* if requested don't cache documents without "Last-Modified" */
+	if ( dont_cache_without_last_modified
+		&& !TEST(a->flags, ANSW_LAST_MODIFIED) ) {
+	    SET(obj->flags, ANSW_NO_STORE|ANSW_NO_CACHE);
+	}
+	/* allocate data storage */
+	if ( a->content_len ) {
+	    if ( a->content_len > maxresident ) {
+		/*
+		 -  This object will not be stored, we will receive it in
+		 -  small parts, in syncronous mode
+		 -  allocate as much as we need now...
+		*/
+		all_siz = ROUND_CHUNKS(end-start-off);
+		/*
+		 - mark object as 'not for store' and 'don't expand container'
+		*/
+		a->flags |= (ANSW_NO_STORE | ANSW_SHORT_CONTAINER);
+	    } else {/* obj is not too large */
+		all_siz = MIN(a->content_len, 8192);
+            }
+	} else { /* no Content-Len: */
+            char        *transfer_encoding = NULL;
+	    all_siz = ROUND_CHUNKS(end-start-off);
+	    transfer_encoding = attr_value(obj->headers, "Transfer-Encoding");
+	    if ( !(transfer_encoding && !strncasecmp("chunked", transfer_encoding, 7)) ) {
+                a->flags |= (ANSW_NO_STORE | ANSW_SHORT_CONTAINER);
+            }            
+        }
+	body = alloc_buff(all_siz);
+	if ( !body ) {
+	    return(-1);
+	}
+	b->next = body;
+	obj->hot_buff = body;
+	attach_data(start+off, end-start-off, obj->hot_buff);
+	return(0);
+    }
+    p = start;
+    while( (p < end) && ( *p == '\r' || *p == '\n' ) ) p++;
+    if ( p < end && *p ) {
+	char *t = memchr(p, '\n', end-p);
+	char *tmp, *saved_tmp;
+
+	holder = '\n';
+	if ( !t ) {
+	    t = memchr(p, '\r', end-p);
+	    holder = '\r';
+	}
+	if ( !t ) return(0);
+	if ( *t == '\n' ) {
+	    if ( *(t-1) == '\r' ) {
+		p1 = t-1;
+		*p1 = 0;
+	    }
+	}
+	*t = 0;
+	saved_tmp = tmp = strdup(p);
+	if ( !tmp )
+	    return(-1);
+	do_redir_rewrite_header(&tmp, rq, NULL);
+	analyze_header(tmp, a);
+	if ( add_header_av(tmp, obj) ) {
+	    free(tmp);
+	    return(-1);
+	}
+	if ( saved_tmp != tmp ) {
+	    /* header was changed */
+	    if ( obj ) SET(obj->flags, ANSW_HDR_CHANGED);
+	}
+	free(tmp);
+	*t = holder;
+	if ( p1 ) { *p1 = '\r'; t=p1; p1 = NULL;}
+	a->checked = t - beg;
+	goto go;
+    }
+    return(0);
 }

@@ -19,8 +19,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	"oops.h"
 
-struct	domain_list	*find_best_dom(struct domain_list*, char*);
-int			port_deny(struct group *, struct request *);
+static	named_acl_t	*acl_by_name(char*);
+static	void		free_acl_list(acl_chk_list_t*);
+static	int		rq_match_named_acl(struct request *rq, named_acl_t *acl);
+
+inline	static	struct	domain_list	*find_best_dom(struct domain_list*, char*);
+inline	static	int	check_acl_list(acl_chk_list_t *list, struct request *rq);
+inline	static	int	obj_check_acl_list(acl_chk_list_t *, struct mem_obj *, struct request *);
+inline	static	int	time_check_acl_list(acl_chk_list_t *, time_t);
+inline	static	int	port_deny(struct group *, struct request *);
+
 
 struct group *
 rq_to_group(struct request * rq)
@@ -131,7 +139,7 @@ int                             res;
 		s, group->name);
     if ( !group->http || !group->http->allow ) {
 	if (s) {
-	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "deny_http_access(): No http or http_>allow for address %s - access denied\n", s);
+	    my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "deny_http_access(): No http or http->allow for address %s - access denied\n", s);
 	    xfree(s);
 	}
 	return(ACCESS_DOMAIN);
@@ -234,7 +242,8 @@ miss_deny(struct group *group)
     return(group->miss_deny);
 }
 
-int
+inline
+static int
 port_deny(struct group *group, struct request *rq)
 {
 struct range	*range;
@@ -268,7 +277,8 @@ struct range	*range;
    the best domain will be w3.org
  */
 
-struct domain_list *
+inline
+static struct domain_list *
 find_best_dom(struct domain_list *doml, char* host)
 {
 struct	domain_list	*best = NULL;
@@ -330,6 +340,7 @@ struct	cidr_net	*net;
 	return(TRUE);
     return(FALSE);
 }
+
 int
 denytime_check(struct denytime *dt)
 {
@@ -340,6 +351,65 @@ char		todaybit, dmask,yestdbit;
     if ( !dt ) return(0);
 
     localtime_r((time_t*)&global_sec_timer, &tm);
+    cm = tm.tm_hour * 60 + tm.tm_min;
+    todaybit = 1 << tm.tm_wday;
+
+    while(dt) {
+
+	sm = dt->start_minute;
+	em = dt->end_minute;
+	dmask = dt->days;
+
+
+	if ( sm < em ) reverse = FALSE;
+	   else	       reverse = TRUE;
+
+	if ( !reverse ) {
+	    /* simple case of normal interval, like 09:00 - 18:00 */
+	    if ( TEST(todaybit, dmask) ) {
+		   /* this denytime cover this day */
+		if ( sm <= cm && cm <= em )
+			return(1);
+		  else
+			goto check_next_dt;
+	    } else /* this denytime don't cover this day */
+		goto check_next_dt;
+	} else {
+	    /* case of reverse interval, like 21:00 - 09:00 */
+	    if ( TEST(todaybit, dmask) ) {
+		if ( cm >= sm )
+		    return(1);
+		yestdbit = todaybit >> 1;
+		/* if today is sunday, make yestd - sat */
+		if ( !yestdbit ) yestdbit = 0x40;
+		/* if this denytime record cover previous day? */
+		if ( !TEST(yestdbit, dmask) )
+		    goto check_next_dt;
+		/* if we get in interval that started yesterday? */
+		if ( cm <= em ) /* yes, we get */
+		    return(1);
+		/* no it finished earlier */
+		goto check_next_dt;
+	    }
+	}
+
+ check_next_dt:;
+	dt = dt->next;
+    }
+    return(0);
+}
+
+/* make check for given time t */
+int
+time_denytime_check(time_t t, struct denytime *dt)
+{
+int		reverse, sm,em,cm;
+struct	tm	tm;
+char		todaybit, dmask,yestdbit;
+
+    if ( !dt ) return(0);
+
+    localtime_r(&t, &tm);
     cm = tm.tm_hour * 60 + tm.tm_min;
     todaybit = 1 << tm.tm_wday;
 
@@ -422,8 +492,11 @@ named_acl_type_by_name(char *type)
 	return(ACL_CONTENT_TYPE);
     if ( !strcasecmp(type, "username") )
 	return(ACL_USERNAME);
+    if ( !strcasecmp(type, "header_substr") )
+	return(ACL_HEADER_SUBSTR);
     return((char)-1);
 }
+
 void
 free_named_acl(named_acl_t *acl)
 {
@@ -476,17 +549,28 @@ case ACL_TIME:
 	    acl->data = NULL;
 	}
 	break;
+case ACL_HEADER_SUBSTR:
+	if ( acl->data ) {
+           header_substr_data_t *hsd = acl->data;
+	    IF_FREE(hsd->header);
+	    IF_FREE(hsd->substr);
+            free(acl->data);
+	    acl->data = NULL;
+	}
+	break;
 case ACL_CONTENT_TYPE:
 	if ( acl->data ) {
 	    acl_ct_data_t	*ctd = (acl_ct_data_t*)acl->data;
 	    IF_FREE(ctd->ct);
 	}
+	break;
 default:
 	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "free_named_acl(): Try to free unknown named acl %s\n", acl->name);
     }
     if ( acl->data ) free(acl->data);
     free(acl);
 }
+
 int
 parse_named_acl_data(named_acl_t *acl, char *data)
 {
@@ -544,7 +628,7 @@ case ACL_DSTDOMREGEX:
 case ACL_URLREGEX:
 case ACL_PATHREGEX:
 	regflags|= REG_EXTENDED|REG_NOSUB;
-	if ( nl = strchr(data, '\n') ) *nl = 0;
+	if ( (nl = strchr(data, '\n')) ) *nl = 0;
 	/* data must be regex	*/
 	{
 	    struct	urlregex_acl_data	*urd;
@@ -581,7 +665,7 @@ case ACL_TIME:
 	struct denytime	dt, *result;
 	int		start_m, end_m;
 
-	if ( nl = strchr(data, '\n') ) *nl = 0;
+	if ( (nl = strchr(data, '\n')) ) *nl = 0;
 	verb_printf("acl->data: `%s'\n", data);
 	bzero(&dt, sizeof(dt));
 	/* split on '\t '					*/
@@ -619,15 +703,22 @@ case ACL_TIME:
 		verb_printf("from: `%s' to `%s'\n", fday,tday);
 		d1 = daybit(fday);
 		d2 = daybit(tday);
-		if ( TEST(d1, 0x80) || TEST(d2, 0x80) || (d1>d2)) {
+		if ( TEST(d1, 0x80) || TEST(d2, 0x80) ) {
 		    verb_printf("Wrong time acl: %s\n", data);
 		    if ( must_free_data ) free(data);
 		    return(0);
 		}
 		i = d1;
-		while(i <= d2) {
-		    res |= i;
-		    i <<= 1;
+		d2 <<= 1;
+		if ( d2 == d1 ) {
+		    /* all days */
+		    res |= daybit("all");
+		} else {
+		    while(i != d2) {
+		        res |= i;
+		        i <<= 1;
+		        if ( i > 64 ) i = 1;
+                    }
 		}
 	    } else {
 		verb_printf("day: `%s'\n", t);
@@ -693,13 +784,13 @@ case ACL_USERNAME:
 	if ( must_free_data ) free(data);
 	return(0);
 case ACL_METHOD:
-	if ( nl = strchr(data, '\n') ) *nl = 0;
+	if ( (nl = strchr(data, '\n')) ) *nl = 0;
 	printf("acl->data: `%s'\n", data);
 	if ( data ) acl->data = strdup(data);
 	if ( must_free_data ) free(data);
 	return(0);
 case ACL_CONTENT_TYPE:
-	if ( nl = strchr(data, '\n') ) *nl = 0;
+	if ( (nl = strchr(data, '\n')) ) *nl = 0;
 	printf("acl->data: `%s'\n", data);
 	if ( data ) {
 	    acl_ct_data_t *ctd = malloc(sizeof(*ctd));
@@ -712,7 +803,7 @@ case ACL_CONTENT_TYPE:
 	}
 	return(0);
 case ACL_USERCHARSET:
-	if ( nl = strchr(data, '\n') ) *nl = 0;
+	if ( (nl = strchr(data, '\n')) ) *nl = 0;
 	/* string with charset name			*/
 	{
 	    u_charset_t	*ucsd;
@@ -760,6 +851,36 @@ case ACL_DSTDOM:
 	}
 	if ( must_free_data ) free(data);
 	return(0);
+case ACL_HEADER_SUBSTR:
+	{
+	/*  Header SP substring \n	*/
+            char                        *hdr, *subs = NULL;
+            header_substr_data_t        *hsd;
+            int                         data_len = strlen(data);
+
+	    acl->data = NULL;
+	    verb_printf("acl->data: `%s'\n", data);
+	    /* split on ' ' */
+            hdr = (char*)strtok_r(data, ", \n", &tokptr);
+            if ( hdr ) {
+                verb_printf("ACL_HEADER_SUBSTR: header: %s\n", hdr);
+                hsd = calloc(1, sizeof(*hsd));
+                if ( hsd ) {
+                    hsd->header = strdup(hdr);
+                    p = hdr + strlen(hdr) + 1;
+                    while ( (p < (data + data_len)) && isspace(*p) ) p++;
+                    if ( *p ) {
+                        verb_printf("ACL_HEADER_SUBSTR: substr: %s\n", p);
+                        hsd->substr = strdup(p);
+                    }
+                    acl->data = hsd;
+                }
+            } else {
+                verb_printf("Can't locate hdr in '%s'\n", data);
+            }
+	}
+	if ( must_free_data ) free(data);
+	return(0);
 case ACL_SRC_IP:
 	/* IP IP IP					*/
 	/* IP in format a.b.c.d or a.b.c/l		*/
@@ -804,7 +925,7 @@ case ACL_SRC_IP:
 		if ( !masklen )
 			new->mask = 0;
 		    else {
-			if ( masklen < 0 || masklen > 32 ) {
+			if ( (signed)masklen < 0 || masklen > 32 ) {
 				free(new);
 				continue;
 			}
@@ -841,7 +962,8 @@ default:
     return(0);
 }
 
-int
+inline
+static int
 obj_match_named_acl(struct mem_obj *obj, struct request *rq, named_acl_t *acl)
 {
     if ( !obj || !acl || !acl->data ) return(FALSE);
@@ -868,13 +990,28 @@ obj_match_named_acl(struct mem_obj *obj, struct request *rq, named_acl_t *acl)
     return(FALSE);
 }
 
-int
+static int
+time_match_named_acl(time_t t, named_acl_t *acl)
+{
+    if ( !acl ) return(FALSE);
+    switch(acl->type) {
+    case ACL_TIME:
+	if ( acl->data && time_denytime_check(t, (struct denytime*)acl->data) )
+		return(TRUE);
+	return(FALSE);
+    default:;
+    }
+    return(TRUE);
+}
+
+static int
 rq_match_named_acl(struct request *rq, named_acl_t *acl)
 {
 int				length = 0;
 char				*url;
 struct	urlregex_acl_data	*urd;
 u_charset_t			*ucsd;
+header_substr_data_t            *hsd;
 
     if ( !rq || !acl) return(FALSE);
     switch(acl->type) {
@@ -897,7 +1034,7 @@ case ACL_URLREGEX:
 	length += 3 /* :// */ + 1 /* \0 */;
 	url = malloc(length);
 	if ( !url ) return(FALSE);
-	sprintf(url, "%s://%s%s", rq->url.proto, rq->url.host, rq->url.path);
+	snprintf(url, length, "%s://%s%s", rq->url.proto, rq->url.host, rq->url.path);
 	/* now check */
 	urd = (struct  urlregex_acl_data*)acl->data;
 	if (regexec(&urd->preg, url, 0,  NULL, 0)) {
@@ -998,14 +1135,27 @@ case ACL_USERNAME:
             if ( !user ) return(FALSE);
             logins = (struct string_list*)acl->data;
             while ( logins != NULL ) {
-                if ( !strcmp(user, logins->string) ) return(TRUE);
+                if ( logins->string && !strcmp(user, logins->string) ) return(TRUE);
                 logins = logins->next;
             }
             return(FALSE);
         }
+	break;
 case ACL_TIME:
 	if ( acl->data && denytime_check((struct denytime*)acl->data) )
 		return(TRUE);
+	break;
+
+case ACL_HEADER_SUBSTR:
+	hsd = (header_substr_data_t*)acl->data;
+	if ( !hsd || !hsd->header || !hsd->substr ) return(FALSE);
+	{
+	    char	*value = attr_value(rq->av_pairs, hsd->header);
+            if ( !value ) return(FALSE);
+            if ( strstr(value, hsd->substr) ) return(TRUE);
+            return(FALSE);
+	}
+	break;
 
 default:
 	break;
@@ -1181,7 +1331,7 @@ named_acl_t	*curr = named_acls;
 
 /* must be called with config locked or during reconfigure process */
 /* ret acl ptr, or NULL						   */
-named_acl_t*
+static named_acl_t*
 acl_by_name(char *name)
 {
 named_acl_t	*curr = named_acls;
@@ -1228,8 +1378,23 @@ acl_chk_list_hdr_t *curr = acl_access;
     return(FALSE);
 }
 
-/* return TRUE if request pass list	*/
 int
+time_check_acl_access(acl_chk_list_hdr_t *acl_access, time_t t)
+{
+acl_chk_list_hdr_t *curr = acl_access;
+
+    while(curr) {
+	if ( time_check_acl_list((acl_chk_list_t*)curr, t) == TRUE ) {
+	    return(TRUE);
+	}
+	curr = curr->next_list;
+    }
+    return(FALSE);
+}
+
+/* return TRUE if request pass list	*/
+inline
+static int
 check_acl_list(acl_chk_list_t *list, struct request *rq)
 {
 int	res;
@@ -1245,8 +1410,27 @@ int	res;
     return(TRUE);
 }
 
+/* return TRUE if time pass list	*/
+inline
+static int
+time_check_acl_list(acl_chk_list_t *list, time_t t)
+{
+int	res;
+
+    while(list) {
+	if ( list->acl ) {
+	    res = time_match_named_acl(t, list->acl);
+	    res ^= list->sign;
+	    if ( res == FALSE ) return(FALSE);
+	}
+	list = list->next;
+    }
+    return(TRUE);
+}
+
 /* return TRUE if object pass list	*/
-int
+inline
+static int
 obj_check_acl_list(acl_chk_list_t *list, struct mem_obj *obj, struct request *rq)
 {
 int	res;
@@ -1275,7 +1459,7 @@ acl_chk_list_hdr_t	*next;
     }
 }
 
-void
+static void
 free_acl_list(acl_chk_list_t *list)
 {
 acl_chk_list_t	*next;
@@ -1296,13 +1480,13 @@ named_acl_t		*acl;
 acl_chk_list_t		*new, *next;
 acl_chk_list_hdr_t	*newhdr, *nexthdr;
 
-    newhdr = malloc(sizeof(*newhdr));
+    newhdr = xmalloc(sizeof(*newhdr), "parse_acl_access(): 1");
     if ( !newhdr ) return;
 
     bzero(newhdr, sizeof(*newhdr));
     verb_printf("parse_acl_access(): PARSING ACL: %s\n", string);
     t = string;
-    while ( (p=(char*)strtok_r(t, "\t ", &tptr)) != 0 ) {
+    while ( (p = (char*)strtok_r(t, "\t ", &tptr)) != 0 ) {
 	t = NULL;
 
 	sign = 0;
@@ -1313,7 +1497,7 @@ acl_chk_list_hdr_t	*newhdr, *nexthdr;
 	acl = acl_by_name(p);
 	if ( acl ) {
 	    if ( !first ) {
-		new = malloc(sizeof(*new));
+		new = xmalloc(sizeof(*new), "parse_acl_access(): 2");
 		bzero(new, sizeof(*new));
 		next = (acl_chk_list_t*)newhdr;
 		while ( next->next ) next = next->next;

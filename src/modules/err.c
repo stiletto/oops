@@ -27,17 +27,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 char		module_type   = MODULE_ERR  ;
 char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 int		err(int so, char *msg, char *reason, int code, struct request* rq, int *flags);
 #else
 static	char	module_type   = MODULE_ERR  ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
-static	int	mod_load();
-static	int	mod_unload();
-static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+static	int	mod_load(void);
+static	int	mod_unload(void);
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run(void);
 static	int	err(int so, char *msg, char *reason, int code, struct request* rq, int *flags);
 #endif
 
@@ -102,15 +102,14 @@ char	*messages[2][8] = {
 };
 
 int
-mod_run()
+mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 int
-mod_load()
+mod_load(void)
 {
-    printf("Err_report started\n");
     err_lang[0]	    = 0;
     err_template[0] = 0;
     curr_lang = LANG_EN;
@@ -119,10 +118,14 @@ mod_load()
     template_mtime = 0;
     template_check_time = 0;
     pthread_rwlock_init(&err_config_lock, NULL);
+
+    printf("Err_report started\n");
+
     return(MOD_CODE_OK);
 }
+
 int
-mod_unload()
+mod_unload(void)
 {
     WRLOCK_ERR_CONFIG ;
     printf("Err_report stopped\n");
@@ -277,7 +280,7 @@ struct	buff		*body;
 				attach_data("\n<br>Host: NULL", 15, body);
 			    if ( rq && (rq->url.port != 0) ) {
 				char buf[10];
-				sprintf(&buf[0],"%d", rq->url.port);
+				snprintf(buf, sizeof(buf)-1, "%d", rq->url.port);
 				attach_data("\n<br>Port:", 10, body);
 				attach_data(buf, strlen(buf), body);
 			    }
@@ -324,7 +327,7 @@ struct	buff		*body;
 				attach_data("\n<br>Host: NULL", 15, body);
 			    if ( rq && (rq->url.port != 0) ) {
 				char buf[10];
-				sprintf(&buf[0],"%d", rq->url.port);
+				snprintf(buf, sizeof(buf)-1, "%d", rq->url.port);
 				attach_data("\n<br>Port:", 10, body);
 				attach_data(buf, strlen(buf), body);
 			    }
@@ -382,7 +385,7 @@ struct	buff		*body;
     return(MOD_CODE_OK);
 }
 
-void
+static void
 check_template_age(void)
 {
     if ( global_sec_timer - template_check_time < 5 )
@@ -392,7 +395,7 @@ check_template_age(void)
     UNLOCK_ERR_CONFIG ;
 }
 
-void
+static void
 reload_template(void)
 {
 struct stat sb;
@@ -408,7 +411,7 @@ char	*in_mem;
 	    return;
 	my_xlog(OOPS_LOG_NOTICE|OOPS_LOG_DBG|OOPS_LOG_INFORM, "reload_template(): Loading template from `%s'.\n", err_template);
 
-	size   = sb.st_size;
+	size   = (int)sb.st_size;
 	if ( template ) xfree(template);
 	template = NULL;
 	

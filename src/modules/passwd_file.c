@@ -27,18 +27,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 char		module_type   = MODULE_AUTH ;
 char		module_name[] = MODULE_NAME ;
 char		module_info[] = MODULE_INFO ;
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 int		auth(int so, struct group *group, struct request* rq, int *flags);
 #define		MODULE_STATIC
 #else
 static	char	module_type   = MODULE_AUTH ;
 static	char	module_name[] = MODULE_NAME ;
 static	char	module_info[] = MODULE_INFO ;
-static  int     mod_load();
-static  int     mod_unload();
-static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+static  int     mod_load(void);
+static  int     mod_unload(void);
+static  int     mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 static	int	auth(int so, struct group *group, struct request* rq, int *flags);
 #define		MODULE_STATIC	static
 #endif
@@ -104,26 +104,29 @@ pthread_mutex_t	crypt_lock;
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_load()
+mod_load(void)
 {
-    printf("Passwd_file started\n");
     pthread_rwlock_init(&pwf_lock, NULL);
 #if	!defined(SOLARIS)
     pthread_mutex_init(&crypt_lock, NULL);
 #endif
     std_template_len = strlen(std_template);
+
+    printf("Passwd_file started\n");
+
     return(MOD_CODE_OK);
 }
+
 MODULE_STATIC
 int
-mod_unload()
+mod_unload(void)
 {
     printf("passwd_file stopped\n");
     return(MOD_CODE_OK);
@@ -298,21 +301,21 @@ au_ok:
     return(MOD_CODE_OK);
 }
 
-void
+static void
 check_pwf_age(void)
 {
     if ( global_sec_timer - pwf_check_time < 60 ) return; /* once per minute */
     reload_pwf();
 }
 
-void
+static void
 check_pwf_template_age(void)
 {
     if ( global_sec_timer - pwf_template_check_time < 60 ) return;
     reload_pwf_template();
 }
 
-void
+static void
 reload_pwf(void)
 {
 struct	stat	sb;
@@ -323,7 +326,7 @@ int		rc, size, fd;
     rc = stat(pwf_name, &sb);
     if ( rc != -1 ) {
 	if ( sb.st_mtime <= pwf_mtime ) return;
-	size = sb.st_size;
+	size = (int)sb.st_size;
 	if ( size <= 0 ) return;
 	if ( pwds ) free(pwds); pwds = NULL;
 	pwds = xmalloc(size+2,"reload_pwf(): pwds"); /* for leading \n and closing 0 */
@@ -346,7 +349,7 @@ int		rc, size, fd;
     }
 }
 
-void
+static void
 reload_pwf_template(void)
 {
 struct	stat	sb;
@@ -356,7 +359,7 @@ int		rc, size, fd;
     rc = stat(pwf_template, &sb);
     if ( rc != -1 ) {
 	if ( sb.st_mtime <= pwf_template_mtime ) return;
-	size = sb.st_size;
+	size = (int)sb.st_size;
 	if ( size <= 0 ) return;
 	if ( template ) free(template); template = NULL;
 	template = xmalloc(size,"reload_pwf_template(): 1");
@@ -379,7 +382,7 @@ int		rc, size, fd;
     }
 }
 
-int
+static int
 pwf_auth(char* user, char *pass)
 {
 char	*patt=NULL, *record;
@@ -420,7 +423,7 @@ bad_auth:;
     return(rc);
 }
 
-void
+static void
 send_auth_req(int so, struct request *rq)
 {
 struct	output_object	*obj;

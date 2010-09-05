@@ -5,6 +5,8 @@ AC_PROG_CXX
 AC_PROG_INSTALL
 AC_PROG_LEX
 AC_PROG_YACC
+AC_AIX
+AC_C_INLINE
 
 sed_script='s/,/.so /g'
 
@@ -29,6 +31,9 @@ AC_DEFINE(TNF_ENABLED))
 AC_ARG_WITH(DB,--with-DB=[[DIR]]           BerkeleyDB home directory,\
 LIBDB_PATH=$withval,LIBDB_PATH="")
 
+AC_ARG_WITH(GB,--with-GB=[[PATH]]           Gigabase library path,\
+LIBGB_PATH=$withval,LIBGB_PATH="")
+
 AC_ARG_WITH(MYSQL,--with-MYSQL=[[DIR]]        MySQL home directory,\
 MYSQL_PATH=$withval,MYSQL_PATH="")
 
@@ -41,9 +46,12 @@ AC_ARG_WITH(regexp,--with-regexp=(builtin|pcre|system)   Which regex to use,
 AC_ARG_WITH(malloc,--with-malloc             Which malloc library/object file to use,
   with_malloc="$withval", with_malloc="")
 
-AC_CHECK_HEADERS(crypt.h getopt.h pthread.h string.h strings.h unistd.h )
-AC_CHECK_HEADER(netinet/ip_fil.h, AC_DEFINE(HAVE_IPF))
-AC_CHECK_HEADER(netinet/ip6.h, AC_DEFINE(HAVE_IP6_H))
+AC_ARG_WITH(zlib,--with-zlib=[[PATH]]         Which zlib library/object file to use,
+  with_zlib="$withval", with_zlib="")
+
+AC_CHECK_HEADERS(crypt.h getopt.h pthread.h stdlib.h string.h strings.h unistd.h sys/inttypes.h)
+AC_CHECK_HEADERS(netinet/ip_fil.h, AC_DEFINE(HAVE_IPF))
+AC_CHECK_HEADERS(netinet/ip6.h, AC_DEFINE(HAVE_IP6_H))
 
 pwd=`pwd`
 LIBDB_NAME=-ldb
@@ -98,22 +106,33 @@ fi
 
 if test "$LIBDB_PATH" = "/usr/local"; then
     if test "$LIBDB_NAME" = "-ldb2"; then
-	CFLAGS="$CFLAGS -I/usr/local/include/db2"
+	LIBDB_INCL="-I/usr/local/include/db2"
     else
-	CFLAGS="$CFLAGS -I/usr/local/include"
+	LIBDB_INCL="-I/usr/local/include"
     fi
 else
     if test "X$LIBDB_PATH" != "X" ; then
-	CFLAGS="$CFLAGS -I$LIBDB_PATH/include"
+	LIBDB_INCL="-I$LIBDB_PATH/include"
     fi
 fi
 
+LIBDB_REAL_PATH=""
 if test "X$LIBDB_PATH" != "X" ; then
+    LIBDB_REAL_PATH="$LIBDB_PATH/lib"
     LIBDB_PATH="-L$LIBDB_PATH/lib"
 fi
 
+CFLAGS="$CFLAGS $LIBDB_INCL"
+
 AC_MSG_CHECKING(for GigaBASE)
-if test -r "/usr/local/lib/libgigabase_r.a"; then
+if test "$LIBGB_PATH" = "no" ; then
+    AC_MSG_RESULT(disabled)
+    LIBGB_PATH=""
+    LIBGB_NAME=""
+elif test "X$LIBGB_PATH" != "X" ; then
+    AC_MSG_RESULT($LIBGB_PATH)
+elif test -r "/usr/local/lib/libgigabase_r.a"; then
+    LIBGB_INCL="-I/usr/local/include -I/usr/local/include/gigabase"
     LIBGB_NAME="-lgigabase_r"
     case "$host_os" in
 	solaris*)
@@ -150,7 +169,11 @@ fi
 
 AC_MSG_CHECKING(for libz)
 LIBZ_NAME=""
-if   test -r "/usr/local/lib/libz.a"; then
+if  test "$with_zlib" = "no" ; then
+    AC_MSG_RESULT(disabled)
+elif test "X$with_zlib" != "X" ; then
+    LIBZ_NAME="$with_zlib"
+elif test -r "/usr/local/lib/libz.a"; then
     LIBZ_NAME="/usr/local/lib/libz.a"
     AC_DEFINE(HAVE_ZLIB)
     AC_MSG_RESULT(/usr/local/lib/libz.a)
@@ -434,7 +457,7 @@ freebsd*) CFLAGS="$CFLAGS -pthread -D_REENTRANT -DFREEBSD -D_THREAD_SAFE -DFD_SE
 	  fi
 	  ;;
 bsdi*)	  CFLAGS="$CFLAGS -pthread -DBSDOS"
-	  LIBS="$LEXLIB $LIBS $LIBDB_PATH $LIBDB_NAME"
+	  LIBS="$LEXLIB $LIBS"
 	  CXX=g++
 	  ;;
 gnu*|linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
@@ -444,8 +467,9 @@ gnu*|linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
 		LIBS="-lpthreads $LEXLIB -ldb $LIBS"
 		echo Probably you have MIT-threads. If yes, swich to LinuxThreads.
 	  else
-		LIBS="-lpthread $LEXLIB $LIBS $LIBDB_PATH $LIBDB_NAME"
+		LIBS="-lpthread $LEXLIB $LIBS"
 	  fi
+	  LIBS="$LIBS $LIBDB_PATH $LIBDB_NAME"
 	  if test "$large_files" = "yes" ; then
 		## Linux ext2fs does'nt support large files yet.
 		AC_MSG_RESULT(Warning: Linux ext2fs doesn't support large files.)
@@ -453,6 +477,9 @@ gnu*|linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
 	  fi
 	  ;;
 solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS"
+	  if test "X$LIBDB_REAL_PATH" != "X" ; then
+	  	LIBDB_NAME="-R$LIBDB_REAL_PATH $LIBDB_NAME"
+	  fi
 	  LIBS="-lm -ly -ll $LIBS -lsocket -lnsl $LIBDB_PATH $LIBDB_NAME"
 	  case "$CC" in
 		gcc*)	LIBS="-lthread -lpthread $LIBS"
@@ -478,7 +505,7 @@ solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS"
 	  fi
 	  ;;
 aix4*)    AC_DEFINE(MODULES)
-	  LIBS="$LIBS -ldl $LEXLIB $LIBDB_PATH $LIBDB_NAME"
+	  LIBS="$LIBS -ldl $LEXLIB"
           SOFLAGS=-G
           case "$CC" in
           gcc*)   CFLAGS="-D_THREAD_SAFE $CFLAGS"
@@ -556,10 +583,8 @@ esac
 
 AC_CHECK_FUNCS(setegid snprintf setrlimit strcasestr strerror_r strtoll)
 AC_CHECK_FUNC(strtok_r,,EXTRASRC="$EXTRASRC strtok_r.c" ; cd src; cp -f lib/misc/strtok_r.c ./; cd ..)
-
-AC_PATH_PROG(CHOWN, chown, /usr/sbin/chown,
-       $PATH:/bin:/usr/bin:/usr/sbin)
-
+AC_CHECK_FUNC(snprintf,AC_DEFINE(HAVE_SNPRINTF),OOPSCTL_SNPRINTF="../snprintf.o"; EXTRASRC="$EXTRASRC snprintf.c" ; cd src; cp -f lib/misc/snprintf.c ./; cd ..)
+AC_PATH_PROG(CHOWN, chown, /usr/sbin/chown, $PATH:/bin:/usr/bin:/usr/sbin)
 
 if test "X$with_malloc" != "X" ; then
 LIBS="$with_malloc $LIBS"
@@ -567,7 +592,7 @@ fi
 
 if test "$MODULES" != 1; then
 MOD_EXT=o
-STATIC_MODULES="modules/accel.o modules/berkeley_db_api.o modules/gigabase_db_api.o modules/custom_log.o modules/err.o modules/fastredir.o modules/lang.o modules/log_dummy.o modules/oopsctl_mod.o modules/passwd_file.o modules/pam.c modules/passwd_mysql.o modules/passwd_pgsql.o modules/redir.o modules/transparent.o modules/vary_header.o modules/wccp2.o"
+STATIC_MODULES="modules/accel.o modules/berkeley_db_api.o modules/gigabase_db_api.o modules/custom_log.o modules/err.o modules/fastredir.o modules/lang.o modules/log_dummy.o modules/oopsctl_mod.o modules/passwd_file.o modules/pam.o modules/passwd_mysql.o modules/passwd_pgsql.o modules/redir.o modules/transparent.o modules/vary_header.o modules/wccp2.o"
 fi
 
 echo $CC
@@ -606,6 +631,7 @@ AC_SUBST(LDFLAGS)
 AC_SUBST(VER)
 AC_SUBST(LIBGB_PATH)
 AC_SUBST(LIBGB_NAME)
+AC_SUBST(LIBGB_INCL)
 AC_SUBST(LIBZ_NAME)
 AC_SUBST(CXX)
 AC_SUBST(CXXCOMPFLAGS)
@@ -644,6 +670,7 @@ else
   oops_libdir="$oops_prefix/oops/modules"
 fi
 
+OOPS_LIBS="$LIBS"
 OOPS_SBINDIR=$oops_sbindir
 OOPS_SYSCONFDIR=$oops_sysconfdir
 OOPS_LOCALSTATEDIR=$oops_localstatedir
@@ -656,6 +683,15 @@ AC_SUBST(OOPS_SBINDIR)
 AC_SUBST(OOPS_SYSCONFDIR)
 AC_SUBST(OOPS_LOCALSTATEDIR)
 AC_SUBST(OOPS_LIBDIR)
+AC_SUBST(OOPS_LIBS)
+AC_SUBST(OOPS_RPATH)
+AC_SUBST(LIBDB_INCL)
+AC_SUBST(LIBDB_PATH)
+AC_SUBST(LIBDB_RPATH)
+AC_SUBST(LIBDB_NAME)
+AC_SUBST(LIBDB_INCL)
+AC_SUBST(LIBZ_NAME)
+AC_SUBST(EXTRASRC)
 
 
 AC_DEFINE_UNQUOTED(OOPS_HOME, "$oops_prefix/oops")

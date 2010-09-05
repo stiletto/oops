@@ -51,9 +51,9 @@ static	void		process_log_record(logfile_t*, int, struct request*, struct mem_obj
 char		module_type 	= MODULE_LOG;
 char		module_info[]	= MODULE_INFO;
 char		module_name[]	= MODULE_NAME;
-int		mod_load();
-int		mod_unload();
-int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run();
+int		mod_load(void);
+int		mod_unload(void);
+int		mod_config_beg(int), mod_config_end(int), mod_config(char*, int), mod_run(void);
 int		mod_log(int elapsed, struct request *rq, struct mem_obj *obj);
 int		mod_reopen(void);
 #define		MODULE_STATIC
@@ -61,9 +61,9 @@ int		mod_reopen(void);
 static	char	module_type 	= MODULE_LOG;
 static	char	module_info[]	= MODULE_INFO;
 static	char	module_name[]	= MODULE_NAME;
-static	int	mod_load();
-static	int	mod_unload();
-static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+static	int	mod_load(void);
+static	int	mod_unload(void);
+static	int	mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 static	int	mod_log(int elapsed, struct request *rq, struct mem_obj *obj);
 static	int	mod_reopen(void);
 #define		MODULE_STATIC	static
@@ -167,10 +167,10 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 		    break;
 		case 'B':
 		case 'b':
-		    /* bytes sent (actualy received)	*/
+		    /* bytes sent                       */
 		    {
 		    char w[20];
-		    sprintf(w,"%u", rq->received);
+		    sprintf(w,"%u", rq->doc_sent>0?rq->doc_sent:0);
 		    strncat(d, w, sizeof(res)-(d-res)-2);
 		    d+= MIN(strlen(w), sizeof(res)-(d-res)-2) - 1;
 		    }
@@ -436,7 +436,7 @@ logfile_t	*new = NULL;
 
 MODULE_STATIC
 int
-mod_reopen()
+mod_reopen(void)
 {
 logfile_t	*curr;
 
@@ -455,17 +455,19 @@ logfile_t	*curr;
 
 MODULE_STATIC
 int
-mod_load()
+mod_load(void)
 {
-    printf("CustomLog started\n");
     logfiles = NULL;
     pthread_rwlock_init(&cloglock, NULL);
+
+    printf("CustomLog started\n");
+
     return(MOD_CODE_OK);
 }
 
 MODULE_STATIC
 int
-mod_unload()
+mod_unload(void)
 {
     printf("mod_unload(): CustomLog stopped\n");
     return(MOD_CODE_OK);
@@ -491,7 +493,7 @@ mod_config_end(int i)
 
 MODULE_STATIC
 int
-mod_run()
+mod_run(void)
 {
 logfile_t *curr;
 

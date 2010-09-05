@@ -1,4 +1,4 @@
-#if !defined(_HASH_H_INCLUDED_)
+#if	!defined(_HASH_H_INCLUDED_)
 #define _HASH_H_INCLUDED_
 
 #include    <unistd.h>
@@ -71,4 +71,4 @@ int	delete_hash_entry(hash_t *hash, hash_entry_t *he, void (*f)(void*));
 int	hash_operate(hash_t *hash, int (*f)(hash_entry_t*));
 int	hash_destroy(hash_t *hash, void (*user_function)(void*));
 
-#endif
+#endif	/* !_HASH_H_INCLUDED_ */

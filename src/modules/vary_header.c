@@ -79,7 +79,8 @@ struct	headers_module	vary_header = {
 
 pthread_rwlock_t	vary_config_lock;
 
-void	free_action(struct header_action*);
+static	void	free_action(struct header_action*);
+static	void	free_act_list(struct header_action *act);
 
 MODULE_STATIC
 int
@@ -91,11 +92,14 @@ mod_run()
 int
 mod_load()
 {
-    printf("Vary: started\n");
     pthread_rwlock_init(&vary_config_lock, NULL);
     actions = NULL;
+
+    printf("Vary: started\n");
+
     return(MOD_CODE_OK);
 }
+
 int
 mod_unload()
 {
@@ -104,7 +108,7 @@ mod_unload()
     return(MOD_CODE_OK);
 }
 
-void
+static void
 free_act_list(struct header_action *act)
 {
 struct	header_action	*a, *n;
@@ -246,7 +250,7 @@ int			matched = TRUE, agents_equal;
     return(MOD_CODE_ERR);
 }
 
-void
+static void
 free_action(struct header_action *a)
 {
     if ( a->data ) free(a->data);

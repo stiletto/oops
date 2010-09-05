@@ -36,8 +36,9 @@ Known problems:
    use DB from Sleepycat.
    This programm can hang under old versions of FreeBSD (prior to 3.3)
 
-3) Solaris, WS 5.0 - if you use GigaBASE, you MUST compile it with -compat=4
-   compiler option.
+3) Solaris: WS 5.0, Forte 6 - if you use GigaBASE, you MUST compile it with
+   -compat=4 compiler option.
+   We tested Oops with SUN Forte C++ 6 Update 1 (+ last fixes) compiler.
 
 
 To build FreeBSD port use next configure options:
@@ -65,24 +66,29 @@ Config for wccp2.
 	group myusers {
 		networks 10/8 127/8;
 		...
-		redir_mods transpatent;
+		redir_mods transparent;
 	}
 
 	module transparent {
 		myport	80
 	}
-	mpodule wccp2 {
-		service-group port 80
+	module wccp2 {
+		identity write_your_ip_here
+		service-group web-cache
         	router 10.0.0.1
 	}
 }
 
-2. Setup firewall on your proxy machine for forwarding pachets to proxy.
+2. Setup firewall on your proxy machine for forwarding packets to proxy.
    This depends on your firewall. You can use Squid recomendations:
    http://www.squid-cache.org/Doc/FAQ/FAQ-17.html#trans-freebsd
 
    If needed - set up proper gre driver. Driver for FreeBSD 4.x you can find
 	direcory contrib.
+
+   Solaris 8 notes: you should install ip_filter 3.4.20 and apply patch to
+   sources, then install gre driver. Read instructions in README from the
+   contrib/sol8_gre.tar.gz
 
 3. Setup your Cisco router
    In the simpliest case:

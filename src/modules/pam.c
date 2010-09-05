@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	MODULE_NAME	"pam"
 #define	MODULE_INFO	"Auth using PAM"
+#define	MODULE_BR14	"Auth using PAM/stopper"
 
 /* toma : */
 
@@ -44,22 +45,22 @@ static char *password = NULL;
 #define MODPREF
 #endif
 
-MODPREF char		module_type   = MODULE_AUTH ;
-MODPREF char		module_name[] = MODULE_NAME ;
-MODPREF char		module_info[] = MODULE_INFO ;
+MODPREF char		module_type   		= MODULE_AUTH;
+MODPREF char		module_name[] 		= MODULE_NAME;
+MODPREF char		module_info[MODINFOLEN] = MODULE_BR14;
 
 #if     defined(HAVE_LIBPAM)
 
-MODPREF int		mod_load();
-MODPREF int		mod_unload();
-MODPREF int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run();
+MODPREF int		mod_load(void);
+MODPREF int		mod_unload(void);
+MODPREF int		mod_config_beg(int), mod_config_end(int), mod_config(char*,int), mod_run(void);
 MODPREF int		auth(int so, struct group *group, struct request* rq, int *flags);
 
 /* toma : */
 
 #include <security/pam_appl.h>
 
-int	password_conversation (int num_msg, const struct pam_message **msg, struct pam_response **resp, void *appdata_ptr);
+static	int	password_conversation (int num_msg, const struct pam_message **msg, struct pam_response **resp, void *appdata_ptr);
 
 static struct pam_conv conv = {
 	&password_conversation,
@@ -128,24 +129,29 @@ pthread_mutex_t	crypt_lock;
 #endif
 
 int
-mod_run()
+mod_run(void)
 {
     return(MOD_CODE_OK);
 }
 
 int
-mod_load()
+mod_load(void)
 {
-    printf("PAM started\n");
+    snprintf(module_info, sizeof(module_info)-1, MODULE_INFO);
+
     pthread_rwlock_init(&pwf_lock, NULL);
 #if	!defined(SOLARIS)
     pthread_mutex_init(&crypt_lock, NULL);
 #endif
     std_template_len = strlen(std_template);
+
+    printf("PAM started\n");
+
     return(MOD_CODE_OK);
 }
+
 int
-mod_unload()
+mod_unload(void)
 {
     printf("pam stopped\n");
     return(MOD_CODE_OK);
@@ -321,14 +327,14 @@ au_ok:
     return(MOD_CODE_OK);
 }
 
-void
+static void
 check_pwf_age(void)
 {
 /*    if ( global_sec_timer - pwf_check_time < 60 ) return; */ /* once per minute */
 /*    reload_pwf(); */
 }
 
-void
+static void
 check_pwf_template_age(void)
 {
     if ( global_sec_timer - pwf_template_check_time < 60 ) return;
@@ -336,7 +342,7 @@ check_pwf_template_age(void)
 }
 
 /*
-void
+static void
 reload_pwf(void)
 {
 struct	stat	sb;
@@ -372,8 +378,7 @@ int		rc, size, fd;
 }
 */  
 
-
-void
+static void
 reload_pwf_template(void)
 {
 struct	stat	sb;
@@ -406,7 +411,7 @@ int		rc, size, fd;
     }
 }
 
-int
+static int
 pwf_auth(char* user, char *pass)
 {
 /*
@@ -500,7 +505,7 @@ int rc=1;
 /* : toma */
 }
 
-void
+static void
 send_auth_req(int so, struct request *rq)
 {
 struct	output_object	*obj;
@@ -535,7 +540,8 @@ int			rc;
 
 /* toma : */
 
-int password_conversation (int num_msg, const struct pam_message **msg,
+static int
+password_conversation(int num_msg, const struct pam_message **msg,
 	struct pam_response **resp, void *appdata_ptr)
 {
 	if (num_msg != 1 || msg[0]->msg_style != PAM_PROMPT_ECHO_OFF)

@@ -18,6 +18,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
+
+#if	!defined(_ENVIRONMENT_H_INCLUDED_)
+#define _ENVIRONMENT_H_INCLUDED_
+
+#if	defined(_AIX) && defined(HAVE_GIGABASE) && defined(__IBMCPP__)
+#define	int8	int8bits
+#if	defined(inline)
+#undef	inline
+#define	inline	inline
+#endif	/* inline */
+#endif	/* _AIX && HAVE_GIGABASE && __IBMCPP__ */
+
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<fcntl.h>
@@ -66,12 +78,14 @@ extern		int	getdomainname(char *, int);
 #include	<sys/file.h>
 #include	<sys/time.h>
 #include	<sys/resource.h>
-#include    <sys/un.h>
-#include    <sys/wait.h>
-#include    <sys/uio.h>
+#include	<sys/un.h>
+#include	<sys/wait.h>
+#include	<sys/uio.h>
 
 #if	defined(_AIX)
+#if	defined(_AIX41)
 #define pthread_sigmask sigthreadmask
+#endif	/* _AIX41 */
 #include	<sys/ioctl.h>
 #include	<sys/devinfo.h>
 #include	<sys/lvdd.h>
@@ -79,7 +93,15 @@ extern		int	getdomainname(char *, int);
 extern		int	setegid(gid_t);
 extern		int	seteuid(uid_t);
 #if	defined(_LARGE_FILE_API) && defined(WITH_LARGE_FILES)
+#if	defined(_AIX43)
+#define		O_SUPPL		O_LARGEFILE|O_DIRECT|O_DSYNC
+#else
 #define		O_SUPPL		O_LARGEFILE
+#endif
+#else
+#if	defined(_AIX43)
+#define		O_SUPPL		O_DIRECT|O_DSYNC
+#endif
 #endif	/* _LARGE_FILE_API && WITH_LARGE_FILES */
 #else
 #if	!defined(TRUE)
@@ -91,10 +113,18 @@ extern		int	seteuid(uid_t);
 #define		O_SUPPL		 0
 #endif	/* _AIX */
 
-#if	defined(BSDOS) || defined(FREEBSD)
+#if	defined(BSDOS) || defined(FREEBSD) || defined(OPENBSD)
 #include	<sys/disklabel.h>
 #include	<sys/ioctl.h>
 #include	<sys/stat.h>
+#endif
+
+#if defined(HAVE_SYS_INTTYPES_H)
+#include    <inttypes.h>
+#endif
+
+#if !defined(HAVE_SYS_INTTYPES_H) && !defined(_STDINT_H)
+typedef unsigned int    uintptr_t;
 #endif
 
 #if	defined(LINUX)
@@ -106,6 +136,9 @@ extern		int	seteuid(uid_t);
 #endif
 #include	<sys/ioctl.h>
 #include	<sys/mount.h>
+#if	defined(HAVE_SYS_USER_H)
+#include	<sys/user.h>
+#endif
 #endif
 
 #if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
@@ -130,7 +163,7 @@ typedef		int		fd_t;
 #define		set_errno(e)		/* nothing */
 
 #if	!defined(HAVE_SOCKLEN_T)
-#if	defined(_AIX)
+#if	defined(_AIX41)
 typedef		size_t		socklen_t;
 #else
 typedef		int		socklen_t;
@@ -148,7 +181,19 @@ extern	const int	sys_nerr;
 
 #if defined(SOLARIS) && defined(HAVE_LIBTNFPROBE) && defined(TNF_ENABLED)
 #include    <tnf/probe.h>
-#define MY_TNF_PROBE_0(a,b,c)   TNF_PROBE_0(a,b,c)
+#define		MY_TNF_PROBE_0(a,b,c)	TNF_PROBE_0(a,b,c)
 #else
-#define MY_TNF_PROBE_0(a,b,c)
+#define		MY_TNF_PROBE_0(a,b,c)
 #endif
+
+#if	!defined(HAVE_RTLD_NOW)
+#if	defined(OPENBSD)
+#define		RTLD_NOW	DL_LAZY
+#endif	/* OPENBSD */
+#endif	/* !HAVE_RTLD_NOW */
+
+#if	defined(HAVE_NETINET_IP_COMPAT_H) && defined(HAVE_NETINET_IP_FIL_H) && defined(HAVE_NETINET_IP_NAT_H)
+#define		HAVE_IPF	1
+#endif
+
+#endif	/* !_ENVIRONMENT_H_INCLUDED_ */

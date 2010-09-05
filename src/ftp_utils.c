@@ -22,29 +22,31 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern	char	icons_host[MAXPATHLEN];
 extern	char	icons_path[MAXPATHLEN];
 extern	char	icons_port[64];
-int	no_direct_connections;
-int	server_connect(struct ftp_r *);
-int	get_server_greeting(struct ftp_r *);
-int	send_user_pass_type(struct ftp_r *);
-int	try_passive(struct ftp_r *);
-int	try_port(struct ftp_r *);
-int	try_retr(struct ftp_r *);
-int	try_cwd(struct ftp_r *);
-int	try_size(struct ftp_r *);
-int	try_rest(struct ftp_r *);
-int	recv_ftp_list(struct ftp_r *);
-int	recv_ftp_data(struct ftp_r *);
-int	list_parser(char *, void *);
-int	add_nlst_entry(char *, void *);
-int	send_http_header(int, char *, int, struct mem_obj *, struct ftp_r *);
-int	parse_answ(struct buff*, int*, int (*f)(char *, void*), void *);
-int	parse_ftp_srv_answ(struct buff *, int *, struct ftp_r *);
-void	send_ftp_err(struct ftp_r *);
-char	*in_nlst(char *, struct string_list *);
-int	recv_ftp_nlst(struct ftp_r *req);
-int	request_list(struct ftp_r *ftp_r);
-void	send_401_answer(int, struct request *);
-void	ftp_put(int, struct request *, char*, struct ftp_r *);
+extern	int	no_direct_connections;
+
+static	int	add_nlst_entry(char *, void *);
+static	void	ftp_put(int, struct request *, char*, struct ftp_r *);
+static	int	get_server_greeting(struct ftp_r *);
+static	char	*in_nlst(char *, struct string_list *);
+static	int	list_parser(char *, void *);
+static	int	parse_answ(struct buff*, int*, int (*f)(char *, void*), void *);
+static	int	parse_ftp_srv_answ(struct buff *, int *, struct ftp_r *);
+static	int	recv_ftp_data(struct ftp_r *);
+static	int	recv_ftp_list(struct ftp_r *);
+static	int	recv_ftp_nlst(struct ftp_r *req);
+static	int	request_list(struct ftp_r *ftp_r);
+static	void	send_401_answer(int, struct request *);
+static	void	send_ftp_err(struct ftp_r *);
+static	int	send_http_header(int, char *, int, struct mem_obj *, struct ftp_r *);
+static	int	send_user_pass_type(struct ftp_r *);
+static	int	server_connect(struct ftp_r *);
+static	int	try_cwd(struct ftp_r *);
+static	int	try_passive(struct ftp_r *);
+static	int	try_port(struct ftp_r *);
+static	int	try_rest(struct ftp_r *);
+static	int	try_retr(struct ftp_r *);
+static	int	try_size(struct ftp_r *);
+
 
 void
 ftp_fill_mem_obj(int so, struct request *rq,
@@ -333,7 +335,7 @@ free_ftp_resources:
     obj->flags &= ~ANSW_NO_CACHE;	/* it can be cached if it is good (not dead */
 }
 
-int
+static int
 recv_ftp_data(struct ftp_r *ftp_r)
 {
 int		client = ftp_r->client;
@@ -409,7 +411,7 @@ char		*mime_type;
 }
 
 
-int
+static int
 recv_ftp_nlst(struct ftp_r *req)
 {
 char			buf[160];
@@ -507,7 +509,7 @@ done:;
 }
 
 
-int
+static int
 recv_ftp_list(struct ftp_r *req)
 {
 char		buf[160];
@@ -619,7 +621,7 @@ struct		url url = req->request->url;
     return(rc);
 }
 
-int
+static int
 parse_answ(struct buff *b, int *checked, int (*f)(char *, void*), void *arg)
 {
 char	*start, *beg, *end, *p;
@@ -669,7 +671,7 @@ go:
 
 /* buld http_header in mem (so it can be saved on disk)
    and send it to user */
-int
+static int
 send_http_header(int so, char* type, int size, struct mem_obj *obj, struct ftp_r *ftp_r)
 {
 int	r;
@@ -773,7 +775,7 @@ struct	buff	*nextb;
     return(r);
 }
 
-int
+static int
 add_nlst_entry(char* line, void* arg)
 {
 struct	ftp_r	*req = (struct ftp_r*) arg;
@@ -782,7 +784,7 @@ struct	ftp_r	*req = (struct ftp_r*) arg;
     return(0);
 }
 
-int
+static int
 list_parser(char* line, void *arg)
 {
 struct	ftp_r	*req = (struct ftp_r*) arg;
@@ -1046,7 +1048,7 @@ fin_line:;
 }
 
 
-int
+static int
 server_connect(struct ftp_r *rq)
 {
 int			server_so = -1, so = rq->client, r;
@@ -1081,7 +1083,7 @@ error:
     return(-1);
 }
 
-int
+static int
 get_server_greeting(struct ftp_r *ftp_r)
 {
 int		r, checked, r_code;
@@ -1140,7 +1142,7 @@ error:
     return(-1);
 }
 
-int
+static int
 send_user_pass_type(struct ftp_r *ftp_r)
 {
 int		r, checked, r_code;
@@ -1284,7 +1286,7 @@ error:
     return(-1);
 }
 
-int
+static int
 try_passive(struct ftp_r *ftp_r)
 {
 int		r, checked, r_code, data_so = -1;
@@ -1383,7 +1385,7 @@ error:
     return(-1);
 }
 
-int
+static int
 try_port(struct ftp_r *ftp_r)
 {
 int			r, checked, r_code, data_so = -1;
@@ -1476,7 +1478,7 @@ error:
     return(-1);
 }
 
-int
+static int
 try_size(struct ftp_r *ftp_r)
 {
 int			r, checked, r_code;
@@ -1553,7 +1555,8 @@ error:
     if ( rq_buff ) free(rq_buff);
     return(-1);
 }
-int
+
+static int
 try_retr(struct ftp_r *ftp_r)
 {
 int			r, checked, r_code;
@@ -1613,7 +1616,7 @@ error:
     return(-1);
 }
 
-int
+static int
 try_rest(struct ftp_r *ftp_r)
 {
 int			r, checked, r_code;
@@ -1677,7 +1680,7 @@ error:
     return(-1);
 }
 
-int
+static int
 try_cwd(struct ftp_r *ftp_r)
 {
 int			r, checked, r_code;
@@ -1807,7 +1810,7 @@ error:
     return(-1);
 }
 
-int
+static int
 request_list(struct ftp_r *ftp_r)
 {
 int			r, checked, r_code;
@@ -1863,7 +1866,7 @@ error:
     return(-1);
 }
 
-int
+static int
 parse_ftp_srv_answ(struct buff *b, int *checked, struct ftp_r *ftp_r)
 {
 char	*start, *beg, *end, *p;
@@ -1943,7 +1946,7 @@ go:
     return(0);
 }
 
-void
+static void
 send_ftp_err(struct ftp_r *ftp_r)
 {
 char	*err_header =
@@ -1957,7 +1960,7 @@ char	*epilog = "</body></html>";
     writet(ftp_r->client, epilog, strlen(epilog), READ_ANSW_TIMEOUT);
 }
 
-char*
+static char*
 in_nlst(char *line, struct string_list *list)
 {
 char *t, *best = NULL, *most_right;
@@ -2009,7 +2012,7 @@ sss:;
     return(best);
 }
 
-void
+static void
 send_401_answer(int so, struct request *rq)
 {
 struct output_object	*obj;
@@ -2051,7 +2054,7 @@ done:
 
 }
 
-int
+static int
 ftpmkdir(struct ftp_r *ftp_r, char *dir)
 {
 int		r, server_so, checked, r_code;
@@ -2110,7 +2113,7 @@ done:
  *	We are connected and logged in
  */
 
-void
+static void
 ftp_put(int so, struct request *rq, char *headers, struct ftp_r *ftp_r)
 {
 /* ftp_r->server_path contains filename */
