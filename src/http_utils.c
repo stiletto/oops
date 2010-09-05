@@ -144,6 +144,10 @@ ERRBUF ;
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
 	my_xlog(LOG_SEVERE, "send_not_cached(): fcntl(): %m\n");
 
+    if ( parent_port && parent_auth ) {
+	IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
+	rq->peer_auth = strdup(parent_auth);
+    }
     answer = parent_port?build_parent_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER):
 		         build_direct_request(meth, &rq->url, NULL, rq, DONT_CHANGE_HTTPVER);
     if ( !answer )
@@ -558,8 +562,10 @@ unsigned int	sended, ssended, state;
 struct	buff	*send_hot_buff;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
 int		convert_charset = FALSE;
+int		partial_content = FALSE;
 int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
 char		*table = NULL;
+int		osize =  0;
 struct pollarg	pollarg;
 
     downgrade_flags = downgrade(rq, obj);
@@ -606,11 +612,50 @@ send_ready:
 	if ( !header ) goto done ;
 	hdrs_to_send = alloc_buff(512);
 	if ( !hdrs_to_send ) goto done;
-	/* first must be "HTTP/1.x 200 ..." */
-	if ( downgrade_minor ) {
-	    attach_av_pair_to_buff("HTTP/1.0", header->val, hdrs_to_send);
-	    header = header->next;
-	}
+	/* we pay attention to 'Range:' iff
+	   1) object is ready (it is all here)
+	   2) doc have no chunked content
+	   3) range is like 'nnn-'
+	 */
+	if ( TEST(rq->flags, RQ_HAVE_RANGE)
+	     &&  (obj->state == OBJ_READY)
+	     &&  !content_chunked(obj)
+	     &&  ((rq->range_from >= 0) && (rq->range_to == -1))) {
+
+		struct buff *tb = NULL;
+		char	buff[40];
+
+		partial_content = TRUE;
+		my_xlog(LOG_HTTP|LOG_DBG,"We will send partial content\n");
+		attach_av_pair_to_buff("HTTP/1.0", "206 Partial Content", hdrs_to_send);
+		header = header->next;
+		/* now build Content-Range header	*/
+		/* find object size			*/
+		if ( obj->container && obj->container->next )
+		    tb = obj->container->next;
+		while ( tb != NULL ) {
+		    osize += tb->used;
+		    tb = tb->next;
+		}
+		my_xlog(LOG_HTTP|LOG_DBG,"Total obj size: %d starting from: %d\n",
+			osize, rq->range_from);
+		if ( rq->range_from > osize ) {
+		    /* this is VERY strange				*/
+		    /* either object or request or user file is wrong	*/
+		    /* we can mark doc as dead, but this open path to	*/
+		    /* DoS(?) - by sending wrong requests user can purge*/
+		    /* any valid document. So we simply ajust values	*/
+		    rq->range_from = osize;
+		}
+		sprintf(buff, "bytes %d-%d/%d", rq->range_from, osize, osize);
+		attach_av_pair_to_buff("Content-Range:", buff, hdrs_to_send);
+	} else {
+	    /* first must be "HTTP/1.x 200 ..." */
+	    if ( downgrade_minor ) {
+		attach_av_pair_to_buff("HTTP/1.0", header->val, hdrs_to_send);
+		header = header->next;
+	    }
+	} /* partial content */
 	while(header) {
 	    my_xlog(LOG_DBG, "send_data_from_obj(): Sending ready header `%s' -> `%s'.\n",
 		    header->attr, header->val);
@@ -621,7 +666,7 @@ send_ready:
 			 * from chunked							*/
 
 		   !(convert_from_chunked && is_attr(header, "Transfer-Encoding")) &&
-	    	   !(convert_from_chunked && is_attr(header, "Content-Length")) ){
+	    	   !((convert_from_chunked||partial_content) && is_attr(header, "Content-Length")) ){
 
 		if ( !content_length_sent )
 		    content_length_sent = is_attr(header, "Content-Length");
@@ -664,10 +709,17 @@ send_ready:
 	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 113 oops Heuristic expiration used.\n");
 	    attach_av_pair_to_buff("Warning:", "113 oops Heuristic expiration used", hdrs_to_send);
 	}
+	if ( !content_length_sent && partial_content ) {
+	    char clbuf[32];
+	    sprintf(clbuf, "%d", osize-rq->range_from);
+	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
+	    content_length_sent = TRUE;
+	}
 	if ( obj->x_content_length && !content_length_sent ) {
 	    char clbuf[32];
 	    sprintf(clbuf, "%d", obj->x_content_length);
 	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
+	    content_length_sent = TRUE;
 	}
 	{
 	    char agebuf[32];
@@ -685,11 +737,37 @@ send_ready:
 	    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
 	free_container(hdrs_to_send);
 	if ( !obj->container ) goto done;
-	send_hot_pos = 0;
-	send_hot_buff = obj->container->next;
-	sended = obj->container->used;
+	if ( partial_content ) {
+	    struct buff *tb;
+	    int		temp_pos_counter;
+	    sended = obj->container->used;
+	    tb = obj->container->next;
+	    temp_pos_counter = 0;
+	    while ( tb ) {
+		if ( (temp_pos_counter + tb->used) > rq->range_from ) {
+		    break;
+		}
+		temp_pos_counter +=  tb->used;
+		sended += tb->used;
+		tb = tb->next;
+	    } /* while ( tb ) */
+	    if ( tb ) {
+		send_hot_buff = tb;
+		send_hot_pos = rq->range_from - temp_pos_counter;
+	    } else {
+		/* something is VERY bad... */
+		if ( temp_pos_counter != osize )
+			my_xlog(LOG_SEVERE, "send_data_from_obj(): Something is wrong with partial content: sended = %d, osize = %d\n",
+				temp_pos_counter, osize);
+		goto done;
+	    }
+	} else {
+	    send_hot_pos = 0;
+	    send_hot_buff = obj->container->next;
+	    sended = obj->container->used;
+	} /* partial content */
 #if	defined(MODULES)
-	pre_body(so, obj, rq, NULL);
+	if ( !partial_content) pre_body(so, obj, rq, NULL);
 #endif
     }
     if ( (state == OBJ_READY) && (sended >= obj->size) ) {
@@ -789,6 +867,10 @@ struct	buff		*to_server_request = NULL;
     }
     sprintf(fake_header, "If-Modified-Since: %s\r\n", mk1123buff);
 
+    if ( parent_port && parent_auth ) {
+	IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
+	rq->peer_auth = strdup(parent_auth);
+    }
     answer = parent_port?build_parent_request(meth, &rq->url, fake_header, rq, 0):
 		         build_direct_request(meth, &rq->url, fake_header, rq, 0);
     if ( !answer )
@@ -1055,14 +1137,23 @@ ERRBUF ;
 	break;
     case PEER_PARENT:
 	source="PARENT";
-	if ( parent_port ) strncpy(origin, parent_host, sizeof(origin));
-	  else {
+	if ( parent_port ) {
+	    RDLOCK_CONFIG ;
+	    strncpy(origin, parent_host, sizeof(origin));
+	    IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
+	    if ( parent_auth ) rq->peer_auth = strdup(parent_auth);
+	    UNLOCK_CONFIG ;
+	} else {
 	    RDLOCK_CONFIG ;
 	    peer = peer_by_http_addr(&peer_sa);
-	    if ( peer && peer->name )
-		strncpy(origin, peer->name, sizeof(origin));
-	     else
-		strncpy(origin, "unknown_peer", sizeof(origin));
+	    if ( peer ) {
+		IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
+		if ( peer->my_auth ) rq->peer_auth = strdup(peer->my_auth);
+		if ( peer->name )
+		    strncpy(origin, peer->name, sizeof(origin));
+		else
+		    strncpy(origin, "unknown_peer", sizeof(origin));
+	    }
 	    UNLOCK_CONFIG ;
 	}
 	break;
@@ -1070,10 +1161,14 @@ ERRBUF ;
 	source="SIBLING";
 	RDLOCK_CONFIG ;
 	peer = peer_by_http_addr(&peer_sa);
-	if ( peer && peer->name )
+	if ( peer ) {
+	    IF_FREE(rq->peer_auth);  rq->peer_auth = NULL;
+	    if ( peer->my_auth ) rq->peer_auth = strdup(peer->my_auth);
+	    if ( peer->name )
 		strncpy(origin, peer->name, sizeof(origin));
 	    else
 		strncpy(origin, "unknown_peer", sizeof(origin));
+	}
 	UNLOCK_CONFIG ;
 	break;
     default:
@@ -2708,9 +2803,11 @@ struct	av	*av;
     }
     av = rq->av_pairs;
     while ( av ) {
-	if ( is_attr(av, "Connection:") )
+	if ( is_attr(av, "Connection:") ) /* hop-by-hop */
 	    goto do_not_insert;
-	if ( is_attr(av, "Proxy-Connection:") )
+	if ( is_attr(av, "Proxy-Connection:") ) /* hop-by-hop */
+	    goto do_not_insert;
+	if ( rq->peer_auth && is_attr(av, "Proxy-Authorization:") ) /* hop-by-hop */
 	    goto do_not_insert;
 	if ( is_attr(av, "Via:") && insert_via && !via_inserted ) {
 	    /* attach my Via: */
@@ -2747,6 +2844,12 @@ struct	av	*av;
 	}
   do_not_insert:
 	av = av->next;
+    }
+    if ( rq->peer_auth
+	&& (fav = format_av_pair("Proxy-Authorization: Basic", rq->peer_auth)) != 0 ) {
+	if ( attach_data(fav, strlen(fav), tmpbuff) )
+	    goto fail;
+	free(fav);fav = NULL;
     }
     if ( (fav = format_av_pair("Connection:", "close")) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )

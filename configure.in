@@ -25,6 +25,8 @@ LIBDB_PATH=$withval,LIBDB_PATH="")
 AC_ARG_WITH(regexp,--with-regexp=(builtin|pcre|system)   Which regex to use,
   regexp_val="$withval", regexp_val="system")
 
+AC_ARG_WITH(malloc,--with-malloc             Which malloc library/object file to use,
+  with_malloc="$withval", with_malloc="")
 
 AC_CHECK_HEADERS(crypt.h getopt.h pthread.h string.h strings.h unistd.h )
 AC_CHECK_HEADER(netinet/ip_fil.h, AC_DEFINE(HAVE_IPF))
@@ -387,6 +389,10 @@ AC_CHECK_FUNC(strtok_r,,EXTRASRC="$EXTRASRC strtok_r.c")
 
 AC_PATH_PROG(CHOWN, chown, /usr/sbin/chown,
        $PATH:/bin:/usr/bin:/usr/sbin)
+
+if test "X$with_malloc" != "X" ; then
+LIBS="$with_malloc $LIBS"
+fi
 
 echo $CC
 echo $CFLAGS

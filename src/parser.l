@@ -220,8 +220,14 @@ line		[^\n]+
 <peerst>{sibling} {
 		return(PEER_SIBLING_T);
 		}
+<peerst>[Mm][Yy]_[Aa][Uu][Tt][Hh] {
+		return(MY_AUTH_T);
+		}
 <INITIAL>{parent}	{
 		return(PARENT_T);
+		}
+<INITIAL>[Pp][Aa][Rr][Ee][Nn][Tt][-_][Aa][Uu][Tt][Hh] {
+		return(PARENT_AUTH_T);
 		}
 <INITIAL>{peer}		{
 		BEGIN(peerst);

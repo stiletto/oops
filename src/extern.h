@@ -46,6 +46,7 @@ extern u_short 	internal_http_port;
 extern char    	connect_from[64];
 extern char		parent_host[64];
 extern int		parent_port;
+extern char		*parent_auth;
 extern int		always_check_freshness;
 extern int		force_http11;
 extern unsigned int		force_completion;

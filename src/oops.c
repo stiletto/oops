@@ -81,6 +81,7 @@ u_short 		internal_http_port;
 char    		connect_from[64];
 char			parent_host[64];
 int			parent_port;
+char			*parent_auth;
 int			always_check_freshness;
 int			force_http11;
 unsigned int		force_completion;
@@ -617,6 +618,8 @@ int	format_storages = 0;
     bzero(&accesslogbuff, sizeof(accesslogbuff));  accesslogbuff.fd = -1;
     init_filebuff(&logbuff);
     init_filebuff(&accesslogbuff);
+    parent_auth = NULL;
+
 #ifdef	MODULES
     if ( !check_config_only )
 	load_modules();
@@ -650,6 +653,7 @@ run:
     bzero(hi_mark,	sizeof(hi_mark));
     bzero(parent_host,	sizeof(parent_host));
     parent_port		= 0;
+    IF_FREE(parent_auth);
     http_port		= 3128;
     icp_port		= 3130;
     internal_http_port	= 3129;
@@ -1038,6 +1042,7 @@ struct	peer	*next;
 	    free(peer->name);
 	if ( peer->acls )
 	    free_acl(peer->acls);
+	IF_FREE(peer->my_auth);
 	free(peer);
 	peer = next;
     }

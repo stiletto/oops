@@ -16,7 +16,7 @@
 %token	ACL_ALLOW_T ACL_DENY_T SRCDOMAINS_T BIND_T STOP_CACHE_ACL_T
 %token	NETWORKS_ACL_T STORAGE_OFFSET_T AUTO_T USERID_T CHROOT_T
 %token	BIND_ACL_T MAXREQRATE_T BLACKLIST_T START_RED_T REFUSE_AT_T
-%token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T
+%token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T MY_AUTH_T PARENT_AUTH_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name
@@ -53,6 +53,7 @@ static	struct	range	*badp_p = NULL;
 struct	peer_c {
 	char	type;
 	struct	acls	*acls;
+	char		*my_auth;
 } peer_c;
 
 struct	domain_list	*load_domlist_from_file(char*);
@@ -109,6 +110,7 @@ statement	: logfile
 		| disk_low_free
 		| disk_hi_free
 		| parent
+		| parent_auth
 		| local_domain
 		| local_networks
 		| stop_cache
@@ -524,6 +526,12 @@ parent		: PARENT_T string num L_EOS{
 			free($2);
 		}
 
+parent_auth	: PARENT_AUTH_T string L_EOS{
+			verb_printf("PARENT_AUTH: %s\n", $2);
+			parent_auth = base64_encode($2);
+			free($2);
+		}
+
 local_domain	: LOCAL_DOMAIN_T domainlist L_EOS {
 		    struct domain_list *d;
 			verb_printf ("LOCAL_DOMAIN\n");
@@ -700,6 +708,12 @@ peerconfig	: PEER_PARENT_T ';' {
 				peerc_ptr = &peer_c;
 			peerc_ptr->type = PEER_SIBLING;
 		  }
+		| MY_AUTH_T string ';' {
+			if ( !peerc_ptr )
+				peerc_ptr = &peer_c;
+			peerc_ptr->my_auth = base64_encode($2);
+			free($2);
+		  }
 		| allow_acl {
 			if ( !peerc_ptr )
 				peerc_ptr = &peer_c;
@@ -746,6 +760,7 @@ peer		: PEER_T string num num '{' peerops '}' L_EOS {
 			if ( peerc_ptr ) {
 			    peer->type = peerc_ptr->type;
 			    peer->acls = peerc_ptr->acls;
+			    peer->my_auth = peerc_ptr->my_auth;
 			}
 			/* insert peer in the list */
 			if ( !peers ) {

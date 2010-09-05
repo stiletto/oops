@@ -931,6 +931,24 @@ go:
 		request->max_stale = 0;
 		sscanf(x, "max-stale = %d", &request->max_stale);
 	    }
+	} else
+	if ( !strncasecmp(p, "Range: ", 7) ) {
+	    char *x;
+	    /* we recognize "Range: bytes=xxx-" */
+	    x = p + 7;
+	    while( *x && IS_SPACE(*x) ) x++;
+	    if ( !strncasecmp(x, "bytes=", 6) ) {
+		int	from=-1,to=-1;
+		/* x+6 must be 'xxx-' */
+		sscanf(x+6,"%d-%d", &from, &to);
+		if ( (from >= 0 ) && (to == -1 ) ) {
+		    request->range_from = from;
+		    request->range_to = to;
+		} else
+		    my_xlog(LOG_SEVERE, "check_headers(): unsupported Range: %s\n", x);
+	    } else
+		my_xlog(LOG_SEVERE, "check_headers(): unsupported Range: %s\n", x);
+	    request->flags |= RQ_HAVE_RANGE;
 	}
 	*t = saver;
 	*checked = t - beg;
@@ -1483,6 +1501,7 @@ struct	av	*av, *next;
     IF_FREE(rq->hierarchy);
     IF_FREE(rq->proxy_user);
     IF_FREE(rq->original_path);
+    IF_FREE(rq->peer_auth);
 }
 
 void

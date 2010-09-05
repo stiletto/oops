@@ -1,3 +1,11 @@
+version 1.4.6
+	09.06.00 - Authorisation with parent/sibling
+		   --with-malloc option in configure (for exapmle
+		   I use --with-malloc=-lptmalloc under Solaris. ptmalloc
+		   have to be compiled and installed separately. Take
+		   it, please, from http://malloc.de/).
+	08.06.00 - 'Range:' header and restart(resume) for ftp and http
+version 1.4.5
 	24.05.00 - %U in custom_log
 	21.05.00 - buffering system for log and accesslog rewritten.
 		   err.c - for ERR_BAD_URL show succesfully parsed fields.

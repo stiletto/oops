@@ -246,9 +246,17 @@ stop_cache	cgi-bin
 ##
 #parent		proxy.paco.net 3128
 
+##
+# parent_auth	login:password
+# if your parent require login/password from your proxy
+##
+#parent_auth	login:password
+
 # ICP peer's
 #peer		proxy.paco.net	3128 3130 {
 #		sibling ;
+## if this peer require login/password from your proxy
+#		my_auth	my_login:my_password;
 ## we will send requests for these domains
 #		allow	dstdomain * ;
 ## we will NOT send requests for these domains

@@ -409,8 +409,9 @@ struct	request {
 	int			received;
 	char			*proxy_user;	/* if proxy-auth used			*/
 	char			*original_path;	/* original path			*/
-	size_t			range_from;
-	size_t			range_to;
+	int			range_from;
+	int			range_to;
+	char			*peer_auth;
 };
 
 struct	av {
@@ -556,6 +557,8 @@ struct	ftp_r {
 #define	FTP_TYPE_FILE	2
 	int		file_dir;	/* file or dir		*/
 	struct	buff	*container;
+#define	PARTIAL_ANSWER	1
+	int		ftp_r_flags;
 };
 
 struct	cidr_net {
@@ -752,6 +755,7 @@ struct	peer	{
 	int			hits_sent;	/* hits answers to peer	*/
 	time_t			last_sent;	/* time when last rq sent  */
 	time_t			last_recv;	/* time when last rq recvd */
+	char			*my_auth;	/* we send to remote	*/
 };
 
 struct	icp_queue_elem {

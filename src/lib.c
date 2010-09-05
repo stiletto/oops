@@ -2575,6 +2575,7 @@ unsigned char 	c;
 	} else {
 	    *(o_char++) = alphabet[(bits >> 6) & 0x3f];
 	    *(o_char++) = '=';
+	    *(o_char) = 0;
 	}
     }
     return(res);
@@ -2604,7 +2605,7 @@ long		val;
 	val += base64_value[k];
 	if (++c < 4)
 	    continue;
-	result[j++] = (char) val >> 16;
+	result[j++] = (char) (val >> 16);
 	result[j++] = (val >> 8) & 0xff;
 	result[j++] = val & 0xff;
 	val = c = 0;

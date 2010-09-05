@@ -31,11 +31,12 @@ int	try_port(struct ftp_r *);
 int	try_retr(struct ftp_r *);
 int	try_cwd(struct ftp_r *);
 int	try_size(struct ftp_r *);
+int	try_rest(struct ftp_r *);
 int	recv_ftp_list(struct ftp_r *);
 int	recv_ftp_data(struct ftp_r *);
 int	list_parser(char *, void *);
 int	add_nlst_entry(char *, void *);
-int	send_http_header(int, char *, int, struct mem_obj *);
+int	send_http_header(int, char *, int, struct mem_obj *, struct ftp_r *);
 int	parse_answ(struct buff*, int*, int (*f)(char *, void*), void *);
 int	parse_ftp_srv_answ(struct buff *, int *, struct ftp_r *);
 void	send_ftp_err(struct ftp_r *);
@@ -228,6 +229,19 @@ have_p:
 	goto cwdtopath;
 
     r = try_size(&ftp_request);
+    if ( TEST(rq->flags, RQ_HAVE_RANGE)
+	 && ( rq->range_from >= 0 )
+	 && ( rq->range_to == -1 ) ) {
+	/* we can try REST */
+	r = try_rest(&ftp_request);
+	if ( r >= 0 ) {
+	    r = try_retr(&ftp_request);
+	   if ( r == -1 ) goto error;
+	    r = recv_ftp_data(&ftp_request);
+	    if ( r ) goto error;
+	    goto error1;	/* because we never save part of document */
+	}
+    }
     r = try_retr(&ftp_request);
     if ( r == -1 ) {
 cwdtopath:
@@ -281,6 +295,8 @@ done:
     rq->hierarchy = strdup("DIRECT");
     rq->c_type = strdup(ftp_request.type);
     rq->source = strdup(rq->url.host);
+    obj->httpv_major = 1;
+    obj->httpv_minor = 0; /* this is 1.0 doc */
     log_access(delta_tv, rq, obj);
     /* when we shall not cache ftp answer */
     if ( rq->url.login ) obj->flags |= FLAG_DEAD;
@@ -323,7 +339,10 @@ struct		sockaddr_in sa;
 struct		request	*rq = ftp_r->request;
 char		*mime_type;
 
-    my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): receiving data.\n");
+    if ( TEST(ftp_r->ftp_r_flags, PARTIAL_ANSWER) )
+	my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): receiving partial data.\n");
+    else
+	my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): receiving data.\n");
 
     ftp_r->file_dir = FTP_TYPE_FILE;
     if ( !ftp_r->size || (ftp_r->size >= maxresident) )
@@ -349,7 +368,7 @@ char		*mime_type;
 	my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): Something wrong rcv_ftp_list: container already allocated.\n");
 	return(-1);
     }
-    r = send_http_header(client, mime_type, ftp_r->size, ftp_r->obj);
+    r = send_http_header(client, mime_type, ftp_r->size, ftp_r->obj, ftp_r);
     if ( r < 0 ) return(r);
     ftp_r->received = 0;
     read_size = (TEST(rq->flags, RQ_HAS_BANDWIDTH))?(MIN(512,(sizeof(buf)-1))):
@@ -505,7 +524,7 @@ struct		url url = req->request->url;
 	my_xlog(LOG_SEVERE, "recv_ftp_list(): Something wrong rcv_ftp_list: container already allocated.\n");
 	return(-1);
     }
-    r = send_http_header(client, "text/html", 0, req->obj);
+    r = send_http_header(client, "text/html", 0, req->obj, req);
     if ( r < 0 ) return(r);
     sendstr(client, "<html><head><title>ftp LIST</title>\n");
     store_in_chain("<html><head><title>ftp LIST</title>\n",
@@ -634,19 +653,37 @@ go:
 /* buld http_header in mem (so it can be saved on disk)
    and send it to user */
 int
-send_http_header(int so, char* type, int size, struct mem_obj *obj)
+send_http_header(int so, char* type, int size, struct mem_obj *obj, struct ftp_r *ftp_r)
 {
 int	r;
 char	b[50];
 char	*fmt;
 struct	buff	*nextb;
 
-    r = writet(so, "HTTP/1.0 200 Ftp Gateway\r\n", strlen("HTTP/1.0 200 Ftp Gateway\r\n"), READ_ANSW_TIMEOUT);
-    if ( obj ) {
-	put_av_pair(&obj->headers, "HTTP/1.0","200 Ftp Gateway");
-	fmt = format_av_pair("HTTP/1.0","200 Ftp Gateway");
-	attach_data(fmt, strlen(fmt), obj->container);
-	xfree(fmt);
+    if ( ftp_r && TEST(ftp_r->ftp_r_flags, PARTIAL_ANSWER) ) {
+	r = writet(so, "HTTP/1.0 206 Partial Content\r\n",
+		strlen("HTTP/1.0 206 Partial Content\r\n"), READ_ANSW_TIMEOUT);
+	if ( obj ) {
+	    put_av_pair(&obj->headers, "HTTP/1.0","206 Partial Content");
+	    fmt = format_av_pair("HTTP/1.0","206 Partial Content");
+	    attach_data(fmt, strlen(fmt), obj->container);
+	    xfree(fmt);
+        }
+	if ( size ) {
+	    sprintf(b, "Content-Range: bytes %d-%d/%d\r\n",
+		ftp_r->request->range_from,
+		size, size);
+	} else
+	    sprintf(b, "Content-Range: bytes %d-\r\n", ftp_r->request->range_from);
+	r = writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
+    } else {
+	r = writet(so, "HTTP/1.0 200 Ftp Gateway\r\n", strlen("HTTP/1.0 200 Ftp Gateway\r\n"), READ_ANSW_TIMEOUT);
+	if ( obj ) {
+	    put_av_pair(&obj->headers, "HTTP/1.0","200 Ftp Gateway");
+	    fmt = format_av_pair("HTTP/1.0","200 Ftp Gateway");
+	    attach_data(fmt, strlen(fmt), obj->container);
+	    xfree(fmt);
+        }
     }
     if ( r >= 0 )
     r = writet(so, "Content-Type: ", strlen("Content-Type: "), READ_ANSW_TIMEOUT);
@@ -660,12 +697,18 @@ struct	buff	*nextb;
 	xfree(fmt);
     }
     if ( (r >= 0) && size ) {
-	sprintf(b, "Content-Length: %d", size);
-	r = writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
-	r = writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
-	if ( obj ) {
-	    put_av_pair(&obj->headers, b, "");
-	    attach_data(b, strlen(b), obj->container);
+	if ( ftp_r && TEST(ftp_r->ftp_r_flags, PARTIAL_ANSWER) ) {
+	    sprintf(b, "Content-Length: %d", size-ftp_r->request->range_from);
+	    r = writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
+	    r = writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
+	} else {
+	    sprintf(b, "Content-Length: %d", size);
+	    r = writet(so, b, strlen(b), READ_ANSW_TIMEOUT);
+	    r = writet(so, CRLF, 2, READ_ANSW_TIMEOUT);
+	    if ( obj ) {
+		put_av_pair(&obj->headers, b, "");
+		attach_data(b, strlen(b), obj->container);
+	    }
 	}
     }
     mk1123time(global_sec_timer + ftp_expire_value, b, sizeof(b));
@@ -1473,9 +1516,9 @@ w_retr_ok:
     goto w_retr_ok;
 retrieve_size:
     /* stand at the end of answer */
-    c = resp_buff->data + checked ;
-    sn = strchr(c, '\n');
-    if ( !sn ) sn = strchr(c, '\r');
+    c = resp_buff->data ;
+    sn = memchr(c, '\n', resp_buff->used);
+    if ( !sn ) sn = memchr(c, '\r', resp_buff->used);
     if ( (sn > resp_buff->data) && (sn < resp_buff->data + resp_buff->used) )
 	*sn = 0;
     else
@@ -1543,6 +1586,70 @@ w_retr_ok:
 receive_data:
     if ( resp_buff ) free_chain(resp_buff);
     if ( rq_buff ) free(rq_buff);
+    return(0);
+error:
+    if ( resp_buff ) free_chain(resp_buff);
+    if ( rq_buff ) free(rq_buff);
+    return(-1);
+}
+
+int
+try_rest(struct ftp_r *ftp_r)
+{
+int			r, checked, r_code;
+int			server_so = ftp_r->control;
+char			answer[ANSW_SIZE+1];
+char			*rq_buff = NULL;
+time_t			started = time(NULL);
+struct	buff		*resp_buff=NULL;
+struct	request		*rq = ftp_r->request;
+
+    resp_buff = alloc_buff(CHUNK_SIZE);
+    started = time(NULL);
+    checked = 0;
+
+    rq_buff=xmalloc(20+strlen("REST \r\n")+1, "try_rest(): rq_buff");
+    if ( !rq_buff ) {
+	my_xlog(LOG_SEVERE, "try_rest(): Can't alloc mem.\n");
+	goto error;
+    }
+    sprintf(rq_buff, "REST %d\r\n", rq->range_from);
+    my_xlog(LOG_FTP|LOG_DBG, "try_rest(): ftp_srv: %s", rq_buff);
+    r = writet(server_so, rq_buff, strlen(rq_buff), READ_ANSW_TIMEOUT);
+    if ( r < 0 ) {
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "try_rest(): Error sending RETR in ftp_fill_mem.\n");
+	goto error;
+    }
+w_retr_ok:
+    r = readt(server_so, answer, ANSW_SIZE, READ_ANSW_TIMEOUT);
+    if ( r <= 0 ) {
+	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "try_rest(): No server answer after PORT in ftp_fill_mem.\n");
+	goto error;
+    }
+    if ( attach_data(answer, r, resp_buff) ) {
+	my_xlog(LOG_SEVERE, "try_rest(): No space at ftp_fill_mem.\n");
+	goto error;
+    }
+    while ( (r_code = parse_ftp_srv_answ(resp_buff, &checked, ftp_r)) != 0 ) {
+	if ( r_code < 100 ) {
+	    my_xlog(LOG_SEVERE, "try_rest(): Some fatal error at ftp_fill_mem.\n");
+	    goto error;
+	}
+	r_code = r_code/100;
+	if ( r_code == 1 )
+	    goto receive_data;
+	if ( r_code == 2 )
+	    goto receive_data;
+	if ( r_code == 3 )
+	    goto receive_data;
+	if ( r_code >= 4 )
+	    goto error;
+    }
+    goto w_retr_ok;
+receive_data:
+    if ( resp_buff ) free_chain(resp_buff);
+    if ( rq_buff ) free(rq_buff);
+    SET(ftp_r->ftp_r_flags, PARTIAL_ANSWER);
     return(0);
 error:
     if ( resp_buff ) free_chain(resp_buff);
