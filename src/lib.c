@@ -876,7 +876,17 @@ struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 	    if ( !setrlimit(RLIMIT_CORE, &rl) ) {
 		printf("RLIMIT_CORE changed to minimum: %u\n", (unsigned)rl.rlim_cur);
 	    } else {
-		printf("warning: Can't change RLIMIT_NOFILE\n");
+		printf("warning: Can't change RLIMIT_CORE\n");
+	    }
+	}
+#endif
+#if	defined(RLIMIT_NPROC) && defined(LINUX)
+	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
+	    rl.rlim_cur = RLIM_INFINITY;
+	    if ( !setrlimit(RLIMIT_NPROC, &rl) ) {
+		printf("RLIMIT_NPROC changed to maximum: %u\n", (unsigned)rl.rlim_cur);
+	    } else {
+		printf("warning: Can't change RLIMIT_NPROC\n");
 	    }
 	}
 #endif

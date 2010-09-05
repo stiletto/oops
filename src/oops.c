@@ -84,13 +84,18 @@ char	c;
 int	i, rc;
 int	format_storages = 0;
 
+    use_workers = 0;
     if ( argc > 1)
-    while( (c=getopt(argc, argv, "Zzc:C:hDds")) != EOF ) {
+    while( (c=getopt(argc, argv, "Zzw:c:C:hDds")) != EOF ) {
 	switch(c) {
 	case('c'):
 	case('C'):
 	    /* configfile */
 	    configfile = optarg;
+	    continue;
+	case('w'):
+	    /* workers */
+	    use_workers = atoi(optarg);
 	    continue;
 	case('H'):
 	case('h'):
@@ -122,6 +127,10 @@ int	format_storages = 0;
     if ( run_daemon ) daemon(0,0);
 
     signal(SIGPIPE, SIG_IGN);
+
+#ifdef	LINUX
+    if ( !use_workers ) use_workers = 10;
+#endif
 
     remove_limits();
     for(i=0;i<HASH_SIZE;i++) {

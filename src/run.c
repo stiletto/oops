@@ -24,6 +24,7 @@
 #include	<db.h>
 
 #include	"oops.h"
+#include	"dataq.h"
 
 struct		sockaddr_in	Me;
 int		server_so = -1;
@@ -31,6 +32,11 @@ pthread_t 	gc_thread = (pthread_t)NULL, rl_thread = (pthread_t)NULL;
 pthread_t 	dc_thread = (pthread_t)NULL;
 pthread_t 	dl_thread = (pthread_t)NULL;
 pthread_t	stat_thread = (pthread_t)NULL;
+dataq_t		wq;
+
+int	current_workers = 0;
+int	max_workers = 512;
+int	wq_init = 0;
 
 int		huped=0, killed = 0;
 sigset_t	newset, oset;
@@ -38,6 +44,7 @@ pthread_attr_t	p_attr;
 
 void	*run_client(void*);
 void	cleanup(void);
+void	*worker(void*);
 
 void
 huphandler(int arg)
@@ -145,6 +152,20 @@ struct	pollarg		pollarg[2];
 	    my_log("Hmm. Can't create stat thread. Still trying\n");
 	    my_sleep(5);
     }
+    if ( (use_workers > 0) && (current_workers < use_workers) ) {
+	/* start workers */
+	int i = use_workers - current_workers;
+	if ( !wq_init ) {
+	    dataq_init(&wq);
+	    wq_init = 1;
+	}
+	while( i ) {
+	    pthread_t thread;
+	    pthread_create(&thread, NULL, worker, NULL);
+	    i--;
+	    current_workers++;
+	}
+    }
     signal(SIGHUP, &huphandler);
     signal(SIGINT, &killhandler);
     signal(SIGTERM, &killhandler);
@@ -189,13 +210,31 @@ wait_clients:
 	cli_addr_len = sizeof(cli_addr);
 	r = accept(server_so, (struct sockaddr*)&cli_addr, &cli_addr_len);
 	if ( r >= 0 ) {
-	    pthread_t 	cli_thread;
-	    pthread_sigmask(SIG_BLOCK, &newset, &oset);
-	    /* well, process with this client */
-	    res = pthread_create(&cli_thread, &p_attr, run_client, (void*)r);
-	    if ( res )
-		my_log("Can't pthread_create\n");
-	    pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
+	    if ( use_workers ) {
+		work_t	*work = xmalloc(sizeof(*work),"");
+		if ( work ) {
+		    work->so = r;
+		    work->f  = run_client;
+		    dataq_enqueue(&wq, (void*)work);
+		    if ( (clients_number >= current_workers) &&
+		         (current_workers < max_workers) ) {
+			pthread_t thread;
+			pthread_create(&thread, NULL, worker, NULL);
+			current_workers++;
+			printf("Current_workers now: %d\n", current_workers);
+		    }
+		} else { /* failed to create worker */
+		    close(r);
+		}
+	    } else {
+		pthread_t 	cli_thread;
+		pthread_sigmask(SIG_BLOCK, &newset, &oset);
+		/* well, process with this client */
+		res = pthread_create(&cli_thread, &p_attr, run_client, (void*)r);
+		if ( res )
+		    my_log("Can't pthread_create\n");
+		pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
+	    }
 	}
     }
     goto wait_clients;

@@ -1,3 +1,6 @@
+04.07.99 version 1.1pl1 -------------------------------------------
+		linuxthreads deadlock workaround
+		using workers threads
 28.06.99 version 1.1 ----------------------------------------------
 	22.06.99
 		some performance emprovements: bt_pagesize=16k, instead

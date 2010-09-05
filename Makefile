@@ -1,4 +1,4 @@
-VER=1.1
+VER=1.1.pl.1
 
 
 all:
@@ -9,7 +9,7 @@ clean:
 	cd src/modules; $(MAKE) clean
 
 cleandist:
-	rm -f config.cache config.status config.log;
+	rm -f config.cache config.status config.log *~;
 	cd src; rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln version.h oops
 	cd src/modules; rm -f Makefile *o *~ *.ln
 

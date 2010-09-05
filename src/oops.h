@@ -524,6 +524,12 @@ struct  charset {
 	char			*Table;
 };
                                 
+typedef struct	work {
+	int	so;		/* socket		*/
+	void*	(*f)(void*);	/* processor or NULL	*/
+} work_t;
+
+
 #define	LOCK_STATISTICS(s)	pthread_mutex_lock(&s.s_lock)
 #define	UNLOCK_STATISTICS(s)	pthread_mutex_unlock(&s.s_lock)
 
@@ -604,6 +610,7 @@ pthread_mutex_t	dns_cache_lock;
 DB_ENV			dbenv;
 DB_INFO			dbinfo;
 
+int			use_workers;
 int			total_alloc;
 int			clients_number;
 int			total_objects;

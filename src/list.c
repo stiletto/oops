@@ -1,92 +1,169 @@
-/*
-*/
-#include	<stdio.h>
-#include	<stdlib.h>
-#include	<fcntl.h>
-#include	<errno.h>
-#include	<stdarg.h>
-#include	<string.h>
-#include	<strings.h>
-#include	<netdb.h>
-#include	<unistd.h>
-#include	<ctype.h>
-#include	<signal.h>
-#include	<locale.h>
-#include	<time.h>
+/* BeginSourceFile list2.c */
 
-#if	defined(SOLARIS)
-#include	<thread.h>
-#endif
-
-#include	<sys/param.h>
-#include	<sys/socket.h>
-#include	<sys/types.h>
-#include	<sys/stat.h>
-#include	<sys/file.h>
-#include	<sys/time.h>
-
-#include	<netinet/in.h>
-
-#include	<pthread.h>
-
-#include	<db.h>
-
-#include	"oops.h"
-
-
-
-int
-list_init(list_t *list)
+#include <stdlib.h>
+#include <pthread.h>
+#include <assert.h>
+#include <stdio.h>
+#include "llt.h"
+void
+ll_init(llh_t *head)
 {
-    list->count = 0;
-    pthread_mutex_init(&list->lock, NULL);
-    list->head.p = list->head.n = &list->head;
-    return(0);
+	head->back = &head->front;
+	head->front = NULL;
 }
-
-int
-list_add(list_t *list, ll_t *e)
+void
+ll_enqueue(llh_t *head, ll_t *data)
 {
-ll_t	*last;
-
-/* add this to the tail of the list */
-    pthread_mutex_lock(&list->lock);
-    last = list->head.p;
-    e->n = &list->head ;
-    e->p = last ;
-    last->n = e ;
-    list->head.p = e;
-    list->count++;
-    pthread_mutex_unlock(&list->lock);
-    return(0);
+	data->n = NULL;
+	*head->back = data;
+	head->back = &data->n;
 }
-
-int
-list_traverse(list_t *list, int (*func)(void*, void*), void *arg)
+ll_t *
+ll_peek(llh_t *head)
 {
-ll_t	*curr;
+	return (head->front);
+}
+ll_t *
+ll_dequeue(llh_t *head)
+{
+	ll_t *ptr;
+	ptr = head->front;
+	if (ptr && ((head->front = ptr->n) == NULL))
+		head->back = &head->front;
+	return (ptr);
+}
+ll_t *
+ll_traverse(llh_t *ptr, int (*func)(void *, void *), void *user)
+{
+	ll_t *t;
+	ll_t **prev = &ptr->front;
 
-    pthread_mutex_lock(&list->lock);
-    curr = list->head.n;
-    while ( curr != &list->head ) {
-	switch((*func)(curr, arg)) {
-	   case 1:	/* abort scan	*/
-		pthread_mutex_unlock(&list->lock);
-		return(0);
-	   default:
-		break;
+	t = ptr->front;
+	while (t) {
+		switch (func(t, user)) {
+		case 1:
+			return (NULL);
+		case 0:
+			prev = &(t->n);
+			t = t->n;
+			break;
+		case -1:
+			if ((*prev = t->n) == NULL)
+				ptr->back = prev;
+			return (t);
+		}
 	}
-	curr = curr->n;
-    }
-    pthread_mutex_unlock(&list->lock);
-    return(0);
+	return (NULL);
+}
+/* Make sure the list isn't corrupt and returns number of list items */
+int
+ll_check(llh_t *head)
+{
+	int i = 0;
+	ll_t *ptr = head->front;
+	ll_t **prev = &head->front;
+
+	while (ptr) {
+		i++;
+		prev = &ptr->n;
+		ptr = ptr->n;
+	}
+	assert(head->back == prev);
+	return (i);
+}
+typedef struct list_entry {
+	struct ll list;
+	void *data;
+} list_entry_t;
+
+static int
+list_check(list_t *ptr)										/* call while holding lock */
+{
+	assert(ptr->count == ll_check(&ptr->head));
+	return (1);
+}
+int
+list_init(list_t *ptr)
+{
+	ptr->count = 0;
+	ll_init(&ptr->head);
+	pthread_mutex_init(&ptr->lock, NULL);
+	assert(pthread_mutex_lock(&ptr->lock) == 0 &&
+		  list_check(ptr) &&
+		  pthread_mutex_unlock(&ptr->lock) == 0);
+	return (0);
+}
+int
+list_add(list_t *ptr, void *item)
+{
+	/* we call malloc w/o holding lock to save time */
+	list_entry_t *e = (list_entry_t *) malloc(sizeof (*e));
+
+	if (e == NULL)
+		return (-1);
+	e->data = item;
+	pthread_mutex_lock(&ptr->lock);
+	assert(list_check(ptr));
+	ptr->count++;
+	ll_enqueue(&ptr->head, &e->list);
+	assert(list_check(ptr));
+	pthread_mutex_unlock(&ptr->lock);
+	return (0);
+}
+struct wrap {
+	int (*func)(void *, void *);
+	void *user;
+};
+static int
+wrapper(void *e, void *u)
+{
+	list_entry_t *q = (list_entry_t *) e;
+	struct wrap *w = (struct wrap *)u;
+	return (w->func(q->data, w->user));
+}
+int
+list_traverse(list_t *ptr, int (*func)(void *, void *), void *user)
+{
+	list_entry_t *ret;
+
+	struct wrap wrap;
+	wrap.func = func;
+	wrap.user = user;
+	pthread_mutex_lock(&ptr->lock);
+	assert(list_check(ptr));
+	ret = (list_entry_t *)
+		ll_traverse(&ptr->head, wrapper, (void *) &wrap);
+	if (ret) {
+		free(ret);
+		ptr->count--;
+	}
+	assert(list_check(ptr));
+	pthread_mutex_unlock(&ptr->lock);
+	return (0);
+}
+static int
+matchit(void *data, void *compare)
+{
+	return ((data == compare)? -1: 0);
+}
+int
+list_remove(list_t *ptr, void *item)
+{
+	return (list_traverse(ptr, matchit, item)? -1: 0);
 }
 void
 list_unlink_item(list_t *list, ll_t *e)
 {
-    pthread_mutex_lock(&list->lock);
-    e->p->n = e->n;
-    e->n->p = e->p;
-    list->count--;
-    pthread_mutex_unlock(&list->lock);
+	list_traverse(list, matchit, (void*)e);
+	return;
 }
+int
+list_destroy(list_t *ptr)
+{
+	list_entry_t *e;
+
+	while ((e = (list_entry_t *) ll_dequeue(&ptr->head)) != NULL)
+		free(e);
+	return (pthread_mutex_destroy(&ptr->lock));
+}
+/* EndSourceFile */
