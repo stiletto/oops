@@ -60,7 +60,7 @@ int		str_to_sa(char*, struct sockaddr*);
 void		analyze_header(char*, struct server_answ *);
 int		attach_data(char* src, int size, struct buff *buff);
 struct	buff*	alloc_buff(int size);
-int		send_data_from_buff(int, struct buff **, int *, int *);
+int		send_data_from_buff(int, struct buff **, int *, unsigned int *, int *, int, struct mem_obj *, char *);
 void		send_data_from_obj(struct request*, int, struct mem_obj *, int);
 void		unlock_obj(struct mem_obj *);
 void		lock_obj(struct mem_obj *);
@@ -165,7 +165,7 @@ ERRBUF ;
 			rq->cs_to_server_table->list->string, TRUE);
       else
 	r = writet(server_so, answer, strlen(answer), READ_ANSW_TIMEOUT);
-    free(answer); answer = NULL;
+    xfree(answer); answer = NULL;
     if ( r < 0 ) {
 	say_bad_request(so, "Can't send", STRERROR_R(ERRNO, ERRBUFS),
 			ERR_TRANSFER, rq);
@@ -299,16 +299,16 @@ ERRBUF ;
 				my_xlog(LOG_DBG, "send_not_cached(): Rewriten header=`%s'.\n", d);
 				attach_data(d, strlen(d), hdrs_to_send);
 				attach_data("\r\n", 2, hdrs_to_send);
-				free(d);
+				xfree(d);
 				if ( s && (s != ct_buf) )
-				    free(s);
+				    xfree(s);
 				table = rq->cs_to_client_table->list->string;
 				recode_answer = TRUE;
 				header = header->next;
 				continue;
 			    }
 			    if ( s && (s != ct_buf) )
-				free(s);
+				xfree(s);
 			} /* Content-Type: ... */
 			attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 		    }
@@ -370,7 +370,7 @@ ERRBUF ;
 
 done:
     if ( server_so != -1 ) CLOSE(server_so);
-    if ( answer ) free(answer);
+    if ( answer ) xfree(answer);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
@@ -685,16 +685,16 @@ send_ready:
 			my_xlog(LOG_DBG, "send_data_from_obj(): Rewriten header = `%s'.\n", d);
 			attach_data(d, strlen(d), hdrs_to_send);
 			attach_data("\r\n", 2, hdrs_to_send);
-			free(d);
+			xfree(d);
 			if ( s && (s != ct_buf) )
-			    free(s);
+			    xfree(s);
 			table = rq->cs_to_client_table->list->string;
 			convert_charset = TRUE;
 			header = header->next;
 			continue;
 		    }
 		    if ( s && (s != ct_buf) )
-			free(s);
+			xfree(s);
 		} /* Content-Type: ... */
 		attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 	    }
@@ -766,9 +766,7 @@ send_ready:
 	    send_hot_buff = obj->container->next;
 	    sended = obj->container->used;
 	} /* partial content */
-#if	defined(MODULES)
 	if ( !partial_content) pre_body(so, obj, rq, NULL);
-#endif
     }
     if ( (state == OBJ_READY) && (sended >= obj->size) ) {
 	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): obj is ready.\n");
@@ -892,8 +890,8 @@ struct	buff		*to_server_request = NULL;
       else
 	r = writet(server_so, to_server_request->data, to_server_request->used,
     		READ_ANSW_TIMEOUT);
-    free(answer); answer = NULL;
-    free(fake_header); fake_header = NULL;
+    xfree(answer); answer = NULL;
+    xfree(fake_header); fake_header = NULL;
     free_container(to_server_request); to_server_request = NULL;
 
     new_obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
@@ -1207,7 +1205,7 @@ ERRBUF ;
 	obj->flags |= FLAG_DEAD;
 	goto error;
     }
-    free(answer); answer = NULL;
+    xfree(answer); answer = NULL;
 
     if ( rq->cs_to_server_table
 		&& rq->cs_to_server_table->list
@@ -1411,6 +1409,8 @@ ERRBUF ;
 		    obj->flags |= FLAG_DEAD;
 	    }
 	    change_state(obj, OBJ_READY);
+	    if ( !send_hot_buff && (sended == 0) )
+		send_hot_buff = obj->container;
 	    while( (so != -1) && send_hot_buff &&
 	           (received > sended) && (rest_in_chunk != -1)) {
 		unsigned int	ssended;
@@ -1523,7 +1523,7 @@ ERRBUF ;
 				} /* if fav */
 			    } /* value */
 			} /* while tokens */
-			if (temp_vary)free(temp_vary);
+			IF_FREE(temp_vary);
 			my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Vary = `%s'.\n", vary);
 		    }
 		}
@@ -1569,16 +1569,16 @@ ERRBUF ;
 				my_xlog(LOG_DBG, "fill_mem_obj(): Rewriten header = `%s'.\n", d);
 				attach_data(d, strlen(d), hdrs_to_send);
 				attach_data("\r\n", 2, hdrs_to_send);
-				free(d);
+				xfree(d);
 				if ( s && (s != ct_buf) )
-				    free(s);
+				    xfree(s);
 				table = rq->cs_to_client_table->list->string;
 				convert_charset = TRUE;
 				header = header->next;
 				continue;
 			    }
 			    if ( s && (s != ct_buf) )
-				free(s);
+				xfree(s);
 			} /* Content-Type: ... */
 			attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 		    }
@@ -1593,9 +1593,9 @@ ERRBUF ;
 		  else
 		    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
 		free_container(hdrs_to_send);
-#if		defined(MODULES)
+
 		pre_body(so, obj, rq, NULL);
-#endif
+
 		sended = obj->container->used;
 		send_hot_buff = obj->container;
 		send_hot_pos  = obj->container->used;
@@ -1641,7 +1641,7 @@ ERRBUF ;
 error:
     my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): load error.\n");
     if ( server_so != -1 ) CLOSE(server_so);
-    if ( answer ) free(answer);
+    IF_FREE(answer);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
@@ -1676,7 +1676,7 @@ done:
 done1:
     my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Loaded successfully: received: %d\n", received);
     if ( server_so != -1 ) CLOSE(server_so);
-    if ( answer ) free(answer);
+    IF_FREE(answer);
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
@@ -1745,16 +1745,16 @@ time_t			last_read = global_sec_timer;
 		    my_xlog(LOG_DBG, "continue_load(): Rewriten header = `%s'.\n", d);
 		    attach_data(d, strlen(d), hdrs_to_send);
 		    attach_data("\r\n", 2, hdrs_to_send);
-		    free(d);
+		    xfree(d);
 		    if ( s && (s != ct_buf) )
-			free(s);
+			xfree(s);
 		    table = rq->cs_to_client_table->list->string;
 		    convert_charset = TRUE;
 		    header = header->next;
 		    continue;
 		}
 		if ( s && (s != ct_buf) )
-		    free(s);
+		    xfree(s);
 	    } /* Content-Type: ... */
 	    attach_av_pair_to_buff(header->attr, header->val, hdrs_to_send);
 	}
@@ -1965,12 +1965,12 @@ done:
     increase_hash_size(obj->hash_back, obj->resident_size);
 
 error:
-    if (answer) free(answer);
+    IF_FREE(answer);
     return(0);
 }
 
 int
-send_data_from_buff(int so, struct buff **hot, int *pos, int *sended)
+send_data_from_buff(int so, struct buff **hot, int *pos, unsigned int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
 {
 int		r, to_send;
 struct	buff	*b = *hot;
@@ -2024,7 +2024,7 @@ send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, unsigned int *s
 int		r, to_send, cz_here, faked_sent, chunk_size, ss, sp;
 struct	buff	*b = *hot;
 char		*cb, *ce, *cd;
-char		ch_sz[16];	/* buffer to collect chunk size	*/
+char		ch_sz[32];	/* buffer to collect chunk size	*/
 u_char		recode_buff[2048];
 char		*source;
 
@@ -2294,8 +2294,8 @@ free_chain(struct buff *buff)
 struct	buff	*next;
     while(buff) {
 	next = buff->next;
-	free(buff->data);
-	free(buff);
+	xfree(buff->data);
+	xfree(buff);
 	buff = next;
     }
 }
@@ -2325,7 +2325,7 @@ char	*hdr = NULL;
 	code,
 	message);
     writet(so, hdr, strlen(hdr), READ_ANSW_TIMEOUT);
-    free(hdr);
+    xfree(hdr);
     return;
 }
 
@@ -2430,7 +2430,6 @@ int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
 ERRBUF ;
 
-#if	defined(MODULES)
     int			flags = 0;
 
     r = check_redir_connect(&server_so, rq, &flags);
@@ -2441,7 +2440,6 @@ ERRBUF ;
 			ERR_TRANSFER, rq);
 	return(-1);
     }
-#endif /* MODULES */
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
 	say_bad_request(client_so, "Can't create socket", STRERROR_R(ERRNO, ERRBUFS),
@@ -2470,7 +2468,6 @@ srv_connect_silent(int client_so, struct url *url, struct request *rq)
 {
 int 			server_so = -1, r;
 struct	sockaddr_in 	server_sa;
-#if	defined(MODULES)
     int			flags = 0;
 
     r = check_redir_connect(&server_so, rq, &flags);
@@ -2479,7 +2476,6 @@ struct	sockaddr_in 	server_sa;
     if ( r == MOD_CODE_ERR ) {
 	return(-1);
     }
-#endif /* MODULES */
 
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if ( server_so == -1 ) {
@@ -2632,7 +2628,7 @@ int	via_inserted = FALSE;
     if ( host && (fav=format_av_pair("Host:", host)) ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
-	free(fav);fav = NULL;
+	xfree(fav);fav = NULL;
     }
     av = rq->av_pairs;
     while ( av ) {
@@ -2660,12 +2656,12 @@ int	via_inserted = FALSE;
 		if ( !buf ) goto fail;
 		sprintf(buf,"%s, %s:%d (Oops %s)\r\n", fav, host_name, http_port, version);
 		if ( attach_data(buf, strlen(buf), tmpbuff) ) {
-		    free(buf);
+		    xfree(buf);
 		    goto fail;
 		}
 		via_inserted = TRUE;
-		free(buf);
-		free(fav); fav = NULL;
+		xfree(buf);
+		xfree(fav); fav = NULL;
 	    }
 	    goto do_not_insert;
 	}
@@ -2676,7 +2672,7 @@ int	via_inserted = FALSE;
 	    }
 	    if ( attach_data(fav, strlen(fav), tmpbuff) )
 		goto fail;
-	    free(fav);fav = NULL;
+	    xfree(fav);fav = NULL;
 	}
   do_not_insert:
 	av = av->next;
@@ -2703,7 +2699,7 @@ int	via_inserted = FALSE;
     if ( (fav = format_av_pair("Connection:", "close")) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
-	free(fav);fav = NULL;
+	xfree(fav);fav = NULL;
     }
     if ( insert_x_forwarded_for ) {
 	char	*ip_addr = my_inet_ntoa(&rq->client_sa);
@@ -2726,26 +2722,26 @@ int	via_inserted = FALSE;
 	if ( !buf ) goto fail;
 	sprintf(buf,"Via: %s:%d (Oops %s)\r\n", host_name, http_port, version);
 	if ( attach_data(buf, strlen(buf), tmpbuff) ) {
-	    free(buf);
+	    xfree(buf);
 	    goto fail;
 	}
-	free(buf);
-	free(fav);fav = NULL;
+	xfree(buf);
+	xfree(fav);fav = NULL;
     }
     /* CRLF  */
     if ( attach_data("\r\n", 2, tmpbuff) )
 	goto fail;
     if ( attach_data("", 1, tmpbuff) )
 	goto fail;
-    if (answer) free(answer);
+    IF_FREE(answer);
     answer = tmpbuff->data;
     tmpbuff->data = NULL;
     free_chain(tmpbuff);
     return answer;
 fail:
-    if (fav) free(fav);
+    IF_FREE(fav);
     if (tmpbuff) free_chain(tmpbuff);
-    if (answer) free(answer);
+    IF_FREE(answer);
     return NULL;
 }
 
@@ -2756,6 +2752,8 @@ int	rlen, via_inserted = FALSE;
 char	*answer, *httpv, *fav=NULL, *host=NULL;
 struct	buff 	*tmpbuff;
 struct	av	*av;
+char		*lp = NULL;
+int		lp_length = 0;
 
     if ( TEST(rq->flags, RQ_GO_DIRECT) ) {
 	return(build_direct_request(meth, url, headers, rq, flags));
@@ -2779,16 +2777,30 @@ struct	av	*av;
 	strlen(url->path) + 1/*sp*/ +
 	strlen(httpv) + 2/* \r\n */;
 
+    if ( url->login ) {
+
+	lp_length += strlen(url->login) + 1;
+	if ( url->password ) lp_length += strlen(url->password) + 1;
+	lp_length++;
+	lp = xmalloc(lp_length,"");
+	if ( lp ) {
+	    if ( url->password )
+		    sprintf(lp,"%s:%s@", url->login,url->password);
+		else
+		    sprintf(lp,"%s@", url->login);
+	    rlen += lp_length;
+	}
+    }
     answer = xmalloc(ROUND(rlen+1, CHUNK_SIZE), "build_parent_request(): 1"); /* here answer is actually *request* buffer */
     if ( !answer )
 	return NULL;
 
     if ( !strcasecmp(url->proto, "http" ) ) {
-	sprintf(answer, "%s %s://%s:%d%s %s\r\n", meth, url->proto, url->host,
-    	    url->port, url->path, httpv);
+	sprintf(answer, "%s %s://%s%s:%d%s %s\r\n", meth, url->proto, lp?lp:"",
+		url->host,url->port, url->path, httpv);
     } else {
-	sprintf(answer, "%s %s://%s%s %s\r\n", meth, url->proto, url->host,
-    	    url->path, httpv);
+	sprintf(answer, "%s %s://%s%s%s %s\r\n", meth, url->proto, lp?lp:"",
+	    url->host, url->path, httpv);
     }
     if ( attach_data(answer, strlen(answer), tmpbuff) )
 	goto fail;
@@ -2799,7 +2811,7 @@ struct	av	*av;
     if ( host && (fav=format_av_pair("Host:", host)) ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
-	free(fav);fav = NULL;
+	xfree(fav);fav = NULL;
     }
     av = rq->av_pairs;
     while ( av ) {
@@ -2828,19 +2840,19 @@ struct	av	*av;
 		if ( !buf ) goto fail;
 		sprintf(buf,"%s, %s:%d (Oops %s)\r\n", fav, host_name, http_port, version);
 		if ( attach_data(buf, strlen(buf), tmpbuff) ) {
-		    free(buf);
+		    xfree(buf);
 		    goto fail;
 		}
 		via_inserted = TRUE;
-		free(buf);
-		free(fav); fav = NULL;
+		xfree(buf);
+		xfree(fav); fav = NULL;
 	    }
 	    goto do_not_insert;
 	}
 	if ( (fav = format_av_pair(av->attr, av->val)) != 0 ) {
 	    if ( attach_data(fav, strlen(fav), tmpbuff) )
 		goto fail;
-	    free(fav);fav = NULL;
+	    xfree(fav);fav = NULL;
 	}
   do_not_insert:
 	av = av->next;
@@ -2849,12 +2861,12 @@ struct	av	*av;
 	&& (fav = format_av_pair("Proxy-Authorization: Basic", rq->peer_auth)) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
-	free(fav);fav = NULL;
+	xfree(fav);fav = NULL;
     }
     if ( (fav = format_av_pair("Connection:", "close")) != 0 ) {
 	if ( attach_data(fav, strlen(fav), tmpbuff) )
 	    goto fail;
-	free(fav);fav = NULL;
+	xfree(fav);fav = NULL;
     }
     if ( insert_via && !via_inserted ) {
 	char *buf;
@@ -2863,26 +2875,28 @@ struct	av	*av;
 	if ( !buf ) goto fail;
 	sprintf(buf,"Via: %s:%d (Oops %s)\r\n", host_name, http_port, version);
 	if ( attach_data(buf, strlen(buf), tmpbuff) ) {
-	    free(buf);
+	    xfree(buf);
 	    goto fail;
 	}
-	free(buf);
-	free(fav);fav = NULL;
+	xfree(buf);
+	xfree(fav);fav = NULL;
     }
     /* CRLF  */
     if ( attach_data("\r\n", 2, tmpbuff) )
 	goto fail;
     if ( attach_data("", 1, tmpbuff) )
 	goto fail;
-    if ( answer ) free(answer);
+    IF_FREE(answer);
+    IF_FREE(lp);
     answer = tmpbuff->data;
     tmpbuff->data = NULL;
     free_chain(tmpbuff);
     return answer;
 fail:
-    if (fav) free(fav);
+    IF_FREE(fav);
+    IF_FREE(lp);
     if (tmpbuff) free_chain(tmpbuff);
-    if (answer) free(answer);
+    IF_FREE(answer);
     return NULL;
 }
 
@@ -2957,7 +2971,7 @@ process_vary_headers(struct mem_obj *obj, struct request *rq)
 			} /* if fav */
 		    } /* value */
 		} /* while tokens */
-	    if (temp_vary)free(temp_vary);
+	    IF_FREE(temp_vary);
 	    my_xlog(LOG_HTTP|LOG_DBG, "process_vary_headers(): Vary = `%s'\n", vary);
 	 }
     }
@@ -2987,9 +3001,10 @@ check_new_object_expiration(struct request *rq, struct mem_obj *obj)
 		/* we don't received Expires - try to use Last-Modified */
 		if ( obj->times.last_modified ) {
 		    int	LM_AGE;
-			    LM_AGE = obj->times.date - obj->times.last_modified;
+
+		    LM_AGE = obj->times.date - obj->times.last_modified;
 		    if ( LM_AGE > 0 ) {
-			tmpexpires = lmt*LM_AGE;
+			tmpexpires = (lmt*LM_AGE)/100;
 			if ( (tmpexpires>min) && (tmpexpires<max) ) {
 			    obj->times.expires = obj->times.date+tmpexpires;
 			    expires_altered = TRUE;
@@ -3155,9 +3170,9 @@ char	*buf;
 	return(FALSE);
     sprintf(buf, "%s:%d (Oops %s)" , host_name, http_port, version);
     if ( strstr(rq_via, buf) ) {
-	free(buf);
+	xfree(buf);
 	return(TRUE);
     }
-    free(buf);
+    xfree(buf);
     return(FALSE);
 }

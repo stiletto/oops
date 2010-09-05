@@ -26,11 +26,11 @@ static	int	startup = TRUE;
 struct		sockaddr_in	Me;
 pthread_t 	gc_thread, rl_thread;
 pthread_t 	dc_thread, stat_thread;
-pthread_t 	dl_thread;
+pthread_t 	dl_thread, eraser_thread;
 dataq_t		wq;
 
-int	wq_init = 0;
-int	killed, huped, logrotate;
+int		wq_init = 0;
+volatile int	killed, huped, logrotate;
 
 sigset_t	newset, oset;
 pthread_attr_t	p_attr;
@@ -46,6 +46,7 @@ void	cleanup(void);
 void	*worker(void*);
 void	add_workers(void);
 void	set_stack_size(pthread_attr_t*);
+void	set_large_stack_size(pthread_attr_t*);
 int	blacklist_is_full(void);
 int	put_in_blacklist(int, void *(f)(void*), int);
 
@@ -85,6 +86,13 @@ struct	sockaddr_in	cli_addr, icp_sa;
 struct	pollarg		*pollarg;
 
     huped = killed = logrotate = 0;
+    if ( http_port == 0 ) {
+	if ( server_so != -1 ) {
+	    CLOSE(server_so);
+	    server_so = -1;
+	}
+	goto create_icp_so;
+    }
     if ( (server_so != -1) && oops_user && (http_port < IPPORT_RESERVED) )
 	/* we skip socket reopens completely if we run	*
 	 * under some (unprivileged) user		*/
@@ -121,6 +129,13 @@ struct	pollarg		*pollarg;
     }
 
 create_icp_so:
+    if ( icp_port == 0 ) {
+	if ( icp_so != -1 ) {
+	    CLOSE(icp_so);
+	    icp_so = -1;
+	}
+	goto skip_socket_opens;
+    }
     if ( (icp_so != -1) && oops_user && (icp_port < IPPORT_RESERVED) )
 	/* we skip socket reopens completely if we run	*
 	 * under some (unprivileged) user		*/
@@ -154,7 +169,6 @@ skip_socket_opens:
     if ( oops_user ) set_user();
     pthread_attr_init(&p_attr);
     pthread_attr_setdetachstate(&p_attr, PTHREAD_CREATE_DETACHED);
-    set_stack_size(&p_attr);
 
     sigemptyset(&newset);
     sigaddset(&newset, SIGHUP);
@@ -163,7 +177,10 @@ skip_socket_opens:
     sigaddset(&newset, SIGTERM);
     pthread_sigmask(SIG_BLOCK, &newset, &oset);
 
+    set_large_stack_size(&p_attr);
+
     if ( startup == TRUE ) {
+	my_xlog(LOG_SEVERE, "Starting threads\n");
 	startup = FALSE;
 	/* start statistics collector */
 	pthread_create(&stat_thread, &p_attr, statistics, NULL);
@@ -173,7 +190,13 @@ skip_socket_opens:
 	pthread_create(&rl_thread, &p_attr, rotate_logs, NULL);
 	/* strart disk cleaner */
 	pthread_create(&dc_thread, &p_attr, clean_disk, NULL);
+	/* strart disk cleaner */
+	pthread_create(&eraser_thread, &p_attr, eraser, NULL);
+	my_sleep(1);
     }
+
+    set_stack_size(&p_attr);
+
     if ( (use_workers > 0) && (current_workers < use_workers) ) {
 	/* start workers */
 	int i = use_workers - current_workers;
@@ -214,7 +237,7 @@ wait_clients:
 	pollarg[0].fd = server_so;
 	pollarg[0].request = FD_POLL_RD;
     } else
-	my_xlog(LOG_SEVERE, "run(): Server so = %d\n", server_so);
+	if ( http_port != 0 ) my_xlog(LOG_SEVERE, "run(): Server so = %d\n", server_so);
     if ( icp_so >= 0 ) {
 	pollarg[1].fd = icp_so;
 	pollarg[1].request = FD_POLL_RD;
@@ -254,9 +277,7 @@ wait_clients:
 	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "run(): Rotate.\n");
 	    rotate_logbuff();
 	    rotate_accesslogbuff();
-#if	defined(MODULES)
 	    mod_reopen_logs();
-#endif /* MODULES */
 	    logrotate = 0;
 	}
 	my_xlog(LOG_SEVERE, "run(): Failed to select: %m\n");
@@ -473,19 +494,13 @@ struct storage_st	*storage;
     kill_request = 1;
     WRLOCK_CONFIG ;
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking config...Done.\n");
-    if ( dbp ) {
+    if ( db_in_use ) {
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking DB.\n");
 	WRLOCK_DB ;
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking DB...Done.\n");
-	dbp->sync(dbp, 0);
-	dbp->close(dbp, 0);
+	db_mod_sync();
+	db_mod_close();
     }
-#if     DB_VERSION_MAJOR<3
-    if ( dbenv ) free(dbenv);
-#else
-    if ( dbenv )
-	dbenv->close(dbenv,0);
-#endif
     if ( (storage = storages) != 0 ) {
 	while (storage) {
 	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "cleanup(): Locking %s\n", storage->path);
@@ -544,11 +559,37 @@ ERRBUF ;
 #else
     min_size = 16*1024;
 #endif	/* PTHREAD_STACK_MIN */
-    best_size = 64*1024;
+    best_size = 80*1024;
     if ( best_size < min_size ) best_size = min_size;
     rc = pthread_attr_setstacksize(attr, best_size);
     if ( rc ) {
 	verb_printf("set_stack_size(): %s\n", STRERROR_R(rc, ERRBUFS));
     }
 #endif	/* SOLARIS */
+}
+
+void
+set_large_stack_size(pthread_attr_t *attr)
+{
+size_t	best_size, min_size;
+int	rc;
+ERRBUF ;
+
+#if	defined(FREEBSD)
+/* 
+    If we use GigaBASE, then we need stack larger then 128K for threads which
+    will write to base. FreeBSD by default give obly 64K
+*/
+#if	defined(PTHREAD_STACK_MIN)
+    min_size = PTHREAD_STACK_MIN;
+#else
+    min_size = 128*1024;
+#endif	/* PTHREAD_STACK_MIN */
+    best_size = 128*1024;
+    if ( best_size < min_size ) best_size = min_size;
+    rc = pthread_attr_setstacksize(attr, best_size);
+    if ( rc ) {
+	verb_printf("set_large_stack_size(): %s\n", STRERROR_R(rc, ERRBUFS));
+    }
+#endif	/* FREEBSD */
 }

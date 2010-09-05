@@ -1257,3 +1257,11 @@ char			*p;
 error:
     if ( newhdr ) free_acl_list((acl_chk_list_t*)newhdr);
 }
+
+int
+use_peer(struct request *rq, struct peer *peer)
+{
+    if ( !rq || !peer || !peer->peer_access )
+	return(FALSE);
+    return(check_acl_access(peer->peer_access, rq));
+}

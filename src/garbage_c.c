@@ -31,6 +31,8 @@ int			clears = 0;
 
 void			swap_out_object(struct mem_obj *);
 
+dataq_t			eraser_queue;
+
 void
 flush_mem_cache(int cleanup)
 {
@@ -56,10 +58,12 @@ struct mem_obj	*obj;
     UNLOCK_CONFIG ;
     if ( total_size < lo_mark_val ) return;
     if ( total_size > mem_max_val ) {
-	gc_mode = GC_DROP ; 
-    } else
+	gc_mode = GC_DROP ;
+	my_xlog(LOG_STOR, "flush_mem_chache: DROPout documents.");
+    } else {
 	gc_mode = GC_EASY ;
-
+	my_xlog(LOG_STOR, "flush_mem_chache: SWAPout documents.");
+    }
     /* create kill-list */
     kill_size = total_size - lo_mark_val;
     destroyed = 0;
@@ -76,6 +80,7 @@ struct mem_obj	*obj;
 	    obj = obj->younger;
     }
     pthread_mutex_unlock(&obj_chain);
+    my_xlog(LOG_STOR, "flush_mem_chache: %d documents in kill list.", kill_list.count);
     if ( kill_list.count > 0 ) {
 	my_xlog(LOG_DBG, "flush_mem_cache(): Will swap/destroy %d objects.\n", kill_list.count);
 	RDLOCK_CONFIG ;
@@ -85,6 +90,7 @@ struct mem_obj	*obj;
 #else
 		WRLOCK_DB;
 #endif
+	db_mod_attach();
 	while ( (obj = list_dequeue(&kill_list)) != 0 ) {
 	    my_xlog(LOG_STOR|LOG_DBG, "flush_mem_cache(): Destroying object <%s/%s>\n",
 			obj->url.host, obj->url.path);
@@ -92,6 +98,7 @@ struct mem_obj	*obj;
 		swap_out_object(obj);
 	    destroy_obj(obj);
 	}
+	db_mod_detach();
 	if ( gc_mode == GC_EASY ) UNLOCK_DB;
 	UNLOCK_CONFIG ;
     }
@@ -111,9 +118,11 @@ int			i, k;
 
     forever() {
 	RDLOCK_CONFIG ;
-	if ( dbp ) {
+	if ( db_in_use == TRUE) {
 	    WRLOCK_DB ;
-	    dbp->sync(dbp, 0);
+	    db_mod_attach();
+	    db_mod_sync();
+	    db_mod_detach();
 	    UNLOCK_DB ;
 	}
 	UNLOCK_CONFIG ;
@@ -170,10 +179,10 @@ struct	storage_st	*storage;
 
 
     if ( !(obj->flags&FLAG_FROM_DISK) &&
-	     dbp ) {
-	DBT			key, data;
+	     db_in_use ) {
+	db_api_arg_t	key, data;
 	struct disk_ref	*disk_ref;
-	int			rc, urll;
+	int		rc, urll;
 	struct	url	*url = &obj->url;
 	char		*url_str, time_buf[16];
 
@@ -270,14 +279,14 @@ struct	storage_st	*storage;
 	disk_ref->id   = storage->super.id;
 	data.data = disk_ref;
 	data.size = sizeof(struct disk_ref) + blk*sizeof(uint32_t);
-	switch( rc = dbp->put(dbp, NULL, &key, &data, DB_NOOVERWRITE) ) {
+	switch( rc = db_mod_put(&key, &data, obj) ) {
 	    case 0:
-	    	break;
+		break;
 	    default:
-		if ( rc == DB_KEYEXIST )
-		    my_xlog(LOG_DBG, "swap_out_object(): dbp->put failed, rc = %d\n", rc);
-		else
-		    my_xlog(LOG_SEVERE, "swap_out_object(): dbp->put failed, rc = %d\n", rc);
+		if ( rc != DB_API_RES_CODE_EXIST )
+			my_xlog(LOG_SEVERE, "swap_out_object(): dbp->put failed, rc = %d\n", rc);
+		    else
+			my_xlog(LOG_SEVERE, "swap_out_object('%s'): key exists\n", url_str);
 		/* release allocated blocks */
 		WRLOCK_STORAGE(storage);
 		release_blks(blk, storage, disk_ref);
@@ -287,5 +296,35 @@ struct	storage_st	*storage;
 	xfree(url_str);
 	if (chain) xfree(chain);
 	stored:;
+    }
+}
+
+/* this thread will erase docs from disk immideately if
+   we found that document expired or changed
+ */
+ 
+void*
+eraser(void *arg)
+{
+eraser_data_t	*ed;
+
+    if ( arg ) return (void*)0;
+    dataq_init(&eraser_queue);
+    forever() {
+	dataq_dequeue(&eraser_queue, (void**)&ed);
+	if ( ed ) {
+	    if ( ed->url ) my_xlog(LOG_STOR, "eraser(): Eraser got %s\n", ed->url);
+	    RDLOCK_CONFIG;
+	    WRLOCK_DB;
+	    if ( ed->url && ed->disk_ref )
+		erase_from_disk(ed->url, ed->disk_ref);
+	    UNLOCK_DB;
+	    UNLOCK_CONFIG;
+	    IF_FREE(ed->url);
+	    IF_FREE(ed->disk_ref);
+	    xfree(ed);
+	} else {
+	    my_xlog(LOG_SEVERE, "eraser(): Null pointer\n");
+	}
     }
 }

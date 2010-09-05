@@ -6,9 +6,45 @@
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_REDIR ;
-char	module_name[] = "fastredir" ;
-char	module_info[] = "Fast Substring URL Redirector" ;
+#define	MODULE_NAME	"fastredir"
+#define	MODULE_INFO	"Fast Substring URL Redirector"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_REDIR ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		redir(int so, struct group *group, struct request *rq, int *flags);
+#else
+static	char	module_type   = MODULE_REDIR ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static	int	mod_load();
+static	int	mod_unload();
+static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	redir(int so, struct group *group, struct request *rq, int *flags);
+#endif
+
+struct	redir_module	fastredir = {
+        {
+        NULL, NULL,
+        MODULE_NAME,
+        mod_load,
+        mod_unload,
+        mod_config_beg,
+        mod_config_end,
+        mod_config,
+        NULL,
+        MODULE_REDIR,
+        MODULE_INFO,
+        mod_run
+        },
+        redir,
+        NULL,
+        NULL
+};
 
 struct	redir_rule {
 	char			*redirect;	/* if not null send HTTP redirect */
@@ -50,7 +86,7 @@ static	int	default_template_size;
 int
 mod_load()
 {
-    verb_printf("fast redirector started\n");
+    printf("fast redirector started\n");
     rwl_init(&redir_lock);
     redir_rules_file[0] = 0;
     redir_template[0] = 0;

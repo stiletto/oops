@@ -28,7 +28,7 @@ struct	redir_module		*redir_first = NULL;
 struct	listener_module		*listener_first = NULL;
 struct	headers_module		*headers_first = NULL;
 struct	pre_body_module		*pre_body_first = NULL;
-
+struct	db_api_module		*db_api_first = NULL;
 struct	output_module		*lang_mod = NULL;
 
 void	insert_module(struct general_module*, struct general_module**);
@@ -80,6 +80,12 @@ struct general_module	*res;
 	res = res->next;
     }
     res = (struct general_module*)pre_body_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return(res);
+	res = res->next;
+    }
+    res = (struct general_module*)db_api_first;
     while( res ) {
 	if ( !strcasecmp(res->name, name) )
 	    return(res);
@@ -251,6 +257,7 @@ struct	general_module	*mod = global_mod_chain;
     }
 }
 
+#if	defined(MODULES)
 int
 load_modules(void)
 {
@@ -269,6 +276,7 @@ struct	output_module	*output_module;
 struct	listener_module	*listener_module;
 struct	headers_module	*headers_module;
 struct	pre_body_module	*pre_body_module;
+struct	db_api_module	*db_api_module;
 
 char			*nptr;
 
@@ -277,7 +285,7 @@ char			*nptr;
     if ( !rc && TEST(statb.st_mode, S_IFDIR) )
 	goto load_mods;
     else
-	sprintf(modules_path, "%s/modules", OOPS_HOME);
+	sprintf(modules_path, "%s", OOPS_LIBDIR);
 
 load_mods:
     printf("Loading modules from %s\n", modules_path);
@@ -357,8 +365,6 @@ load_mods:
 		    MOD_INFO(err_module)[0] = 0;
 
 		err_module->err	   = (mod_load_t*)dlsym(modh, "err");
-		if ( MOD_LOAD(err_module) )
-			(*MOD_LOAD(err_module))();
 		err_module->general.type = MODULE_ERR;
 		insert_module((struct general_module*)err_module,
 			      (struct general_module**)&err_first);
@@ -388,8 +394,6 @@ load_mods:
 		    MOD_INFO(auth_module)[0] = 0;
 
 		auth_module->auth = (mod_load_t*)dlsym(modh, "auth");
-		if ( MOD_LOAD(auth_module) )
-			(*MOD_LOAD(auth_module))();
 		auth_module->general.type = MODULE_AUTH;
 		insert_module((struct general_module*)auth_module,
 			      (struct general_module**)&auth_first);
@@ -421,8 +425,6 @@ load_mods:
 		redir_module->redir = (mod_load_t*)dlsym(modh, "redir");
 		redir_module->redir_connect = (mod_load_t*)dlsym(modh, "redir_connect");
 		redir_module->redir_rewrite_header = (mod_load_t*)dlsym(modh, "redir_rewrite_header");
-		if ( MOD_LOAD(redir_module) )
-			(*MOD_LOAD(redir_module))();
 		redir_module->general.type = MODULE_REDIR;
 		insert_module((struct general_module*)redir_module,
 			      (struct general_module**)&redir_first);
@@ -450,8 +452,6 @@ load_mods:
 		output_module->output = (mod_load_t*)dlsym(modh, "output");
 		output_module->compare_u_agents = /* for lang only */
 		    (mod_load_t*)dlsym(modh, "compare_u_agents");
-		if ( MOD_LOAD(output_module) )
-			(*MOD_LOAD(output_module))();
 		if ( mod_info )
 		    strncpy(MOD_INFO(output_module), mod_info, MODINFOLEN-1);
 		  else
@@ -484,9 +484,7 @@ load_mods:
 		  else
 		    MOD_INFO(listener_module)[0] = 0;
 
-		listener_module->process_call = (mod_load_t*)dlsym(modh, "process_call");
-		if ( MOD_LOAD(listener_module) )
-			(*MOD_LOAD(listener_module))();
+		listener_module->process_call = (mod_void_ptr_t*)dlsym(modh, "process_call");
 		listener_module->general.type = MODULE_LISTENER;
 		insert_module((struct general_module*)listener_module,
 			      (struct general_module**)&listener_first);
@@ -515,8 +513,6 @@ load_mods:
 		  else
 		    MOD_INFO(headers_module)[0] = 0;
 		headers_module->match_headers = (mod_load_t*)dlsym(modh, "match_headers");
-		if ( MOD_LOAD(headers_module) )
-			(*MOD_LOAD(headers_module))();
 		headers_module->general.type = MODULE_HEADERS;
 		insert_module((struct general_module*)headers_module,
 			      (struct general_module**)&headers_first);
@@ -546,11 +542,52 @@ load_mods:
 		    MOD_INFO(pre_body_module)[0] = 0;
 
 		pre_body_module->pre_body = (mod_load_t*)dlsym(modh, "pre_body");
-		if ( MOD_LOAD(pre_body_module) )
-			(*MOD_LOAD(pre_body_module))();
 		pre_body_module->general.type = MODULE_PRE_BODY;
 		insert_module((struct general_module*)pre_body_module,
 			      (struct general_module**)&pre_body_first);
+		break;
+	      case MODULE_DB_API:
+		printf("(DB API)\n");
+		/* allocate module structure */
+		db_api_module = (struct db_api_module*)xmalloc(sizeof(*db_api_module), "load_modules(): for db_api_module");
+		if ( !db_api_module ) {
+		    dlclose(modh);
+		}
+		bzero(db_api_module, sizeof(*db_api_module));
+		MOD_HANDLE(db_api_module) = modh;
+		MOD_LOAD(db_api_module)   = (mod_load_t*)dlsym(modh, "mod_load");
+		MOD_UNLOAD(db_api_module) = (mod_load_t*)dlsym(modh, "mod_unload");
+		MOD_CONFIG(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config");
+		MOD_CONFIG_BEG(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
+		MOD_CONFIG_END(db_api_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		MOD_RUN(db_api_module) = (mod_load_t*)dlsym(modh, "mod_run");
+		*MOD_NAME(db_api_module) = 0;
+		nptr = (char*)dlsym(modh, "module_name");
+		if ( nptr )
+		    strncpy(MOD_NAME(db_api_module), nptr, MODNAMELEN-1);
+		if ( mod_info )
+		    strncpy(MOD_INFO(db_api_module), mod_info, MODINFOLEN-1);
+		  else
+		    MOD_INFO(db_api_module)[0] = 0;
+
+		db_api_module->general.type = MODULE_DB_API;
+		db_api_module->db_api_open = (mod_load_t*)dlsym(modh, "db_api_open");
+		db_api_module->db_api_close = (mod_load_t*)dlsym(modh, "db_api_close");
+		db_api_module->db_api_get = (mod_load_t*)dlsym(modh, "db_api_get");
+		db_api_module->db_api_del = (mod_load_t*)dlsym(modh, "db_api_del");
+		db_api_module->db_api_put = (mod_load_t*)dlsym(modh, "db_api_put");
+		db_api_module->db_api_cursor_open = (db_api_cursor_f_t*)dlsym(modh, "db_api_cursor_open");
+		db_api_module->db_api_cursor_get = (mod_load_t*)dlsym(modh, "db_api_cursor_get");
+		db_api_module->db_api_cursor_del = (mod_load_t*)dlsym(modh, "db_api_cursor_del");
+		db_api_module->db_api_cursor_close = (mod_load_t*)dlsym(modh, "db_api_cursor_close");
+		db_api_module->db_api_cursor_freeze = (mod_load_t*)dlsym(modh, "db_api_cursor_freeze");
+		db_api_module->db_api_cursor_unfreeze = (mod_load_t*)dlsym(modh, "db_api_cursor_unfreeze");
+		db_api_module->db_api_sync =(mod_load_t*)dlsym(modh, "db_api_sync");
+		db_api_module->db_api_attach =(mod_load_t*)dlsym(modh, "db_api_attach");
+		db_api_module->db_api_detach =(mod_load_t*)dlsym(modh, "db_api_detach");
+		db_api_module->db_api_precommit =(mod_load_t*)dlsym(modh, "db_api_precommit");
+		insert_module((struct general_module*)db_api_module,
+			      (struct general_module**)&db_api_first);
 		break;
 	      default:
 		printf(" (Unknown module type. Unload it)\n");
@@ -565,13 +602,41 @@ load_mods:
     lang_mod = (struct output_module*)module_by_name("lang");
     return(0);
 }
+#else
+int
+load_modules(void)
+{
+    insert_module(&log_dummy.general, (struct general_module **)&log_first);
+    insert_module(&custom_log.general, (struct general_module **)&log_first);
 
+    insert_module(&oopsctl_mod.general, (struct general_module **)&listener_first);
+
+    insert_module(&accel.general, (struct general_module **)&redir_first);
+    insert_module(&fastredir.general, (struct general_module **)&redir_first);
+    insert_module(&redir_mod.general, (struct general_module **)&redir_first);
+    insert_module(&transparent.general, (struct general_module **)&redir_first);
+
+    insert_module(&lang.general, (struct general_module **)&output_first);
+
+    insert_module(&err_mod.general, (struct general_module **)&err_first);
+
+    insert_module(&passwd_file.general, (struct general_module **)&auth_first);
+
+    insert_module(&vary_header.general, (struct general_module **)&headers_first);
+
+    insert_module(&berkeley_db_api.general, (struct general_module **)&db_api_first);
+    insert_module(&gigabase_db_api.general, (struct general_module **)&db_api_first);
+}
+
+#endif
 void
 insert_module(struct general_module *mod, struct general_module **list) {
 struct	general_module *first = *list;
 
     if (!mod || !list )
 	return;
+    printf("Insert module '%s'\n", mod->name);
+    if ( mod->load ) (mod->load)(); 
     if (!first) {
 	*list = mod;
 	goto gi;
@@ -652,6 +717,18 @@ struct		sockaddr_in	sin_addr;
 	    pptr->so = so;
 	    pptr++;
 	} else
+#if	defined(FREEBSD)
+	/*
+	 * sockets in freebsd have 'owner' (at least in 4.0)
+	 * and any furrher binds will fail regardless of SO_REUSEADDR 
+	 * if we will bind from different user (of course if there is
+	 * socket in WAIT_TIME and such in system pcb list)
+	 * we can ignore this for reserved ports as we use different
+	 * method for binding reserved ports.
+	 */
+	if ( oops_user && (port >= IPPORT_RESERVED) )
+	    set_euser(oops_user);
+#endif
 	if ( port && (so = socket(AF_INET, SOCK_STREAM, 0)) >= 0 ) {
 	    setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
 	    sin_addr.sin_family = AF_INET;
@@ -669,10 +746,15 @@ struct		sockaddr_in	sin_addr;
 		listen(so, 128);
 		pptr++;
 	    } else {
-		verb_printf("parse_myports: bind: %m\n");
+		verb_printf("parse_myports(): bind: %s\n", strerror(errno));
+		my_xlog(LOG_SEVERE, "parse_myports(): bind: %m\n");
 	    }
 	    printf("port = %d\n", port);
 	}
+#if	defined(FREEBSD)
+	if ( oops_user && (port >= IPPORT_RESERVED) )
+	    set_euser(NULL);
+#endif
     }
     return(nres);
 }
@@ -706,6 +788,214 @@ struct	log_module	*mod = log_first;
     while( mod ) {
 	if ( mod->mod_reopen ) (mod->mod_reopen)();
 	mod = (struct log_module*)((struct general_module*)mod)->next;
+    }
+    return(0);
+}
+int
+db_mod_open(void)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_open ) (mod->db_api_open)(&aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully initialized */
+	    return(TRUE);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(FALSE);
+}
+
+int
+db_mod_close(void)
+{
+struct	db_api_module	*mod = db_api_first;
+
+    while ( mod ) {
+	if ( mod->db_api_close ) (mod->db_api_close)();
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(0);
+}
+
+int
+db_mod_get(db_api_arg_t *arg, db_api_arg_t *res)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    if ( !arg || !res ) return(DB_API_RES_CODE_ERR);
+    res->flags = DB_API_RES_CODE_ERR;
+    while ( mod ) {
+	if ( mod->db_api_get ) (mod->db_api_get)(arg, res, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully get'ed */
+	    break;
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(res->flags);
+}
+
+int
+db_mod_put(db_api_arg_t *key, db_api_arg_t *data, struct mem_obj *obj)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    if ( !key || !data ) return(DB_API_RES_CODE_ERR);
+    data->flags = DB_API_RES_CODE_ERR;
+    while ( mod ) {
+	if ( mod->db_api_put ) (mod->db_api_put)(key, data, obj, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully put'ed */
+	    break;
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(data->flags);
+}
+
+int
+db_mod_del(db_api_arg_t *key)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    if ( !key ) return(DB_API_RES_CODE_ERR);
+    while ( mod ) {
+	if ( mod->db_api_del ) (mod->db_api_del)(key, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(key->flags);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(DB_API_RES_CODE_NOTFOUND);
+}
+
+void*
+db_mod_cursor_open(int type)
+{
+struct	db_api_module	*mod = db_api_first;
+void			*res;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_cursor_open ) res = (mod->db_api_cursor_open)(type, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(res);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(NULL);
+}
+
+int
+db_mod_cursor_close(void* cursor)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_cursor_close ) (mod->db_api_cursor_close)(cursor, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(0);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(DB_API_RES_CODE_ERR);
+}
+
+int
+db_mod_cursor_get(void* cursor, db_api_arg_t* key, db_api_arg_t* res)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_cursor_get ) (mod->db_api_cursor_get)(cursor, key, res, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(res->flags);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(DB_API_RES_CODE_ERR);
+}
+
+
+int
+db_mod_cursor_del(void* cursor)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_cursor_del ) (mod->db_api_cursor_del)(cursor, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(0);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(DB_API_RES_CODE_ERR);
+}
+
+int
+db_mod_cursor_freeze(void* cursor)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_cursor_freeze ) (mod->db_api_cursor_freeze)(cursor, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(0);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(DB_API_RES_CODE_ERR);
+}
+
+int
+db_mod_cursor_unfreeze(void* cursor)
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_cursor_unfreeze ) (mod->db_api_cursor_unfreeze)(cursor, &aflag);
+	if ( aflag == MOD_AFLAG_BRK )	/* some DB successfully del'ed */
+	    return(0);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(DB_API_RES_CODE_ERR);
+}
+
+
+int
+db_mod_sync()
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_sync ) (mod->db_api_sync)(&aflag);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(0);
+}
+
+int
+db_mod_attach()
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_attach ) (mod->db_api_attach)(&aflag);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
+    }
+    return(0);
+}
+
+int
+db_mod_detach()
+{
+struct	db_api_module	*mod = db_api_first;
+int			aflag = 0;
+
+    while ( mod ) {
+	if ( mod->db_api_detach ) (mod->db_api_detach)(&aflag);
+	mod = (struct db_api_module*)((struct general_module*)mod)->next;
     }
     return(0);
 }

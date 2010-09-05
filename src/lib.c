@@ -147,9 +147,9 @@ ERRBUF ;
 #else
 		/* we can do nothing, just fprintf to file	*/
 		pthread_mutex_lock(&logbuff.lock);
-		if ( logbuff.FILE ) {
-		    fprintf(logbuff.FILE, "%s [%p]", ctbuf, self);
-		    vfprintf(logbuff.FILE, fbuf, ap);
+		if ( logbuff.File ) {
+		    fprintf(logbuff.File, "%s [%p]", ctbuf, self);
+		    vfprintf(logbuff.File, fbuf, ap);
 		}
 		pthread_mutex_unlock(&logbuff.lock);
 #endif
@@ -185,9 +185,7 @@ char			*proto, *host, *path, *user;
 
     if ( !rq ) return;
 
-#if	defined(MODULES)
     check_log_mods(elapsed, rq, obj);
-#endif
 
     meth	= rq->method;
     tag		= rq->tag;
@@ -586,6 +584,7 @@ resend:
     if ( resend_tmo > 30 ) resend_tmo = 30;
     switch(r) {
     case(-2): /* timeout */
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Timeout reading DNS answer: %m\n");
 	if (--resend_cnt) goto resend;
 	break;
     case(-1): /* error 		*/
@@ -595,13 +594,17 @@ resend:
 	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Emty DNS answer\n");
 	break;
     default:  /* parse data 	*/
+	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): got %d bytes answer\n", r);
 	ah = (struct dnsqh *)dnsa;
 	flags = ntohs(ah->flags);
 	acount = ntohs(ah->ancount);
 	acount = MIN(acount, MAX_DNS_ANSWERS);
 	limit = (u_char*)&dnsa + r;
 	if ( (flags & 0x8000) && (ah->id == qh->id) && (!(flags&0xf)) ) {
-	    if ( !ntohs(ah->ancount) ) break;
+	    if ( !ntohs(ah->ancount) ) {
+		my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): got 0 answers.\n");
+		break;
+	    }
 	} else {
 	    my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
 	    				ah->id, flags);
@@ -1454,9 +1457,22 @@ my_sleep(int sec)
     /* DU don't want to sleep in poll when number of descriptors is 0 */
     sleep(sec);
 #elif	defined(_WIN32)
-    Sleep(sec*1000);
+    XXX Sleep(sec*1000);
 #else
     (void)poll_descriptors(0, NULL, sec*1000);
+#endif
+}
+
+void
+my_msleep(int msec)
+{
+#if	defined(OSF)
+    /* DU don't want to sleep in poll when number of descriptors is 0 */
+    usleep(msec*1000);
+#elif	defined(_WIN32)
+    XXX Sleep(msec*1000);
+#else
+    (void)poll_descriptors(0, NULL, msec);
 #endif
 }
 
@@ -1925,6 +1941,7 @@ char		*new_attr = NULL, *new_val = NULL;
 char		nullstr[1];
 
     if ( *sp == 0 ) return(-1);
+    while( *sp && IS_SPACE(*sp) ) sp++;
     while( *sp && !IS_SPACE(*sp) && (*sp != ':') ) sp++;
     if ( !*sp ) {
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "add_header_av(): Invalid header string: '%s'\n", avtext);
@@ -2024,7 +2041,7 @@ go:
 	off = 4;
     }
     if ( its_here ) {
-	struct buff	*new = NULL, *body;
+	struct buff	*body;
 	int		all_siz;
 
 	obj->insertion_point = start-beg;
@@ -2084,7 +2101,6 @@ go:
 	    }
 	}
 	*t = 0;
-#if	defined(MODULES)
 	saved_tmp = tmp = strdup(p);
 	if ( !tmp )
 	    return(-1);
@@ -2099,12 +2115,6 @@ go:
 	    if ( obj ) SET(obj->flags, ANSW_HDR_CHANGED);
 	}
 	free(tmp);
-#else
-	analyze_header(p, a);
-	if ( add_header_av(p, obj) ) {
-	    return(-1);
-	}
-#endif /* MODULES */
 	*t = holder;
 	if ( p1 ) { *p1 = '\r'; t=p1; p1 = NULL;}
 	a->checked = t - beg;
@@ -2726,15 +2736,12 @@ struct	av	*av;
 struct	timeval	tv;
 struct	buff	*send_hot_buff;
 struct	pollarg	pollarg;
-
-#if	defined(MODULES)
 int	mod_flags = 0;
 
     if ( !obj || !rq ) return;
     rc = check_output_mods(so, obj, rq, &mod_flags);
     if ( (rc != MOD_CODE_OK) || TEST(mod_flags, MOD_AFLAG_OUT) )
 	return ;
-#endif /* MODULES */
 
     if ( !obj || !rq ) return;
     /* first send headers */
@@ -3106,7 +3113,7 @@ init_filebuff(filebuff_t *fb)
     fb->fd == -1;
     fb->buff = NULL;
 #if	!defined(HAVE_SNPRINTF)
-    fb->FILE = NULL;
+    fb->File = NULL;
 #endif
     pthread_mutex_init(&fb->lock, NULL);
     dataq_init(&fb->queue);
@@ -3134,11 +3141,11 @@ reopen_filebuff(filebuff_t *fb, char *filename, int flag)
 	}
     }
 #else
-    fb->FILE = fopen(filename,"a");
+    fb->File = fopen(filename,"a");
     fb->fd = -1;
-    if ( fb->FILE ) {
-	fb->fd = fileno(fb->FILE);
-	setbuf(fb->FILE, NULL);
+    if ( fb->File ) {
+	fb->fd = fileno(fb->File);
+	setbuf(fb->File, NULL);
     }
     flag = 0;
 #endif

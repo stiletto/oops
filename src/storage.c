@@ -37,7 +37,7 @@ set_bits(char *map, int from, int num)
 {
 int		cur_bit = from;
 int		cur_word ;
-int		bit_off, leave_to_fill = num, fill_here;
+uint32_t	bit_off, leave_to_fill = num, fill_here;
 uint32_t	mask, mask2, *pvalue;
 
     if ( !num ) return;
@@ -71,7 +71,7 @@ clr_bits(char *map, int from, int num)
 {
 int		cur_bit = from;
 int		cur_word ;
-int		bit_off, leave_to_fill = num, fill_here;
+uint32_t	bit_off, leave_to_fill = num, fill_here;
 uint32_t	mask, mask2, *pvalue;
 
     if ( !num ) return;
@@ -105,7 +105,7 @@ test_map_bit(char *map, int from)
 {
 int		cur_bit = from;
 int		cur_word ;
-int		bit_off;
+uint32_t	bit_off;
 uint32_t	mask, *pvalue;
 
     cur_word = cur_bit/32;
@@ -120,7 +120,7 @@ find_free_bit(char *map, int from, int to)
 {
 int		cur_bit = from;
 int		cur_word, i ;
-int		bit_off, leave_to_find, find_here;
+uint32_t	bit_off, leave_to_find, find_here;
 uint32_t	mask, mask2, pvalue;
 
     leave_to_find = to-from;
@@ -161,7 +161,7 @@ calc_free_bits(char *map, int from, int to)
 {
 int		cur_bit = from;
 int		cur_word, i ;
-int		bit_off, leave_to_find, find_here;
+uint32_t	bit_off, leave_to_find, find_here;
 uint32_t	mask, mask2, pvalue;
 int		free_bits = 0;
 
@@ -322,7 +322,7 @@ char		*allocated = NULL;
     while ( n ) {
 	current = find_free_bit(storage->map, current+1, storage->super.blks_total) ;
 	if ( !current ) {
-	    my_xlog(LOG_SEVERE, "request_free_blks(): Severe error on block %u", n);
+	    my_xlog(LOG_SEVERE, "request_free_blks(): Severe error on block %u\n", n);
 	    goto error;
 	}
 	n--;
@@ -563,13 +563,14 @@ locate_url_on_disk(struct url *url, struct disk_ref **disk_ref)
 {
 char			*url_str;
 int			urll, rc;
-DBT			key, data;
+db_api_arg_t		key, data;
 struct storage_st	*storage;
 char			http_p;
 
     *disk_ref = NULL;
-    if ( !dbp )
+    if ( (db_in_use == FALSE) || !storages_ready )
 	return(-1);
+
     urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
     urll+= 3 + 1; /* :// + \0 */
     url_str = xmalloc(ROUND(urll, CHUNK_SIZE), "locate_url_on_disk(): url_str");
@@ -584,14 +585,10 @@ char			http_p;
     bzero(&data, sizeof(data));
     key.data = url_str;
     key.size = strlen(url_str);
-    data.flags = DB_DBT_MALLOC;
-    rc = dbp->get(dbp, NULL, &key, &data, 0);
+    db_mod_attach();
+    rc = db_mod_get(&key, &data);
+    db_mod_detach();
     switch ( rc ) {
-	case EAGAIN:
-		my_xlog(LOG_SEVERE, "locate_url_on_disk(): Deadlock in db->get(%s).\n",
-			key.data);
-		xfree(url_str);
-		return(-1);
 	case 0:
 		xfree(url_str);
 		*disk_ref = data.data;
@@ -601,7 +598,7 @@ char			http_p;
 		    return(-1);
 		}
 		return(0);
-	case DB_NOTFOUND:
+	case DB_API_RES_CODE_NOTFOUND:
 		my_xlog(LOG_DBG, "locate_url_on_disk(): %s not found.\n", key.data);
 		xfree(url_str);
 		return(-1);
@@ -709,10 +706,10 @@ int
 erase_from_disk(char *url_str, struct disk_ref *disk_ref)
 {
 int			rc;
-DBT			key;
-struct storage_st	*storage;
+db_api_arg_t		key, data;
+struct	storage_st	*storage;
 
-    if ( !dbp || !url_str)
+    if ( !db_in_use || !url_str || !disk_ref)
 	return(-1);
 
     storage = locate_storage_by_id(disk_ref->id);
@@ -722,15 +719,40 @@ struct storage_st	*storage;
 	    url_str, storage->path);
     /* remove it from db */
     bzero(&key,  sizeof(key));
+    bzero(&data,  sizeof(data));
     key.data = url_str;
     key.size = strlen(url_str);
-    rc = 0;
-    rc = dbp->del(dbp, NULL, &key, 0);
+    db_mod_attach();
+    rc = db_mod_get(&key, &data);
+    switch ( rc ) {
+	case 0:
+	    /* now look if we are going to remove THIS disk reference	*/
+	    if ( memcmp(disk_ref, data.data, data.size) ) {
+		my_xlog(LOG_SEVERE, "erase_from_disk(): Warning: disk_ref not matched for '%s'\n", url_str);
+		/* not matched */
+		xfree(data.data);
+		db_mod_detach();
+		return(-1);
+	    }
+	    xfree(data.data);
+	    my_xlog(LOG_STOR, "erase_from_disk(): disk_ref matched for '%s'\n", url_str);
+	    break;
+	case DB_API_RES_CODE_NOTFOUND:
+	    db_mod_detach();
+	    my_xlog(LOG_SEVERE, "erase_from_disk(): Warning: Record: '%s' not found in get().\n", url_str);
+	    return(-1);
+	default:
+	    db_mod_detach();
+	    my_xlog(LOG_SEVERE, "erase_from_disk(): Warning: Error on '%s'\n", url_str);
+	    return(-1);
+    }
+    rc = db_mod_del(&key);
+    db_mod_detach();
     switch ( rc ) {
 	case 0:
 		/*dbp->sync(dbp, 0);*/
 		break;
-	case DB_NOTFOUND:
+	case DB_API_RES_CODE_NOTFOUND:
 		my_xlog(LOG_SEVERE, "erase_from_disk(): Record `%s' not found.\n",
 			url_str);
 		return(-1);
@@ -755,16 +777,20 @@ int			rc, map_words, obj_n = 0;
 fd_t			fd;
 uint32_t		*start_blk, *n, blks, oblks, blk_num, i, in_map_free;
 struct	disk_ref	*disk_ref;
-DBT			key, data;
-DBC			*dbcp;
+db_api_arg_t		key, data;
+void			*dbcp = NULL;
+int			entries = 0;
 struct memb {
 	uint32_t        next;
 	uint32_t        flags; 
 	uint32_t        refs;  
 };                             
 struct  memb    *map = NULL;
+#if	defined(HAVE_GIGABASE) && defined(SOLARIS)
+int			gets_counter = 0;
+#endif
 
-    if ( !dbp )
+    if ( db_in_use == FALSE )
 	return;
     if ( !storage ) {
 	return;
@@ -830,15 +856,11 @@ struct  memb    *map = NULL;
 	my_xlog(LOG_SEVERE, "check_storage(): Can't allocate memory for map.\n");
 	goto abor;
     }
-    rc = dbp->cursor(dbp, NULL, &dbcp
-#if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)
-				     , 0
-#endif
-    					);
-    if ( rc ) {
+    dbcp = db_mod_cursor_open(DB_API_CURSOR_CHECKDISK);
+    if ( !dbcp ) {
 	my_xlog(LOG_SEVERE, "check_storage(): Can't create cursor for checking.\n");
-	dbp->close(dbp, 0);
-	dbp = NULL;
+	db_mod_close();
+	db_in_use = FALSE;
 	goto abor;
     }
 
@@ -847,20 +869,32 @@ do_scan:
 	goto abor;
     bzero(&key,  sizeof(key));
     bzero(&data, sizeof(data));
-    key.flags = data.flags = DB_DBT_MALLOC;
-    rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT);
+    rc = db_mod_cursor_get(dbcp, &key, &data);
+#if	defined(HAVE_GIGABASE) && defined(SOLARIS)
+    /*
+	Under Solaris GigaBASE give no timeslices to other threads...
+    */
+    if ( (gets_counter % 512) == 0 ) {
+	my_msleep(50);
+	gets_counter = 0;
+    }
+    gets_counter++;
+#endif
     switch ( rc ) {
 	case 0:
+		entries++;
 		disk_ref = data.data;
 		break;
-	case DB_NOTFOUND:
+	case DB_API_RES_CODE_NOTFOUND:
 		my_xlog(LOG_SEVERE, "check_storage(): Done with it.\n");
-		dbcp->c_close(dbcp);
+		db_mod_cursor_close(dbcp);
 		goto fix_unrefs;
 	default:
 		my_xlog(LOG_SEVERE, "check_storage(): Can't find url: %d\n", rc);
-		dbp->close(dbp, 0);
-		dbp = NULL;
+		db_mod_cursor_close(dbcp);
+		dbcp = NULL;
+		db_mod_close();
+		db_in_use = FALSE;
 		goto abor;
     }
     if ( disk_ref->id != tstorage.super.id ) {
@@ -890,8 +924,7 @@ s:
 	xfree(data.data);
 	xfree(key.data);
 	/* remove from base */
-	dbcp->c_del(dbcp, 0);
-	dbp->sync(dbp, 0);
+	db_mod_cursor_del(dbcp);
 	flush_super(&tstorage);
 	flush_map(&tstorage);
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Resolved.\n");
@@ -906,8 +939,7 @@ s:
 	    start_blk++;
 	};
 	release_blks(disk_ref->blk, &tstorage, disk_ref);
-	dbcp->c_del(dbcp, 0);
-	dbp->sync(dbp, 0);
+	db_mod_cursor_del(dbcp);
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_storage(): Resolved.\n");
 	goto do_scan;
     }
@@ -921,7 +953,7 @@ s:
     s = malloc(key.size+1);
     if ( !s ) {
 	my_xlog(LOG_SEVERE, "check_storage(): No memory.\n");
-	dbp->close(dbp, 0);
+	db_mod_close();
 	do_exit(1);
     }
     strncpy(s, key.data, key.size);
@@ -965,6 +997,7 @@ fix_unrefs:
     SET(storage->flags, ST_CHECKED);
 
 abor:
+    my_xlog(LOG_STOR, "Total %d entries\n", entries);
     close_storage(fd);
     if ( map ) free(map);
     if ( bitmap ) free(bitmap);
@@ -991,6 +1024,7 @@ prep_storages(void *arg)
 {
     arg=arg;
     RDLOCK_CONFIG;
+    storages_ready = FALSE;
     if (!skip_check) {
 	check_storages(storages);
     } else {
@@ -1002,6 +1036,7 @@ prep_storages(void *arg)
 	}
     }
     init_storages(storages);
+    storages_ready = TRUE;
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "prep_storages(): Storages checked.\n");
     UNLOCK_CONFIG;
     return(0);

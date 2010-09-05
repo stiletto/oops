@@ -24,3 +24,15 @@ Known problems:
 2) FreeBSD - don't use old libdb which is supplied with new FreeBSD (3.x) -
    use DB from Sleepycat.
    This programm can hang under old versions of FreeBSD (prior to 3.3)
+
+
+To build FreeBSD port use next configure options:
+
+./configure --sbindir=/usr/local/sbin --sysconfdir=/usr/local/etc/oops 
+	    --localstatedir=/var/run --libdir=/usr/local/libexec/oops
+
+Then: executables oops and oopsctl will be in /usr/local/sbin,
+oops.cfg, tables, templates, rules will be in /usr/local/etc/oops,
+oops.pid in /var/run,
+modules in /usr/local/etc/oops,
+in /usr/local/oops you will have directories logs/, storages/, DB/

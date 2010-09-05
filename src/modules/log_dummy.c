@@ -20,9 +20,40 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "../oops.h"
 #include "../modules.h"
 
-char	module_type = MODULE_LOG;
-char	module_info[] ="Dummy logging module";
-char	module_name[] ="DummyLog";
+#define	MODULE_INFO	"Dummy logging module"
+#define	MODULE_NAME	"DummyLog"
+
+#if	defined(MODULES)
+char		module_type	= MODULE_LOG;
+char		module_info[]	= MODULE_INFO;
+char		module_name[]	= MODULE_NAME;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+#else
+static	char	module_type	= MODULE_LOG;
+static	char	module_info[]	= MODULE_INFO;
+static	char	module_name[]	= MODULE_NAME;
+static	int	mod_load();
+static	int	mod_unload();
+static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+#endif
+
+struct	log_module log_dummy = {
+	{
+	NULL,NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_LOG,
+	MODULE_INFO,
+	mod_run
+	}
+};
 
 int
 mod_load()
@@ -35,5 +66,25 @@ int
 mod_unload()
 {
     printf("Dummy logging stopped\n");
+    return(MOD_CODE_OK);
+}
+int
+mod_config_beg()
+{
+    return(MOD_CODE_OK);
+}
+int
+mod_config_end()
+{
+    return(MOD_CODE_OK);
+}
+int
+mod_config()
+{
+    return(MOD_CODE_OK);
+}
+int
+mod_run()
+{
     return(MOD_CODE_OK);
 }

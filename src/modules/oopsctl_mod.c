@@ -20,9 +20,43 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_LISTENER ;
-char	module_name[] = "oopsctl" ;
-char	module_info[] = "Oops controlling module" ;
+#define	MODULE_NAME	"oopsctl"
+#define	MODULE_INFO	"Oops controlling module"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_LISTENER ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+void*		process_call(void *arg);
+#else
+static	char	module_type   = MODULE_LISTENER ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static  int     mod_load();
+static  int     mod_unload();
+static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	void*	process_call(void *arg);
+#endif
+
+struct	listener_module	oopsctl_mod = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_LISTENER,
+	MODULE_INFO,
+	mod_run
+	},
+	process_call
+};
 
 static	rwl_t		oopsctl_config_lock;
 
@@ -133,6 +167,7 @@ char	**p, *help_message[] = {"reconfigure - re-read config file (like kill -HUP)
 			   "shutdown    - gracefuly shutdown (like kill -TERM).\n",
 			   "stat        - display statistics.\n",
 			   "htmlstat    - display statistics in html.\n",
+			   "verbosity=LVL - set new verbosity level (LVL as in -x option).\n",
 			   NULL};
 
     p = help_message;
@@ -181,7 +216,7 @@ char			ctime_buf[30] = "";
     max_hit_rate = oops_stat.hits0_max/6e1;
     drop_rate    = oops_stat.drops0/6e1;
     write(so, "## --  General info   --\n", 25);
-    sprintf(buf, "Version      : %s, DB version: %s\n", version, db_ver);
+    sprintf(buf, "Version      : %s\n", version);
     write(so, buf, strlen(buf));
     sprintf(buf, "Uptime       : %dsec, (%dday(s), %dhour(s), %dmin(s))\n",
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
@@ -303,7 +338,7 @@ char			ctime_buf[30] = "";
 	    type = "Error reporting";
 	    break;
 	case(MODULE_AUTH):
-	    type = "Auhtentication";
+	    type = "Authentication";
 	    break;
 	case(MODULE_REDIR):
 	    type = "URL redirector";
@@ -319,6 +354,9 @@ char			ctime_buf[30] = "";
 	    break;
 	case(MODULE_PRE_BODY):
 	    type = "Document body begins";
+	    break;
+	case(MODULE_DB_API):
+	    type = "DB Interface";
 	    break;
 	default:
 	    type = "Unknown";
@@ -427,7 +465,7 @@ char			ctime_buf[30];
     }
     sprintf(buf, "<body bgcolor=white><table><tr bgcolor=blue><td><font color=yellow>General Info<td>&nbsp</font>\n");
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td valign=top>Version<td>%s, db version: %s\n", version, db_ver);
+    sprintf(buf, "<tr><td valign=top>Version<td>%s\n", version);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Uptime<td>%dsec, (%dday(s), %dhour(s), %dmin(s))\n",
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
@@ -629,6 +667,102 @@ char			ctime_buf[30];
 }
 
 int
+set_verbosity(int so, char *command)
+{
+int	new_verbosity_level = verbosity_level;
+char	vbuf[80], *v = vbuf;
+
+    command += 10;
+    while ( *command ) {
+	switch( *command ) {
+		case 'a':
+			new_verbosity_level = -1;
+			break;
+		case 'A':
+			new_verbosity_level = LOG_SEVERE | LOG_PRINT;
+			break;
+		case 'c':
+			new_verbosity_level |= LOG_NOTICE;
+			break;
+		case 'C':
+			new_verbosity_level &= ~ LOG_NOTICE;
+			break;
+		case 'd':
+			new_verbosity_level |= LOG_DBG;
+			break;
+		case 'D':
+			new_verbosity_level &= ~ LOG_DBG;
+			break;
+
+		case 'f':
+			new_verbosity_level |= LOG_FTP;
+			break;
+		case 'F':
+			new_verbosity_level &= ~ LOG_FTP;
+			break;
+
+			case 'h':
+			new_verbosity_level |= LOG_HTTP;
+			break;
+		case 'H':
+			new_verbosity_level &= ~ LOG_HTTP;
+			break;
+
+		case 'i':
+			new_verbosity_level |= LOG_INFORM;
+			break;
+		case 'I':
+			new_verbosity_level &= ~ LOG_INFORM;
+			break;
+
+		case 'n':
+			new_verbosity_level |= LOG_DNS;
+			break;
+		case 'N':
+			new_verbosity_level &= ~ LOG_DNS;
+			break;
+
+		case 's':
+			new_verbosity_level |= LOG_STOR;
+			break;
+		case 'S':
+			new_verbosity_level &= ~ LOG_STOR;
+			break;
+	}
+	command++;
+    }
+    verbosity_level = new_verbosity_level;
+    write(so, "OK, now verbosity is: ", 22);
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_NOTICE ) {*v = 'c'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_DBG ) {*v = 'd'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_FTP ) {*v = 'f'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_HTTP ) {*v = 'h'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_INFORM ) {*v = 'i'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_DNS ) {*v = 'n'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_STOR ) {*v = 's'; v++ ; *v = 0;}
+    }
+    if ( v - vbuf < sizeof vbuf ) {
+	if ( verbosity_level & LOG_SEVERE ) {*v = 'E'; v++ ; *v = 0;}
+    }
+    write(so, vbuf, strlen(vbuf));
+    write(so, "\n", 1);
+    return(0);
+}
+
+int
 process_command(int so, char *command)
 {
     if ( !strcasecmp(command, "reconfigure") ) {
@@ -648,6 +782,9 @@ process_command(int so, char *command)
     }
     if ( !strcasecmp(command, "htmlstat") ) {
 	print_htmlstat(so);
+    }
+    if ( !strncasecmp(command, "verbosity=", 10) ) {
+	set_verbosity(so, command);
     }
     if ( !strcasecmp(command, "quit") ) {
 	return(0);

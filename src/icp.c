@@ -104,6 +104,7 @@ struct	peer	*peer;
     icp_msg_len		= htons((unsigned short)len);
     icp_rq_n		= qe->rq_n;
     icp_opt		= 0;
+    RDLOCK_CONFIG ;
     peer = peers;
     while ( peer ) {
 	if ( rq->request_time - peer->addr_age >= ADDR_AGE ) {
@@ -130,8 +131,12 @@ struct	peer	*peer;
 	    }
 	    pthread_mutex_unlock(&icp_resolver_lock);
 	}
+	if ( peer->peer_access && !use_peer(rq, peer) ) {
+	    peer = peer->next;
+	    continue;
+	}
 	/* skip if we don't want to use this peers for this domain */
-	if ( !is_domain_allowed(rq->url.host, peer->acls) ) {
+	if ( peer->acls && !is_domain_allowed(rq->url.host, peer->acls) ) {
 	    peer = peer->next;
 	    continue;
 	}
@@ -148,6 +153,7 @@ struct	peer	*peer;
 	peer->rq_sent++;
 	peer = peer->next;
     }
+    UNLOCK_CONFIG ;
     xfree(buf);
     if ( !succ ) {
    	return(-1);

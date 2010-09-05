@@ -23,12 +23,11 @@ extern time_t		start_time;
 extern struct		mem_obj	*youngest_obj, *oldest_obj;
 extern rwl_t		config_lock;
 extern rwl_t		db_lock;
-extern char    	logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
-extern char    	accesslog[MAXPATHLEN];
-extern char    	statisticslog[MAXPATHLEN];
-extern char		dbhome[MAXPATHLEN];
-extern DB		*dbp;
-extern char		dbname[MAXPATHLEN];
+extern char		logfile[MAXPATHLEN], pidfile[MAXPATHLEN],
+			base[MAXPATHLEN];
+extern char		accesslog[MAXPATHLEN];
+extern char    		statisticslog[MAXPATHLEN];
+extern int		db_in_use;
 extern int		reserved_fd[RESERVED_FD];
 extern int		accesslog_num, accesslog_size;
 extern int		log_num, log_size;
@@ -36,14 +35,14 @@ extern unsigned int	maxresident;
 extern int		icp_so;
 extern int		server_so;
 extern int		peer_down_interval;
-extern char    	icons_path[MAXPATHLEN];
-extern char    	icons_port[64];
-extern char    	icons_host[MAXPATHLEN];
-extern char    	mem_max[MAXPATHLEN];
-extern char    	lo_mark[MAXPATHLEN];
-extern char    	hi_mark[MAXPATHLEN];
-extern u_short 	internal_http_port;
-extern char    	connect_from[64];
+extern char		icons_path[MAXPATHLEN];
+extern char		icons_port[64];
+extern char		icons_host[MAXPATHLEN];
+extern char		mem_max[MAXPATHLEN];
+extern char		lo_mark[MAXPATHLEN];
+extern char		hi_mark[MAXPATHLEN];
+extern u_short		internal_http_port;
+extern char		connect_from[64];
 extern char		parent_host[64];
 extern int		parent_port;
 extern char		*parent_auth;
@@ -89,10 +88,6 @@ extern pthread_mutex_t	dns_cache_lock;
 extern pthread_mutex_t	st_check_in_progr_lock;
 extern pthread_mutex_t	mktime_lock;
 
-extern DB_ENV			*dbenv;
-#if	DB_VERSION_MAJOR<3
-extern DB_INFO			dbinfo;
-#endif
 extern int			use_workers;
 extern int			current_workers;
 extern int			max_workers;
@@ -100,7 +95,6 @@ extern int			total_alloc;
 extern int			clients_number;
 extern int			total_objects;
 extern char			*version;
-extern char			*db_ver;
 extern pid_t			my_pid;
 extern int			st_check_in_progr;
 extern struct	oops_stat	oops_stat;
@@ -110,7 +104,6 @@ extern struct	cidr_net	**sorted_networks_ptr;
 extern struct	listen_so_list	*listen_so_list;
 extern int			sorted_networks_cnt;
 extern int		mem_max_val, lo_mark_val, hi_mark_val;
-extern size_t		db_cache_mem_val;
 extern u_short		internal_http_port;
 extern struct	obj_hash_entry	hash_table[HASH_SIZE];
 extern struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
@@ -134,11 +127,8 @@ extern unsigned int	refuse_at;
 extern filebuff_t	logbuff;
 extern filebuff_t	accesslogbuff;
 extern int		dont_cache_without_last_modified;
+extern int		storages_ready;
 #endif		/* !defined(OOPS_MAIN) */
-
-#if	!defined(NO_NEED_XMALLOC)
-extern	void		*xmalloc(size_t, char*);
-#endif /* NO_NEED_XMALLOC */
 
 extern	struct	cidr_net **sort_n(struct cidr_net*, int*);
 extern	int		readt(int, char*, int, int);
@@ -156,13 +146,13 @@ extern	void		rotate_logbuff(void);
 extern	void		rotate_accesslogbuff(void);
 extern	void		*clean_disk(void*);
 extern	void		*statistics(void*);
+extern	void		*eraser(void*);
 extern	void		*deadlock(void*);
 extern	void		say_bad_request(int, char*, char*, int, struct request *);
 extern	int		parse_url(char*, char*, struct url *, int);
 extern	int		sendstr(int, char*);
 extern	int		wait_for_read(int, int);
 extern	void		xfree(void *);
-extern	void 		my_xlog(int lvl, char *form, ...);
 extern	void		verb_printf(char *form, ...);
 extern	int		in_stop_cache(struct request *);
 extern	void		log_access(int elapsed, struct request *rq, struct mem_obj *obj);
@@ -202,11 +192,23 @@ extern	void		increase_hash_size(struct obj_hash_entry*, int);
 extern	void		decrease_hash_size(struct obj_hash_entry*, int);
 extern	struct	group*	rq_to_group(struct request*);
 extern	int		deny_http_access(int, struct request *, struct group *);
+#if	defined(__cplusplus)
+extern "C" {
+#endif
+
+#if	!defined(NO_NEED_XMALLOC)
+extern	void		*xmalloc(size_t, char*);
+#endif /* NO_NEED_XMALLOC */
+
+extern	void 		my_xlog(int lvl, char *form, ...);
 extern	void		rwl_init(rwl_t*);
 extern	void		rwl_destroy(rwl_t*);
 extern	void		rwl_rdlock(rwl_t*);
 extern	void		rwl_wrlock(rwl_t*);
 extern	void		rwl_unlock(rwl_t*);
+#if	defined(__cplusplus)
+}
+#endif
 extern	void		remove_limits(void);
 extern	void		report_limits(void);
 extern	void		free_storages(struct storage_st*);
@@ -222,6 +224,7 @@ extern	struct storage_st *locate_storage_by_id(uint32_t);
 extern	int		erase_from_disk(char *, struct disk_ref*);
 extern	void		process_icp_msg(int so, char *buf, int len, struct sockaddr_in *, struct sockaddr_in *);
 extern	void		my_sleep(int);
+extern	void		my_msleep(int);
 extern	int		calculate_resident_size(struct mem_obj *);
 extern	int		calculate_container_datalen(struct buff *);
 extern	void		leave_obj(struct mem_obj*);
@@ -328,6 +331,7 @@ extern	void		short_flushout_fb(filebuff_t *);
 extern	void		put_str_in_filebuff(char *, filebuff_t *);
 extern	void		sort_networks();
 extern	void		free_groups(struct group *);
+extern	int		use_peer(struct request *, struct peer*);
 
 #if	defined(WITH_LARGE_FILES) && !defined(HAVE_ATOLL) && !defined(HAVE_STRTOLL)
 extern	long long	atoll(const char *);
@@ -340,7 +344,8 @@ extern	void		bzero(void *, size_t);
 extern	int		strerror_r(int, char *, size_t);
 #endif	/* !HAVE_STRERROR_R */
 
-#if	defined(MODULES)
+extern	dataq_t	eraser_queue;
+
 extern	void	run_modules(void);
 extern	int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
 extern	int	check_redirect(int so, struct request *rq, struct group *group, int *flag);
@@ -352,4 +357,18 @@ extern	int	mod_reopen_logs(void);
 extern	int	pre_body(int, struct mem_obj *, struct request *, int *);
 extern	int	check_redir_connect(int *, struct request *, int *);
 extern	int	parse_myports(char *, myport_t *, int);
-#endif /* MODULES */
+extern	int	db_mod_attach(void);
+extern	int	db_mod_detach(void);
+extern	int	db_mod_open(void);
+extern	int	db_mod_close(void);
+extern	int	db_mod_sync(void);
+extern	int	db_mod_precommit(void);
+extern	int	db_mod_get(db_api_arg_t*, db_api_arg_t*);
+extern	int	db_mod_put(db_api_arg_t*, db_api_arg_t*, struct mem_obj*);
+extern	int	db_mod_del(db_api_arg_t*);
+extern	void*	db_mod_cursor_open(int);
+extern	int	db_mod_cursor_get(void*, db_api_arg_t*, db_api_arg_t*);
+extern	int	db_mod_cursor_del(void*);
+extern	int	db_mod_cursor_close(void*);
+extern	int	db_mod_cursor_freeze(void*);
+extern	int	db_mod_cursor_unfreeze(void*);

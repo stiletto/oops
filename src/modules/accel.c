@@ -20,9 +20,49 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_REDIR ;
-char	module_name[] = "accel" ;
-char	module_info[] = "WWW-accelerator" ;
+#define	MODULE_NAME	"accel"
+#define	MODULE_INFO	"WWW-accelerator"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_REDIR ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		redir(int, struct group*, struct request*, int*);
+int		redir_connect(int*, struct request*, int*);
+int		redir_rewrite_header(char **, struct request*, int*);
+#else
+static	char	module_type   = MODULE_REDIR ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static	int	mod_load();
+static	int	mod_unload();
+static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	redir(int, struct group*, struct request*, int*);
+static	int	redir_connect(int*, struct request*, int*);
+static	int	redir_rewrite_header(char **, struct request*, int*);
+#endif
+
+struct	redir_module	accel = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_REDIR,
+	MODULE_INFO,
+	mod_run
+	},
+	redir,
+	redir_connect,
+	redir_rewrite_header
+};
 
 static	rwl_t	accel_lock;
 #define	RDLOCK_ACCEL_CONFIG	rwl_rdlock(&accel_lock)
@@ -50,7 +90,7 @@ char	*mapnames[7] = {
 				    for(i=0;i<MAXMATCH;i++)\
 					p[i].rm_so = p[i].rm_eo = -1;\
 				} while(0)
-#define	NMYPORTS	4
+#define	NMYPORTS	8
 static	myport_t	myports[NMYPORTS];	/* my ports		*/
 static	int		nmyports;		/* actual number	*/
 static	char		*myports_string = NULL;
@@ -202,7 +242,7 @@ char		host_tmp[MAXHOSTNAMELEN], *s, *d;
 int
 mod_load()
 {
-    verb_printf("Accel started\n");
+    printf("Accel started\n");
     rwl_init(&accel_lock);
     nmyports = 0;
     maps = NULL;
@@ -764,11 +804,30 @@ default:
     /* rewrite 'Host:' (if configured)				*/
     if ( rewrite_host && (host_av = lookup_av_by_attr(rq->av_pairs, "host:") ) ) {
 	if (host_av->val) free(host_av->val);
-	host_av->val = strdup(rq->url.host);
+	if ( rq->url.port == 80 )
+	    host_av->val = strdup(rq->url.host);
+	else {
+	    char *new_host_v = xmalloc(strlen(rq->url.host) + 20, "");
+	    if ( new_host_v ) {
+		sprintf(new_host_v, "%s:%d", rq->url.host, rq->url.port);
+		host_av->val = new_host_v;
+	    } else
+		host_av->val = strdup(rq->url.host);
+	}
     }
     if ( !TEST(rq->flags, RQ_HAS_HOST) && rq->url.host) {
 	/* insert Host: header */
-	put_av_pair(&rq->av_pairs, "Host:", rq->url.host);
+	if ( rq->url.port == 80 )
+	    put_av_pair(&rq->av_pairs, "Host:", rq->url.host);
+	else {
+	    char *new_host_v = xmalloc(strlen(rq->url.host) + 20, "");
+	    if ( new_host_v ) {
+		sprintf(new_host_v, "%s:%d", rq->url.host, rq->url.port);
+		put_av_pair(&rq->av_pairs, "Host:", new_host_v);
+		xfree(new_host_v);
+	    } else
+		put_av_pair(&rq->av_pairs, "Host:", rq->url.host);
+	}
     }
     /* check if we have to change refresh patt for this request */
     if ( refr_patts ) {

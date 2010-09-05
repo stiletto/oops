@@ -35,10 +35,10 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
 	close(fb->fd);
 	fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT);
 #else
-	if ( fb->FILE ) fclose(fb->FILE);
+	if ( fb->File ) fclose(fb->File);
 	fb->fd = -1;
-	fb->FILE = fopen(name, "a");
-	if (fb->FILE) fb->fd=fileno(fb->FILE);
+	fb->File = fopen(name, "a");
+	if (fb->File) fb->fd=fileno(fb->File);
 #endif
 	return;
 
@@ -57,11 +57,11 @@ char	tname[MAXPATHLEN+16], tname1[MAXPATHLEN+16];
     RENAME(name, tname);
     fb->fd = open(name, O_WRONLY|O_APPEND|O_CREAT, 0660);
 #else
-    if ( fb->FILE ) fclose(fb->FILE);
+    if ( fb->File ) fclose(fb->File);
     RENAME(name, tname);
     fb->fd = -1;
-    fb->FILE = fopen(name, "a");
-    if (fb->FILE) fb->fd=fileno(fb->FILE);
+    fb->File = fopen(name, "a");
+    if (fb->File) fb->fd=fileno(fb->File);
 #endif
 }
 

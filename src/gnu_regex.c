@@ -1,4 +1,4 @@
-char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.5 2000/05/09 15:46:15 ai Exp $";
+char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.7 2000/07/14 07:51:11 igor Exp $";
 #ifdef REGEX
 
 #define REGEX_MALLOC
@@ -1792,13 +1792,13 @@ regex_compile (pattern, size, syntax, bufp)
                 if (c == ',')
                   {
                     GET_UNSIGNED_NUMBER (upper_bound);
-                    if (upper_bound < 0) upper_bound = RE_DUP_MAX;
+                    if (upper_bound < 0) upper_bound = GNU_RE_DUP_MAX;
                   }
                 else
                   /* Interval such as `{1}' => match exactly once. */
                   upper_bound = lower_bound;
 
-                if (lower_bound < 0 || upper_bound > RE_DUP_MAX
+                if (lower_bound < 0 || upper_bound > GNU_RE_DUP_MAX
                     || lower_bound > upper_bound)
                   {
                     if (syntax & RE_NO_BK_BRACES)

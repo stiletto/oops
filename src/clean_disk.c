@@ -87,8 +87,8 @@ void *
 clean_disk(void *arg)
 {
 struct	storage_st	*storage;
-DBC			*dbcp;
-DBT			key, data;
+void			*dbcp = NULL;
+db_api_arg_t		key, data;
 int			rc;
 long			total_free, total_blks;
 struct	disk_ref	*disk_ref;
@@ -104,7 +104,7 @@ time_t			now;
 	now = time(NULL);
 
 	RDLOCK_CONFIG ;
-	if ( !dbp ) {
+	if ( !db_in_use || !storages_ready ) {
 	    UNLOCK_CONFIG;
 	    my_sleep(10);
 	    continue;
@@ -125,35 +125,33 @@ time_t			now;
 		    total_free, total_blks);
 	    /* 1. create db cursor */
 	    WRLOCK_DB ;
-	    rc = dbp->cursor(dbp, NULL, &dbcp
-#if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)   
-					     , 0
-#endif
-	    					);
-	    if ( rc ) {
+	    dbcp =  db_mod_cursor_open(DB_API_CURSOR_NORMAL);
+	    if ( !dbcp ) {
 		UNLOCK_DB;
-		my_xlog(LOG_SEVERE, "clean_disk(): cursor: %d %m\n", rc);
+		my_xlog(LOG_SEVERE, "clean_disk(): cursor: %m\n");
 		goto err;
 	    }
 	    while ( continue_cleanup(total_blks, total_free, disk_hi_free) ) {
 		bzero(&key, sizeof(key));
 		bzero(&data, sizeof(data));
-		key.flags = data.flags = DB_DBT_MALLOC;
-		rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT);
-		if ( rc > 0 ) {
-		    my_xlog(LOG_SEVERE, "clean_disk(): c_get: %d %m\n", rc);
-		    UNLOCK_DB;
-		    goto done;
-	        }
-	        if ( rc < 0 ) {
+		rc = db_mod_cursor_get(dbcp, &key, &data);
+	        if ( rc == DB_API_RES_CODE_NOTFOUND ) {
 		    forced_cleanup = FALSE ;
-		    dbcp->c_close(dbcp);
+		    db_mod_cursor_close(dbcp);
+		    dbcp = NULL;
 		    UNLOCK_DB ;
 		    goto done;
 		}
+		if ( rc != 0 ) {
+		    my_xlog(LOG_SEVERE, "clean_disk(): c_get: %d\n", rc);
+		    db_mod_cursor_close(dbcp);
+		    dbcp = NULL;
+		    UNLOCK_DB;
+		    goto done;
+	        }
 	        disk_ref = data.data;
 		storage = locate_storage_by_id(disk_ref->id);
-		dbcp->c_del(dbcp, 0);
+		db_mod_cursor_del(dbcp);
 		if ( storage ) {
 		    WRLOCK_STORAGE(storage);
 		    release_blks(disk_ref->blk, storage, disk_ref);
@@ -166,11 +164,12 @@ time_t			now;
 		free(data.data);
 		if ( global_sec_timer - now >= KEEP_NO_LONGER_THAN || MUST_BREAK ) {
 		    forced_cleanup = TRUE ;
-		    dbcp->c_close(dbcp);
+		    db_mod_cursor_close(dbcp);
 		    UNLOCK_DB ;
 		    goto done;
 		}
 	    }
+	    if ( dbcp ) db_mod_cursor_close(dbcp);
 	    UNLOCK_DB ;
 	    forced_cleanup = FALSE;
 	} else {
@@ -192,8 +191,8 @@ void
 check_expire(void)
 {
 time_t			started, now = time(NULL);
-DBC			*dbcp = NULL ;
-DBT			key, data ;
+void			*dbcp = NULL ;
+db_api_arg_t		key, data ;
 int			rc, get_counter, expired_cnt = 0, total_cnt = 0;
 struct	disk_ref	*disk_ref;
 struct	storage_st	*storage;
@@ -202,7 +201,7 @@ struct	storage_st	*storage;
 	return ;
 
     RDLOCK_CONFIG ;
-    if ( !dbp || !storages ) {
+    if ( !db_in_use || !storages_ready || !storages ) {
 	UNLOCK_CONFIG ;
 	return ;
     }
@@ -212,15 +211,12 @@ struct	storage_st	*storage;
 
 run:
     WRLOCK_DB ;
+run_locked:
     /* I'd like to lock all storages now, but can this lead to deadlocks?	*/
     /* so, storages will be locked and unlocked when need			*/
     if ( !dbcp ) {
-	rc = dbp->cursor(dbp, NULL, &dbcp
-#if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)   
-					 , 0
-#endif
-					);
-	if ( rc ) {
+	dbcp =  db_mod_cursor_open(DB_API_CURSOR_NORMAL);
+	if ( !dbcp ) {
 	    UNLOCK_DB ;
 	    UNLOCK_CONFIG ;
 	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
@@ -235,10 +231,9 @@ run:
     forever() {
 	bzero(&key, sizeof(key));
 	bzero(&data, sizeof(data));
-	key.flags = data.flags = DB_DBT_MALLOC;
 	if ( MUST_BREAK )
 	    goto done;
-	rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT);
+	rc = db_mod_cursor_get(dbcp, &key, &data);
 	if ( rc )
 	    goto done;
 	get_counter++;
@@ -248,7 +243,7 @@ run:
 	    storage = locate_storage_by_id(disk_ref->id);
 	    if ( storage ) {
 		if ( ( storage->flags & ST_READY ) /*&& SPACE_NOT_GOOD(storage)*/ ) {
-		    dbcp->c_del(dbcp, 0);
+		    db_mod_cursor_del(dbcp);
 		    expired_cnt++ ;
 		    WRLOCK_STORAGE(storage);
 		    release_blks(disk_ref->blk, storage, disk_ref);
@@ -256,7 +251,7 @@ run:
 		} /* low space */
 	    } else {
 		/* lost storage - recodr must be erased */
-		    dbcp->c_del(dbcp, 0);
+		    db_mod_cursor_del(dbcp);
 	    }
 	}
 	free(key.data);
@@ -264,17 +259,21 @@ run:
 	if ( (get_counter > 20) &&
 	     (global_sec_timer-now >= KEEP_NO_LONGER_THAN) ) {
 		/* must break */
-	    UNLOCK_DB ;
 	    /* cursor used acros runs, so we can't release CONFIG */
+	    db_mod_cursor_freeze(dbcp);
+	    db_mod_sync();
+	    UNLOCK_DB ;
 	    my_sleep(5);
-	    goto run ;
+	    WRLOCK_DB ;
+	    db_mod_cursor_unfreeze(dbcp);
+	    goto run_locked ;
 	}
     }
 
 done:
-    UNLOCK_DB ;
     if ( dbcp )
-	dbcp->c_close(dbcp);
+	db_mod_cursor_close(dbcp);
+    UNLOCK_DB ;
     UNLOCK_CONFIG ;
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "check_expire(): EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	    expired_cnt, (utime_t)(global_sec_timer-started), total_cnt);

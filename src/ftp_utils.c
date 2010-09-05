@@ -61,6 +61,53 @@ int			delta_tv, pathlen = 0;
     my_xlog(LOG_FTP|LOG_DBG, "ftp_fill_mem_obj(): Ftp...\n");
     bzero(&ftp_request, sizeof(ftp_request));
     ftp_request.type	= "text/html";
+    gettimeofday(&start_tv, NULL);
+    ftp_request.client	= so;
+    ftp_request.obj	= obj;
+    ftp_request.request = rq;
+    ftp_request.control = -1;
+    ftp_request.data    = -1;
+    if ( rq->url.login && !rq->url.password ) {
+	char *authorization, *data;
+	/* there must be Authorization header */
+	authorization = attr_value(rq->av_pairs, "Authorization");
+	if ( !authorization ) {
+	create_aur:;
+	    /* create 401 answer */
+	    send_401_answer(so, rq);
+	    goto done;
+	}
+        if ( !strncasecmp(authorization, "Basic", 5 ) ) {
+	    char  *up=NULL, *u, *p;
+
+	    data = authorization + 5;
+	    while ( *data && IS_SPACE(*data) ) data++;
+            if ( *data ) up = base64_decode(data);
+	    if ( up ) {
+                /* up = username:password */
+                u = up;
+                p = strchr(up, ':');
+                if ( p ) {
+		    *p=0; p++;
+		} else {
+		    free(up);
+		    goto create_aur;
+		}
+		if ( strcmp(rq->url.login,up) ) {
+		    free(up);
+		    goto create_aur;
+		}
+		rq->url.password = strdup(p);
+                free(up);
+		goto have_p;
+            } /* up != NULL */
+	    goto create_aur;
+        }
+	/* not Basic */
+        /* we do not support any schemes except Basic */
+	goto create_aur;
+    }
+have_p:
     if ( parent_port ) {
         bzero(&dst_sa, sizeof(dst_sa));
 	if ( local_networks_sorted && local_networks_sorted_counter ) {
@@ -76,7 +123,6 @@ int			delta_tv, pathlen = 0;
 	}
     }
 
-    gettimeofday(&start_tv, NULL);
     if ( peers && (icp_so != -1) && (rq->meth == METH_GET) && !is_local_dom(rq->url.host) ) {
 	struct icp_queue_elem *new_qe;
 	struct timeval tv = start_tv;
@@ -146,11 +192,6 @@ int			delta_tv, pathlen = 0;
 
  icp_failed:;
     } /* all icp things */
-    ftp_request.client	= so;
-    ftp_request.obj	= obj;
-    ftp_request.request = rq;
-    ftp_request.control = -1;
-    ftp_request.data    = -1;
     if ( *(url->path+1) == '~' )
 	ftp_request.dehtml_path = dehtmlize(url->path+1);
       else {
@@ -164,47 +205,6 @@ int			delta_tv, pathlen = 0;
     ftp_request.container = alloc_buff(CHUNK_SIZE);
     if ( ! ftp_request.container )
 	   goto error;
-    if ( rq->url.login && !rq->url.password ) {
-	char *authorization, *data;
-	/* there must be Authorization header */
-	authorization = attr_value(rq->av_pairs, "Authorization");
-	if ( !authorization ) {
-	create_aur:;
-	    /* create 401 answer */
-	    send_401_answer(so, rq);
-	    goto done;
-	}
-        if ( !strncasecmp(authorization, "Basic", 5 ) ) {
-	    char  *up=NULL, *u, *p;
-
-	    data = authorization + 5;
-	    while ( *data && IS_SPACE(*data) ) data++;
-            if ( *data ) up = base64_decode(data);
-	    if ( up ) {
-                /* up = username:password */
-                u = up;
-                p = strchr(up, ':');
-                if ( p ) {
-		    *p=0; p++;
-		} else {
-		    free(up);
-		    goto create_aur;
-		}
-		if ( strcmp(rq->url.login,up) ) {
-		    free(up);
-		    goto create_aur;
-		}
-		rq->url.password = strdup(p);
-                free(up);
-		goto have_p;
-            } /* up != NULL */
-	    goto create_aur;
-        }
-	/* not Basic */
-        /* we do not support any schemes except Basic */
-	goto create_aur;
-    }
-have_p:
     server_so = server_connect(&ftp_request);
     if ( server_so == -1 ) goto error1;
     ftp_request.control = server_so;
@@ -656,7 +656,7 @@ int
 send_http_header(int so, char* type, int size, struct mem_obj *obj, struct ftp_r *ftp_r)
 {
 int	r;
-char	b[50];
+char	b[128];
 char	*fmt;
 struct	buff	*nextb;
 

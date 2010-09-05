@@ -20,9 +20,46 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_OUTPUT ;
-char	module_name[] = "lang" ;
-char	module_info[] = "National languages handling module" ;
+#define	MODULE_NAME	"lang"
+#define	MODULE_INFO	"National languages handling module"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_OUTPUT ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		output(int so, struct output_object *obj, struct request *rq, int *flags);
+int		compare_u_agents(char*, char*);
+#else
+static	char	module_type   = MODULE_OUTPUT ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static	int	mod_load();
+static	int	mod_unload();
+static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	output(int so, struct output_object *obj, struct request *rq, int *flags);
+static	int	compare_u_agents(char*, char*);
+#endif
+
+struct	output_module lang = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_OUTPUT,
+	MODULE_INFO,
+	mod_run
+	},
+	output,
+	compare_u_agents
+};
 
 static	rwl_t		lang_config_lock;
 static	char		default_charset[64];
@@ -34,9 +71,15 @@ static	void		recode_buff(struct buff*, struct charset*);
 #define	UNLOCK_LANG_CONFIG	rwl_unlock(&lang_config_lock)
 
 int
+mod_run()
+{
+    return(MOD_CODE_OK);
+}
+
+int
 mod_load()
 {
-    verb_printf("Lang started\n");
+    printf("Lang started\n");
     if ( charsets ) {
 	free_charsets(charsets);
 	charsets = NULL;
@@ -99,16 +142,20 @@ char	*p = config;
 
 	p+=12; t = p;
 	while( (agent = (char*)strtok_r(t, " ", &ptr)) ) {
-	    t = NULL;
-	    if ( !cs && !(cs = lookup_charset_by_name(charsets, agent))) {
+	    /* t is not NULL only on first item which must be charset name. 	*/
+	    /* there was when we add charset name as agentname on second string	*/
+	    /* Fixed by Peter S. Voronov					*/
+	    if ( t && !cs && !(cs = lookup_charset_by_name(charsets, agent))) {
 		cs = add_new_charset(&charsets, agent);
 		if ( !cs ) {
 		    verb_printf("Can't create charset\n");
 		    goto done;
 		}
+		t = NULL ;
 		continue;
 	    }
-	    if ( cs ) add_to_string_list(&cs->CharsetAgent, agent);
+	    if ( cs && !t) add_to_string_list(&cs->CharsetAgent, agent);
+	    t = NULL ;
 	}
 	if ( cs ) {
 	    struct string_list *list = cs->CharsetAgent;

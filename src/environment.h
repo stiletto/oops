@@ -107,8 +107,6 @@ extern		int	seteuid(uid_t);
 
 #include	<arpa/inet.h>
 
-#include	<db.h>
-
 typedef		time_t		utime_t;
 typedef		int		fd_t;
 

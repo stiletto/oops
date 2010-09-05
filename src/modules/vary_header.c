@@ -33,9 +33,43 @@ struct	header_action {
 struct	header_action	*actions = NULL;
 struct	header_action	*default_action = NULL;
 
-char	module_type   = MODULE_HEADERS ;
-char	module_name[] = "vary" ;
-char	module_info[] = "Processing \'Vary:\' header" ;
+#define	MODULE_NAME	"vary"
+#define	MODULE_INFO	"Processing \'Vary:\' header"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_HEADERS ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		match_headers(struct mem_obj *obj, struct request *rq, int *flags);
+#else
+static	char	module_type   = MODULE_HEADERS ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static  int     mod_load();
+static  int     mod_unload();
+static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	match_headers(struct mem_obj *obj, struct request *rq, int *flags);
+#endif
+
+struct	headers_module	vary_header = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_HEADERS,
+	MODULE_INFO,
+	mod_run
+	},
+	match_headers
+};
 
 #define	WRLOCK_VARY_CONFIG	rwl_wrlock(&vary_config_lock)
 #define	RDLOCK_VARY_CONFIG	rwl_rdlock(&vary_config_lock)
@@ -44,6 +78,12 @@ char	module_info[] = "Processing \'Vary:\' header" ;
 rwl_t	vary_config_lock;
 
 void	free_action(struct header_action*);
+
+int
+mod_run()
+{
+    return(MOD_CODE_OK);
+}
 
 int
 mod_load()

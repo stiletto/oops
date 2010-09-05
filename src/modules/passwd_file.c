@@ -20,9 +20,44 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_AUTH ;
-char	module_name[] = "passwd_file" ;
-char	module_info[] = "Auth using passwd file" ;
+#define	MODULE_NAME	"passwd_file"
+#define	MODULE_INFO	"Auth using passwd file"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_AUTH ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		auth(int so, struct group *group, struct request* rq, int *flags);
+#else
+static	char	module_type   = MODULE_AUTH ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static  int     mod_load();
+static  int     mod_unload();
+static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	auth(int so, struct group *group, struct request* rq, int *flags);
+#endif
+
+struct	auth_module	passwd_file = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_AUTH,
+	MODULE_INFO,
+	mod_run
+	},
+	auth
+};
+
 
 static	rwl_t	pwf_lock;
 static	char	*pwds = NULL;
@@ -64,6 +99,12 @@ static	void	send_auth_req(int, struct request *);
 #if	!defined(SOLARIS)
 pthread_mutex_t	crypt_lock;
 #endif
+
+int
+mod_run()
+{
+    return(MOD_CODE_OK);
+}
 
 int
 mod_load()

@@ -1,12 +1,12 @@
 %token	LOGFILE ACCESSLOG STATISTICS PIDFILE NAMESERVER HTTP_PORT ICP_PORT
 %token	ICONS_HOST ICONS_PORT ICONS_PATH EXPIRE_VALUE FTP_EXPIRE_VALUE_T EXPIRE_INTERVAL
 %token	STOP_CACHE MAXRESIDENT CONNECT_FROM
-%token	MEM_MAX LO_MARK HI_MARK DB_CACHE_MEM DISK_LOW_FREE_T DISK_HI_FREE_T
+%token	MEM_MAX LO_MARK HI_MARK DISK_LOW_FREE_T DISK_HI_FREE_T
 %token	PARENT_T PEER_T SIBLING_T LOCAL_DOMAIN_T LOCAL_NETWORKS_T
 %token	GROUP NETWORK NETWORKS HTTP ICP
 %token	NUMBER NUMBER_K NUMBER_M STRING
 %token	ALLOW DENY BADPORTS_T MISS_T AUTH_MODS_T REDIR_MODS_T
-%token	DSTDOMAIN
+%token	DSTDOMAIN DB_CACHE_MEM
 %token	STORAGE SIZE PATH DBNAME DBHOME
 %token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T DENYTIME_T
 %token	L_EOS ICP_TIMEOUT MODULE INCLUDE_T
@@ -17,6 +17,7 @@
 %token	NETWORKS_ACL_T STORAGE_OFFSET_T AUTO_T USERID_T CHROOT_T
 %token	BIND_ACL_T MAXREQRATE_T BLACKLIST_T START_RED_T REFUSE_AT_T
 %token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T MY_AUTH_T PARENT_AUTH_T
+%token	PEER_ACCESS_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name
@@ -33,9 +34,7 @@
 %{
 
 #include	"oops.h"
-#if	defined(MODULES)
 #include	"modules.h"
-#endif /* MODULES */
 
 extern	FILE	*yyin;
 
@@ -51,10 +50,11 @@ static	struct	peer_c	*peerc_ptr = NULL;
 static	struct	range	badports[MAXBADPORTS];
 static	struct	range	*badp_p = NULL;
 struct	peer_c {
-	char	type;
-	struct	acls	*acls;
-	char		*my_auth;
-} peer_c;
+	char			type;
+	struct	acls		*acls;
+	char			*my_auth;
+	acl_chk_list_hdr_t	*peer_access;
+} peer_c = {PEER_SIBLING,NULL,NULL,NULL};
 
 struct	domain_list	*load_domlist_from_file(char*);
 struct	domain_list	*load_domlist_from_list(struct string_list *);
@@ -80,6 +80,7 @@ int			string_to_days(struct denytime *, struct string_list *);
 %%
 
 config		: /* empty */
+		| statement
 		| statements statement
 		;
 
@@ -118,7 +119,6 @@ statement	: logfile
 		| mem_max
 		| lo_mark
 		| hi_mark
-		| db_cache_mem
 		| group
 		| peer
 		| storage
@@ -126,6 +126,7 @@ statement	: logfile
 		| insert_via
 		| dbhome
 		| dbname
+		| db_cache_mem
 		| module
 		| acl
 		| refresh_pattern
@@ -217,7 +218,6 @@ refuse_at	: REFUSE_AT_T num L_EOS {
 start_red	: START_RED_T num L_EOS {
 			start_red = $2;
 		}
-
 dont_cache_without_last_modified : DONT_CACHE_WITHOUT_LAST_MODIFIED_T L_EOS {
 			dont_cache_without_last_modified = TRUE;
 		}
@@ -566,15 +566,17 @@ local_networks	: LOCAL_NETWORKS_T network_list L_EOS {
 		}
 
 dbhome		: DBHOME STRING L_EOS {
-			verb_printf("DBHOME:\t<<%s>>\n", yylval.STRPTR);
-			strncpy(dbhome, yylval.STRPTR, sizeof(dbhome)-1);
+			printf("WARNING!!!! dbhome must be moved to module berkeley_db\n");
 			free(yylval.STRPTR);
 		}
 
 dbname		: DBNAME STRING L_EOS {
-			verb_printf("DBNAME:\t<<%s>>\n", yylval.STRPTR);
-			strncpy(dbname, yylval.STRPTR, sizeof(dbname)-1);
+			printf("WARNING!!!! dbname must be moved to module berkeley_db\n");
 			free(yylval.STRPTR);
+		}
+
+db_cache_mem    : DB_CACHE_MEM num L_EOS {
+			printf("WARNING!!!! db_cache_mem must be moved to module berkeley_db\n");
 		}
 
 mem_max		: MEM_MAX num L_EOS {
@@ -592,12 +594,6 @@ hi_mark		: HI_MARK num L_EOS {
 			hi_mark_val = $2 ;
 		}
 
-db_cache_mem	: DB_CACHE_MEM num L_EOS {
-			verb_printf("DB_CACHE_MEM:\t<<%d>>\n", $2);
-			if ( $2 > 4194304 )
-			    db_cache_mem_val = $2 ;
-		}
-
 num		: NUMBER { $$ = yylval.INT;}
 
 offset		: NUMBER { $$ = yylval.OFFSET;}
@@ -606,7 +602,6 @@ string		: STRING { $$ = yylval.STRPTR; }
 
 module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			struct string_list	*list = $4;
-#if	defined(MODULES)
 			struct general_module	*mod = module_by_name($2);
 			if ( mod ) {
 			    verb_printf("Config %s\n", $2);
@@ -621,18 +616,13 @@ module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			} else {
 			    verb_printf("Module %s not found\n", $2);
 			}
-#else
-			verb_printf("Modules was not configured\n");
-#endif /* MODULES */
 			free_string_list($4);
 			free($2);
 		}
 		| MODULE module_name '{' '}' L_EOS {
-#if	defined(MODULES)
 			struct general_module	*mod = module_by_name($2);
 			if ( mod && mod->config_beg ) (*mod->config_beg)();
 			if ( mod && mod->config_end ) (*mod->config_end)();
-#endif /* MODULES */
 			free($2);
 		}
 mod_ops		: mod_op {
@@ -714,6 +704,13 @@ peerconfig	: PEER_PARENT_T ';' {
 			peerc_ptr->my_auth = base64_encode($2);
 			free($2);
 		  }
+		| PEER_ACCESS_T STRING ';' {
+			if ( !peerc_ptr )
+				peerc_ptr = &peer_c;
+			verb_printf("PEER_ACCESS: %s\n", yylval.STRPTR);
+			parse_acl_access(&peerc_ptr->peer_access, yylval.STRPTR);
+			free(yylval.STRPTR);
+		  }
 		| allow_acl {
 			if ( !peerc_ptr )
 				peerc_ptr = &peer_c;
@@ -761,6 +758,7 @@ peer		: PEER_T string num num '{' peerops '}' L_EOS {
 			    peer->type = peerc_ptr->type;
 			    peer->acls = peerc_ptr->acls;
 			    peer->my_auth = peerc_ptr->my_auth;
+			    peer->peer_access = peerc_ptr->peer_access;
 			}
 			/* insert peer in the list */
 			if ( !peers ) {
@@ -1051,6 +1049,11 @@ range		: '[' num ':' num ']'  {
 			    if ( sscanf($2, "%d:%d", &from, &to) == 2 ) {
 				badp_p->from = from;
 				badp_p->length = to - from + 1;
+				if ( badp_p < &badports[MAXBADPORTS] ) badp_p++;
+				    else {
+				    verb_printf("You can use max %d badports ranges\n", MAXBADPORTS);
+					badp_p--;
+				    }
 			    } else {
 				printf("Unrecognized format: %s\n", $2);
 			    }

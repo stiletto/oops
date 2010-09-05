@@ -1,15 +1,23 @@
 CC = @CC@
-LIBS = @LIBS@
+CXX = @CXX@
 LDFLAGS = @LDFLAGS@
 INSTALL = @INSTALL@ @SETOWNER@
 INSTALL_DATA = @INSTALL@ -m 644 @SETOWNER@
 CHOWN = @CHOWN@
+STATIC_MODULES = @STATIC_MODULES@
+LIBGB_PATH = @LIBGB_PATH@
+LIBGB = @LIBGB_NAME@
+LIBS = $(LIBGB_PATH) $(LIBGB) @LIBS@
+OOPS_LIBDIR = @OOPS_LIBDIR@
+OOPS_SBINDIR = @OOPS_SBINDIR@
+OOPS_SYSCONFDIR = @OOPS_SYSCONFDIR@
+OOPS_LOCALSTATEDIR = @OOPS_LOCALSTATEDIR@
 
 SRCS = oops.c lib.c run.c run_client.c common.c http_utils.c ftp_utils.c \
 	storage.c garbage_c.c  icp.c acl.c y.tab.c lex.yy.c \
 	rotate_logs.c clean_disk.c ssl.c list.c statistics.c \
-	worker.c queue.c hash.c @EXTRASRC@
-OBJS = $(SRCS:.c=.o)
+	worker.c queue.c hash.c modules.c @EXTRASRC@
+OBJS = $(SRCS:.c=.o) $(STATIC_MODULES)
 
 #CFLAGS = -Wall -ggdb -D_REENTRANT -D_POSIX_PTHREADS_SEMANTICS
 
@@ -21,73 +29,81 @@ OOPSPATH=@prefix@/oops
 .c.o:
 	${CC} -c ${CFLAGS} ${CDEFS} $<
 
-all:	oops
+all:	modules oops
+
+modules::
 	cd modules; make
 
 oops:	${OBJS}
-	${CC} ${CFLAGS} ${OBJS} ${LIBS} ${LDFLAGS} -o oops
+	${CC} ${CFLAGS} ${OBJS} ${LDFLAGS} ${LIBS} -o oops
 
 mkinstalldirs:
-	../mkinstalldirs ${OOPSPATH} ${OOPSPATH}/logs ${OOPSPATH}/DB ${OOPSPATH}/storages ${OOPSPATH}/tables ${OOPSPATH}/modules
+	../mkinstalldirs ${OOPSPATH} \
+			 ${OOPSPATH}/logs \
+			 ${OOPSPATH}/DB \
+			 ${OOPSPATH}/storages \
+			 ${OOPS_SYSCONFDIR}/tables \
+			 ${OOPS_LIBDIR}/modules
+
 	if [ "X@OOPS_USER@" != "X" ]; then\
 		${CHOWN} @OOPS_USER@ ${OOPSPATH};\
 		${CHOWN} @OOPS_USER@ ${OOPSPATH}/logs;\
 		${CHOWN} @OOPS_USER@ ${OOPSPATH}/DB;\
 		${CHOWN} @OOPS_USER@ ${OOPSPATH}/storages;\
-		${CHOWN} @OOPS_USER@ ${OOPSPATH}/tables;\
-		${CHOWN} @OOPS_USER@ ${OOPSPATH}/modules;\
+		${CHOWN} @OOPS_USER@ ${OOPS_SYSCONFDIR}/tables;\
+		${CHOWN} @OOPS_USER@ ${OOPS_LIBDIR}/modules;\
 	fi
 
 install: all mkinstalldirs
-	$(INSTALL) oops ${OOPSPATH}
-	if [ -f ${OOPSPATH}/oops.cfg ]; then\
-		$(INSTALL_DATA) oops.cfg ${OOPSPATH}/oops.cfg.sample ;\
+	$(INSTALL) oops ${OOPS_SBINDIR}
+	if [ -f ${OOPS_SYSCONFDIR}/oops.cfg ]; then\
+		$(INSTALL_DATA) oops.cfg ${OOPS_SYSCONFDIR}/oops.cfg.sample ;\
 	   else\
-		$(INSTALL_DATA) oops.cfg ${OOPSPATH}/oops.cfg ;\
+		$(INSTALL_DATA) oops.cfg ${OOPS_SYSCONFDIR}/oops.cfg ;\
 	fi
-	if [ -f ${OOPSPATH}/err_template.html ]; then\
-		$(INSTALL_DATA) err_template.html ${OOPSPATH}/err_template.html.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/err_template.html ]; then\
+		$(INSTALL_DATA) err_template.html ${OOPS_SYSCONFDIR}/err_template.html.sample ;\
 	   else\
-		$(INSTALL_DATA) err_template.html ${OOPSPATH}/err_template.html ;\
+		$(INSTALL_DATA) err_template.html ${OOPS_SYSCONFDIR}/err_template.html ;\
 	fi
-	if [ -f ${OOPSPATH}/auth_template.html ]; then\
-		$(INSTALL_DATA) auth_template.html ${OOPSPATH}/auth_template.html.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/auth_template.html ]; then\
+		$(INSTALL_DATA) auth_template.html ${OOPS_SYSCONFDIR}/auth_template.html.sample ;\
 	   else\
-		$(INSTALL_DATA) auth_template.html ${OOPSPATH}/auth_template.html;\
+		$(INSTALL_DATA) auth_template.html ${OOPS_SYSCONFDIR}/auth_template.html;\
 	fi
-	if [ -f ${OOPSPATH}/passwd ]; then\
-		$(INSTALL_DATA) passwd ${OOPSPATH}/passwd.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/passwd ]; then\
+		$(INSTALL_DATA) passwd ${OOPS_SYSCONFDIR}/passwd.sample ;\
 	   else\
-		$(INSTALL_DATA) passwd ${OOPSPATH}/passwd ;\
+		$(INSTALL_DATA) passwd ${OOPS_SYSCONFDIR}/passwd ;\
 	fi
-	if [ -f ${OOPSPATH}/redir_rules ]; then\
-		$(INSTALL_DATA) redir_rules ${OOPSPATH}/redir_rules.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/redir_rules ]; then\
+		$(INSTALL_DATA) redir_rules ${OOPS_SYSCONFDIR}/redir_rules.sample ;\
 	   else\
-		$(INSTALL_DATA) redir_rules ${OOPSPATH}/redir_rules ;\
+		$(INSTALL_DATA) redir_rules ${OOPS_SYSCONFDIR}/redir_rules ;\
 	fi
-	if [ -f ${OOPSPATH}/redir_template.html ]; then\
-		$(INSTALL_DATA) redir_template.html ${OOPSPATH}/redir_template.html.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/redir_template.html ]; then\
+		$(INSTALL_DATA) redir_template.html ${OOPS_SYSCONFDIR}/redir_template.html.sample ;\
 	   else\
-		$(INSTALL_DATA) redir_template.html ${OOPSPATH}/redir_template.html ;\
+		$(INSTALL_DATA) redir_template.html ${OOPS_SYSCONFDIR}/redir_template.html ;\
 	fi
-	if [ -f ${OOPSPATH}/accel_maps ]; then\
-		$(INSTALL_DATA) accel_maps ${OOPSPATH}/accel_maps.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/accel_maps ]; then\
+		$(INSTALL_DATA) accel_maps ${OOPS_SYSCONFDIR}/accel_maps.sample ;\
 	   else\
-		$(INSTALL_DATA) accel_maps ${OOPSPATH}/accel_maps ;\
+		$(INSTALL_DATA) accel_maps ${OOPS_SYSCONFDIR}/accel_maps ;\
 	fi
-	if [ -f ${OOPSPATH}/acl_local_networks ]; then\
-		$(INSTALL_DATA) acl_local_networks ${OOPSPATH}/acl_local_networks.sample ;\
+	if [ -f ${OOPS_SYSCONFDIR}/acl_local_networks ]; then\
+		$(INSTALL_DATA) acl_local_networks ${OOPS_SYSCONFDIR}/acl_local_networks.sample ;\
 	   else\
-		$(INSTALL_DATA) acl_local_networks ${OOPSPATH}/acl_local_networks ;\
+		$(INSTALL_DATA) acl_local_networks ${OOPS_SYSCONFDIR}/acl_local_networks ;\
 	fi
 	if test "X@SOFLAGS@" != "X"; then \
 	for m in modules/*so ; do \
-		$(INSTALL) $$m ${OOPSPATH}/modules ; \
+		$(INSTALL) $$m ${OOPS_LIBDIR} ; \
 	done; \
-	$(INSTALL) modules/oopsctl ${OOPSPATH}; \
+	$(INSTALL) modules/oopsctl ${OOPS_SBINDIR}; \
 	fi
 	for t in tables/*.tab ; do \
-		$(INSTALL_DATA) $$t ${OOPSPATH}/tables ; \
+		$(INSTALL_DATA) $$t ${OOPS_SYSCONFDIR}/tables ; \
 	done
 
 oops.o:		oops.c oops.h version.h environment.h extern.h

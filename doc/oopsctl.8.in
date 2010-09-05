@@ -1,0 +1,37 @@
+.TH OOPSCTL 8 "Sep 2000" "Oopsctl"
+.SH NAME
+oopsctl \- oops HTTP caching proxy server controller
+.SH SYNOPSIS
+.B @OOPS_SBINDIR@/oopsctl
+.RB [-s\ pathtosocket]\ [command]
+.SH DESCRIPTION
+.B oopsctl
+is intended to controll the \fBoops\fP proxy server
+.SH OPTIONS
+.IP \fB-s\ file\fP
+Where is the unix socket file to send commands to the \fBoops\fP server?
+Generally that is
+.RI @OOPS_LOCALSTATEDIR@/oopsctl
+.IP \fBhelp\fP
+get help
+.IP \fBstat\fP
+get stat
+.IP \fBhtmlstat\fP
+get stat in html format
+.IP \fBchkconfig\fP
+check config file
+.IP \fBreconfigure\fP
+re-read config file
+.IP \fBshutdown\fP
+shutdown oops
+.IP \fBstop\fP
+same as the \fBshutdown\fP
+.IP \fBrotate\fP
+rotate logs
+.IP \fBverbosity=LVL\fP
+set verbosity (like \fB-x\ LVL\fP)
+.IP \fBstart\fP
+start oops (same as \fB@OOPS_SBINDIR@/oops\ -c\ @OOPS_SYSCONFDIR@/oops.cfg\fP)
+.PP
+.SH AUTHOR
+Mainly Igor Khasilev <igor@paco.net>

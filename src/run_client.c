@@ -20,10 +20,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include	"oops.h"
 
-#if	defined(MODULES)
 #include	"modules.h"
 extern struct	err_module	*err_first;
-#endif /* MODULES */
 
 #define		READ_REQ_TIMEOUT	(10*60)		/* 10 minutes */
 #define		READ_BUFF_SZ		(1500)
@@ -75,7 +73,7 @@ struct	work		*work;
    if ( !work ) return(NULL);
    so = work->so;
    accepted_so = work->accepted_so;
-   free(work);	/* we don't need it anymore	*/
+   xfree(work);	/* we don't need it anymore	*/
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
 	my_xlog(LOG_SEVERE, "run_client(): fcntl(): %m\n");
@@ -126,7 +124,7 @@ struct	work		*work;
 		goto done;
 	    }	    
 	    memcpy(nb, buf, current_size);
-	    free(buf);
+	    xfree(buf);
 	    buf=ip=(u_char*)nb;
 	    cp=ip+current_size;
 	    *cp=0;
@@ -198,7 +196,6 @@ ck_group:
 	log_access(0, &request, NULL);
 	goto done;
     }
-#if	defined(MODULES)
     /* copy redir modules reference to struct request, so we will
        not lookup for group again
     */
@@ -233,7 +230,6 @@ ck_group:
 	}
 	auth_mods_visited = TRUE;
     }
-#endif /* MODULES */
 
     if ( acl_deny && (check_acl_access(acl_deny, &request) == TRUE) ) {
 	UNLOCK_CONFIG;
@@ -448,7 +444,7 @@ read_net:
 /*persistent:*/
 
 done:
-    if (buf)  free(buf);
+    IF_FREE(buf);
     free_request(&request);
     if ( so != -1 ) CLOSE(so);
     decrement_clients();
@@ -486,7 +482,7 @@ destroy_temp_obj(struct mem_obj *obj)
     pthread_mutex_destroy(&obj->lock);
     pthread_mutex_destroy(&obj->state_lock);
     pthread_cond_destroy(&obj->state_cond);
-    free(obj);
+    xfree(obj);
 }
 
 void
@@ -527,7 +523,7 @@ destroy_obj(struct mem_obj *obj)
     free_url(&obj->url);
     free_container(obj->container);
     free_avlist(obj->headers);
-    if ( obj->disk_ref ) xfree(obj->disk_ref);
+    IF_FREE(obj->disk_ref);
     pthread_mutex_destroy(&obj->lock);
     pthread_mutex_destroy(&obj->state_lock);
     pthread_cond_destroy(&obj->state_cond);
@@ -535,7 +531,7 @@ destroy_obj(struct mem_obj *obj)
     pthread_cond_destroy(&obj->decision_cond);
     decrease_hash_size(obj->hash_back, obj->resident_size);
     --total_objects;
-    free(obj);
+    xfree(obj);
 }
 
 struct mem_obj*
@@ -564,9 +560,7 @@ int		found=0, mod_flags = 0;
 	         !strcasecmp(url->proto, obj->url.proto) &&
 	         !(obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) &&
 		 (!TEST(flags, READY_ONLY) || (obj->state==OBJ_READY) )
-#if		    defined(MODULES)
 		    && ( rq && (check_headers_match(obj, rq, &mod_flags) == MOD_CODE_OK) )
-#endif
 	         ) {
 
 		    found=1;
@@ -603,34 +597,34 @@ int		found=0, mod_flags = 0;
 		    if ( obj->url.proto ) {
 			strcpy(obj->url.proto, url->proto);
 		    } else {
-			free(obj); obj = NULL;
+			xfree(obj); obj = NULL;
 			goto done;
 		    }
 		    obj->url.host = xmalloc(strlen(url->host)+1, "locate_in_mem(): for obj->url.host");
 		    if ( obj->url.host ) {
 			strcpy(obj->url.host, url->host);
 		    } else {
-			free(obj->url.proto);
-			free(obj); obj = NULL;
+			xfree(obj->url.proto);
+			xfree(obj); obj = NULL;
 			goto done;
 		    }
 		    obj->url.path = xmalloc(strlen(url->path)+1, "locate_in_mem(): for obj->url.path");
 		    if ( obj->url.path ) {
 			strcpy(obj->url.path, url->path);
 		    } else {
-			free(obj->url.proto);
-			free(obj->url.host);
-			free(obj); obj = NULL;
+			xfree(obj->url.proto);
+			xfree(obj->url.host);
+			xfree(obj); obj = NULL;
 			goto done;
 		    }
 		    obj->url.httpv = xmalloc(strlen(url->httpv)+1, "locate_in_mem(): locate_in_mem4");
 		    if ( obj->url.httpv ) {
 			strcpy(obj->url.httpv, url->httpv);
 		    } else {
-			free(obj->url.proto);
-			free(obj->url.host);
-			free(obj->url.path);
-			free(obj); obj = NULL;
+			xfree(obj->url.proto);
+			xfree(obj->url.host);
+			xfree(obj->url.path);
+			xfree(obj); obj = NULL;
 			goto done;
 		    }
 		    found = 1;
@@ -696,7 +690,6 @@ int		found=0, mod_flags = 0;
                 		increase_hash_size(obj->hash_back, obj->resident_size);
 				if ( !strcasecmp(url->proto,"ftp") ) obj->doc_type = FTP_DOC;
 				SET(obj->flags, FLAG_FROM_DISK);
-#if	defined(MODULES)
 				if ( rq && (check_headers_match(obj, rq, &mod_flags) != MOD_CODE_OK) ) {
 				    /* obj don't match request	*/
 				    struct	mem_obj	*n_obj;
@@ -712,7 +705,6 @@ int		found=0, mod_flags = 0;
 				    return(n_obj);
 				} else
 				    CLR(obj->flags, ANSW_NO_CACHE);
-#endif /* MODULES */
 				pthread_cond_broadcast(&obj->decision_cond);
 			    }
 			} else {
@@ -770,9 +762,9 @@ char		*new_attr=NULL, *new_val=NULL;
     return(0);
 failed:
     *sp = holder;
-    if ( new ) free(new);
-    if ( new_attr ) free(new_attr);
-    if ( new_val ) free(new_val);
+    IF_FREE(new);
+    IF_FREE(new_attr);
+    IF_FREE(new_val);
     return(-1);
 }
 
@@ -988,7 +980,7 @@ int	http_major, http_minor;
 	*p = ' ';
 	return(-1);
     }
-    if ( rq->method ) free(rq->method); rq->method = strdup(src);
+    IF_FREE(rq->method); rq->method = strdup(src);
     *p = ' ';
     p++;
     /* next space must be before HTTP */
@@ -1132,9 +1124,9 @@ normal:;
 	h_len = se-ss;
 	host = xmalloc(h_len+1, "parse_url(): host");
 	if ( !host ) {
-	    if ( login ) free(login);
-	    if ( password ) free(password);
-	    free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    xfree(proto);
 	    return(-1);
 	}
 	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
@@ -1151,10 +1143,10 @@ normal:;
 		    say_bad_request(so, "Bad port value:", number,
 			ERR_BAD_PORT, NULL);
 		}
-		if ( login ) free(login);
-		if ( password ) free(password);
-		free(proto);
-		free(host);
+		IF_FREE(login);
+		IF_FREE(password);
+		xfree(proto);
+		xfree(host);
 		return(-1);
 	}
     } else { /* there was no port */
@@ -1165,9 +1157,9 @@ normal:;
 	h_len = se-ss;
 	host = xmalloc(h_len+1, "parse_url(): host2");
 	if ( !host ) {
-	    if ( login )    free(login);
-	    if ( password ) free(password);
-	    free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    xfree(proto);
 	    return(-1);
 	}
 	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
@@ -1181,10 +1173,10 @@ only_path:
 	if ( i ) {
 	    path = xmalloc(i+1, "parse_url(): 4");
 	    if ( !path ) {
-		if ( login )    free(login);
-		if ( password ) free(password);
-		if ( host )     free(host);
-		if ( proto )    free(proto);
+		IF_FREE(login);
+		IF_FREE(password);
+		IF_FREE(host);
+		IF_FREE(proto);
 		return(-1);
 	    }
 	    memcpy(path, ss, i);
@@ -1193,10 +1185,10 @@ only_path:
     } else {
 	path=xmalloc(2, "parse_url(): 5");
 	if ( !path ) {
-	    if ( login )    free(login);
-	    if ( password ) free(password);
-	    if ( host )     free(host);
-	    if ( proto )    free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    IF_FREE(host);
+	    IF_FREE(proto);
 	    return(-1);
 	}
 	path[0] = '/'; path[1] = 0;
@@ -1204,10 +1196,10 @@ only_path:
     if ( httpv ) {
 	httpver = xmalloc(strlen(httpv) + 1, "parse_url(): httpver");
 	if ( !httpver ) {
-	    if ( login ) free(login);
-	    if ( password ) free(password);
-	    if (host) free(host);
-	    if (proto)free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    IF_FREE(host);
+	    IF_FREE(proto);
 	    return(-1);
 	}
 	memcpy(httpver, httpv, strlen(httpv)+1);
@@ -1310,9 +1302,9 @@ normal:;
 	h_len = se-ss;
 	host = xmalloc(h_len+1, "parse_raw_url(): host");
 	if ( !host ) {
-	    if ( login )    free(login);
-	    if ( password ) free(password);
-	    free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    xfree(proto);
 	    return(-1);
 	}
 	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
@@ -1324,10 +1316,10 @@ normal:;
 	if ( (pval=atoi(number)) != 0 )
 		url->port = pval;
 	    else {
-		if ( login )    free(login);
-		if ( password ) free(password);
-		free(proto);
-		free(host);
+		IF_FREE(login);
+		IF_FREE(password);
+		xfree(proto);
+		xfree(host);
 		return(-1);
 	}
     } else { /* there was no port */
@@ -1338,9 +1330,9 @@ normal:;
 	h_len = se-ss;
 	host = xmalloc(h_len+1, "parse_raw_url(): host2");
 	if ( !host ) {
-	    if ( login ) free(login);
-	    if ( password ) free(password);
-	    free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    xfree(proto);
 	    return(-1);
 	}
 	memcpy_to_lower(host, ss, h_len); host[h_len] = 0;
@@ -1354,10 +1346,10 @@ only_path:
 	if ( i ) {
 	    path = xmalloc(i+1, "parse_raw_url(): 4");
 	    if ( !path ) {
-		if ( login )    free(login);
-		if ( password ) free(password);
-		if ( host )     free(host);
-		if ( proto )    free(proto);
+		IF_FREE(login);
+		IF_FREE(password);
+		IF_FREE(host);
+		IF_FREE(proto);
 		return(-1);
 	    }
 	    memcpy(path, ss, i);
@@ -1366,10 +1358,10 @@ only_path:
     } else {
 	path = xmalloc(2, "parse_raw_url(): 5");
 	if ( !path ){
-	    if ( login )    free(login);
-	    if ( password ) free(password);
-	    if ( host )     free(host);
-	    if ( proto )    free(proto);
+	    IF_FREE(login);
+	    IF_FREE(password);
+	    IF_FREE(host);
+	    IF_FREE(proto);
 	    return(-1);
 	}
 	path[0] = '/'; path[1] = 0;
@@ -1392,13 +1384,13 @@ char		*p;
     p = url->host;
     if ( p && *p ) {
 	p = p+strlen(p)-1;
-	i = 15;
+	i = 35;
 	while ( (p >= url->host) && i ) i--,res += *p**p--;
     }
     p = url->path;
     if ( p && *p ) {
 	p = p+strlen(p)-1;
-	i = 15;
+	i = 35;
 	while ( (p >= url->path) && i ) i--,res += *p**p--;
     }
     return(res & HASH_MASK);
@@ -1424,6 +1416,8 @@ leave_obj(struct mem_obj *obj)
 /* thread leave this object
 	1) decrement ref counter.
 	2) if obj marked DEAD or NO_CACHE and !refs free it
+	3) if doc expired, then set DEAD
+	4) if doc was from disk and it must be erased - do it.
 */
 u_short 		url_hash = hash(&obj->url);
 struct	mem_obj		*child = NULL;
@@ -1442,6 +1436,21 @@ struct	url		*url;
 	return;
     }
     release_obj(obj);
+    if ( !obj->refs ) {
+	/* it is possible that object expired, but not changed,
+	   and long time stay in memory (e.g. accelerator). in 
+	   this case we will repeatedly check document freshness on server,
+	   wasting server resources. So I'll delete all expired docs from
+	   memory and from disk.
+	*/
+	if ( TEST(obj->flags, ANSW_HAS_EXPIRES) 
+	     && (obj->times.expires <= global_sec_timer) )
+	     	SET(obj->flags, FLAG_DEAD);
+	else
+	if ( TEST(obj->flags, ANSW_HAS_MAX_AGE)
+	     && (obj->times.max_age <= current_obj_age(obj)) )
+	     	SET(obj->flags, FLAG_DEAD);
+    }
     if ( (obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) && !obj->refs ) {
 	child = obj->child_obj;
 	if ( obj->flags & FLAG_FROM_DISK ) {
@@ -1464,13 +1473,17 @@ struct	url		*url;
     pthread_mutex_unlock(&obj_chain);
     if ( child ) leave_obj(child);
     if ( must_be_erased && url_str && disk_ref) {
-	RDLOCK_CONFIG;
-	WRLOCK_DB;
-	erase_from_disk(url_str, disk_ref);
-	UNLOCK_DB;
-	UNLOCK_CONFIG;
-	xfree(url_str);
-	xfree(disk_ref);
+	eraser_data_t	*ed;
+
+	ed = xmalloc(sizeof(*ed), "");
+	if ( ed ) {
+	    ed->url = url_str;
+	    ed->disk_ref = disk_ref;
+	    dataq_enqueue(&eraser_queue, ed);
+	} else {
+	    xfree(url_str);
+	    xfree(disk_ref);
+	}
     }
 }
 
@@ -1488,13 +1501,13 @@ struct	av	*av, *next;
 	xfree(av);
 	av = next;
     }
-    if ( rq->method ) free( rq->method );
-    if ( rq->original_host ) free(rq->original_host);
+    IF_FREE( rq->method );
+    IF_FREE(rq->original_host);
     if ( rq->data ) free_container(rq->data);
     if ( rq->redir_mods ) leave_l_string_list(rq->redir_mods);
     if ( rq->cs_to_server_table ) leave_l_string_list(rq->cs_to_server_table);
     if ( rq->cs_to_client_table ) leave_l_string_list(rq->cs_to_client_table);
-    if ( rq->matched_acl ) free(rq->matched_acl);
+    IF_FREE(rq->matched_acl);
     IF_FREE(rq->source);
     IF_FREE(rq->tag);
     IF_FREE(rq->c_type);
@@ -1507,12 +1520,12 @@ struct	av	*av, *next;
 void
 free_url(struct url *url)
 {
-    if (url->host)	free(url->host);
-    if (url->proto)	free(url->proto);
-    if (url->path)	free(url->path);
-    if (url->httpv)	free(url->httpv);
-    if (url->login)	free(url->login);
-    if (url->password)	free(url->password);
+    IF_FREE(url->host);
+    IF_FREE(url->proto);
+    IF_FREE(url->path);
+    IF_FREE(url->httpv);
+    IF_FREE(url->login);
+    IF_FREE(url->password);
 }
 
 /*
@@ -1533,7 +1546,6 @@ char	*trailer="\
 		Generated by Oops.\
 		</body>\
 		</html>";
-#if	defined(MODULES)
 struct	err_module	*mod = err_first;
 int			modflags = 0;
 
@@ -1544,7 +1556,6 @@ int			modflags = 0;
 	    break;
     }
     if ( !TEST(modflags, MOD_AFLAG_OUT) )
-#endif /* MODULES */
     {
 	if (hdr ) writet(so, hdr, strlen(hdr), READ_ANSW_TIMEOUT);
 	if ( r  ) writet(so, r, strlen(r), READ_ANSW_TIMEOUT);

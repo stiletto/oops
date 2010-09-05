@@ -120,8 +120,8 @@ typedef	unsigned	uint32_t;
 
 #define	MUST_BREAK	( kill_request | reconfig_request )
 
-#define	IF_FREE(p)	{if ( p ) free(p);}
-#define	IF_STRDUP(d,s)	{if ( d ) free(d); d = strdup(s);}
+#define	IF_FREE(p)	{if ( p ) xfree(p);}
+#define	IF_STRDUP(d,s)	{if ( d ) xfree(d); d = strdup(s);}
 
 #define	SLOWDOWN \
     {\
@@ -285,7 +285,6 @@ typedef	unsigned	uint32_t;
 
 #if	!defined(NO_NEED_XMALLOC)
 #define	malloc(x)	xmalloc(x, NULL)
-#define	free(x)		xfree(x)
 #endif
 
 typedef	struct {
@@ -756,6 +755,7 @@ struct	peer	{
 	time_t			last_sent;	/* time when last rq sent  */
 	time_t			last_recv;	/* time when last rq recvd */
 	char			*my_auth;	/* we send to remote	*/
+	acl_chk_list_hdr_t	*peer_access;	/* acls to allow/deny requests	*/
 };
 
 struct	icp_queue_elem {
@@ -868,7 +868,7 @@ struct	pollarg {
 typedef	struct	filebuff_ {
 	int		fd;
 #if	!defined(HAVE_SNPRINTF)
-	FILE		*FILE;
+	FILE		*File;
 #endif
 	int		buffered;
 	pthread_mutex_t	lock;
@@ -876,6 +876,25 @@ typedef	struct	filebuff_ {
 	dataq_t		queue;
 } filebuff_t;
 
+
+#define	DB_API_RES_CODE_OK		0
+#define	DB_API_RES_CODE_ERR		1
+#define	DB_API_RES_CODE_NOTFOUND	2
+#define	DB_API_RES_CODE_EXIST		3
+
+#define	DB_API_CURSOR_NORMAL		0
+#define	DB_API_CURSOR_CHECKDISK		1
+
+typedef	struct	db_api_arg_ {
+	void	*data;
+	size_t	size;
+	int	flags;
+} db_api_arg_t;
+
+typedef	struct	eraser_data_ {
+	char	*url;
+	void	*disk_ref;
+} eraser_data_t;
 
 #include	"extern.h"
 

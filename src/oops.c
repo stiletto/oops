@@ -42,14 +42,9 @@ void	free_bind_acl_list(bind_acl_t*);
 int	close_listen_so_list(void);
 extern	int	str_to_sa(char*, struct sockaddr *);
 extern	int	init_filebuff(filebuff_t*);
-void	open_db(void);
 #if	defined(_WIN32)
 BOOL	WINAPI	KillHandler(DWORD dwCtrlType);
-/* static	int	_cdecl my_bt_compare(const DBT *, const DBT *); */
-static	int	my_bt_compare(const DBT*, const DBT*);
-#else
-static	int	my_bt_compare(const DBT*, const DBT*);
-#endif	/* _WIN32 */
+#endif
 
 pthread_attr_t		p_attr;
 pthread_t		stat_thread = (pthread_t)NULL;
@@ -62,7 +57,7 @@ char    		logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
 char    		accesslog[MAXPATHLEN];
 char    		statisticslog[MAXPATHLEN];
 char			dbhome[MAXPATHLEN];
-DB			*dbp;
+int			db_in_use;
 char			dbname[MAXPATHLEN];
 int			reserved_fd[RESERVED_FD];
 int			accesslog_num, accesslog_size;
@@ -124,10 +119,6 @@ pthread_mutex_t		dns_cache_lock;
 pthread_mutex_t		st_check_in_progr_lock;
 pthread_mutex_t		mktime_lock;
 
-DB_ENV			*dbenv;
-#if	DB_VERSION_MAJOR<3
-DB_INFO			dbinfo;
-#endif
 int			use_workers;
 int			current_workers;
 int			max_workers;
@@ -135,7 +126,6 @@ int			total_alloc;
 int			clients_number;
 int			total_objects;
 char			*version;
-char			*db_ver;
 pid_t			my_pid;
 int			st_check_in_progr;
 struct	oops_stat	oops_stat;
@@ -145,7 +135,6 @@ struct	cidr_net	**sorted_networks_ptr;
 struct	listen_so_list	*listen_so_list;
 int			sorted_networks_cnt;
 int		mem_max_val, lo_mark_val, hi_mark_val;
-size_t		db_cache_mem_val;
 u_short		internal_http_port;
 struct	obj_hash_entry	hash_table[HASH_SIZE];
 struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
@@ -158,6 +147,8 @@ char		*oops_chroot;
 int             insert_via;
 int             insert_x_forwarded_for;
 int		dont_cache_without_last_modified;
+int		storages_ready;
+
 named_acl_t	*named_acls;
 struct charset	*charsets;
 acl_chk_list_hdr_t	*acl_allow;
@@ -620,10 +611,8 @@ int	format_storages = 0;
     init_filebuff(&accesslogbuff);
     parent_auth = NULL;
 
-#ifdef	MODULES
     if ( !check_config_only )
 	load_modules();
-#endif
     base_64_init();
 
     /* reserve some fd's	*/
@@ -636,7 +625,6 @@ run:
     st_check_in_progr = TRUE;
     pthread_mutex_unlock(&st_check_in_progr_lock);
     WRLOCK_CONFIG;
-    dbenv = NULL;
     bzero(base,		sizeof(base));
     bzero(logfile,	sizeof(logfile));  log_num = log_size = 0;
     bzero(accesslog,	sizeof(accesslog));accesslog_num = accesslog_size = 0;
@@ -685,6 +673,7 @@ run:
     insert_x_forwarded_for = TRUE;
     insert_via		= TRUE;
     dont_cache_without_last_modified = FALSE;
+    storages_ready = FALSE;
     if ( stop_cache )
 	free_stop_cache();
 
@@ -768,29 +757,16 @@ run:
 
     if ( oops_chroot ) {
 #if	defined(HAVE_CHROOT)
+	verb_printf("changing root to %s\n", oops_chroot);
 	if ( chroot(oops_chroot) == -1 )
 	    verb_printf("Can't chroot(): %m\n");
 #endif	/* HAVE_CHROOT */
     }
 
-    if ( oops_user ) set_euser(oops_user);
-    if ( logfile[0] != 0 ) {
-	reopen_filebuff(&logbuff, logfile, logfile_buffered);
-    }
-    if ( accesslog[0] != 0 ) {
-	reopen_filebuff(&accesslogbuff, accesslog, accesslog_buffered);
-    }
-    if ( format_storages ) {
-	do_format_storages();
-	return(0);
-    }
-
-    if ( pidfile[0] != 0 ) {
+    if ( pidfile[0] != 0 && (pid_d == -1) ) {
 	char	pid[11];
 	flock_t fl;
 
-	if ( pid_d != -1 )
-	    close(pid_d);
 	pid_d = open(pidfile, O_RDWR|O_CREAT|O_NONBLOCK, S_IRUSR|S_IWUSR|S_IRGRP);
 	if ( pid_d == -1 ) {
 	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't create pid file: %m\n");
@@ -808,8 +784,21 @@ run:
 	sprintf(pid, "%-10d", (int)getpid());
 	write(pid_d, pid, strlen(pid));
     }
+
+    if ( oops_user ) set_euser(oops_user);
+    if ( logfile[0] != 0 ) {
+	reopen_filebuff(&logbuff, logfile, logfile_buffered);
+    }
+    if ( accesslog[0] != 0 ) {
+	reopen_filebuff(&accesslogbuff, accesslog, accesslog_buffered);
+    }
+    if ( format_storages ) {
+	do_format_storages();
+	return(0);
+    }
+
     next_alloc_storage = NULL;
-    open_db();
+    db_in_use = db_mod_open();
     prepare_storages();
 
     if ( oops_user ) set_euser(NULL);	/* back to saved uid */
@@ -832,14 +821,11 @@ run:
 	lo_mark_val = 15 * 1024 * 1024;
 	hi_mark_val = 17 * 1024 * 1024;
     }
-    if ( !db_cache_mem_val )
-	db_cache_mem_val = 4 * 1024 * 1024;	/* 4M */
     reconfig_request = 0;
     UNLOCK_CONFIG;
 
-#ifdef	MODULES
     run_modules();
-#endif
+
     /* reserve them again	*/
     for(i=0;i<RESERVED_FD;i++)
 	reserved_fd[i] = open(_PATH_DEVNULL, O_RDONLY);
@@ -860,12 +846,6 @@ run:
     report_limits();
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): oops %s Started.\n", VERSION);
     version = VERSION;
-#ifdef	DB_VERSION_STRING
-    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "main(): DB engine by %s\n", DB_VERSION_STRING);
-    db_ver = DB_VERSION_STRING;
-#else
-    db_ver = "Unknown";
-#endif
     bzero(&Me, sizeof(Me));
     Me.sin_family = AF_INET;
     /* this is all we need to start server */
@@ -876,18 +856,11 @@ run:
     WRLOCK_CONFIG ;
     close_filebuff(&logbuff);
     close_filebuff(&accesslogbuff);
-    if ( dbp ) {
-	dbp->close(dbp, 0);
-	dbp = NULL;
+    if ( db_in_use ) {
+	db_mod_close();
+	db_in_use = FALSE;
     }
-#if	DB_VERSION_MAJOR<3
-    if ( dbhome[0] && db_appexit(dbenv) ) {
-	my_xlog(LOG_SEVERE, "main(): db_appexit failed.\n");
-    }
-    if ( dbenv ) free(dbenv);
-#else
-    if ( dbenv ) dbenv->close(dbenv,0);
-#endif
+    storages_ready = FALSE;
     reconfig_request = 0;
     UNLOCK_CONFIG ;
     goto run;
@@ -1043,19 +1016,11 @@ struct	peer	*next;
 	if ( peer->acls )
 	    free_acl(peer->acls);
 	IF_FREE(peer->my_auth);
+	if ( peer->peer_access )
+	    free_acl_access(peer->peer_access);
 	free(peer);
 	peer = next;
     }
-}
-
-int
-#if	defined(_WIN32)
-/* _cdecl */
-#endif	/* _WIN32 */
-my_bt_compare(const DBT* a, const DBT* b)
-{
-    if ( a->size != b->size ) return(a->size-b->size);
-    return(memcmp(a->data, b->data, a->size));
 }
 
 int
@@ -1120,65 +1085,6 @@ struct	listen_so_list *new = xmalloc(sizeof(*new),"add_socket_to_listen_list(): 
 	next->next = new;
     }
     return(0);
-}
-
-void
-open_db(void)
-{
-int	rc;
-
-    dbp = NULL;
-#if	DB_VERSION_MAJOR<3
-    dbenv = calloc(sizeof(*dbenv),1);
-    bzero(&dbinfo, sizeof(dbinfo));
-    dbinfo.db_cachesize = db_cache_mem_val;
-    dbinfo.db_pagesize = OOPS_DB_PAGE_SIZE;
-    dbinfo.bt_compare = my_bt_compare;
-    if ( !dbhome[0] || !dbname[0] ) return;
-    if (db_appinit(dbhome, NULL, dbenv, 
-    		DB_CREATE|DB_THREAD) ) {
-		my_xlog(LOG_SEVERE, "open_db(): db_appinit(%s) failed: %m\n", dbhome);
-    }
-    if ( (rc = db_open(dbname, DB_BTREE,
-    		DB_CREATE|DB_THREAD,
-    		0644,
-    		dbenv,
-    		&dbinfo,
-    		&dbp)) != 0 ) {
-	my_xlog(LOG_SEVERE, "open_db(): db_open(%s): %d %m\n", dbname, rc);
-	dbp = NULL;
-    }
-#else
-    if ( !dbhome[0] || !dbname[0]) return;
-    if ( db_env_create(&dbenv, 0) )
-	return;
-    dbenv->set_errfile(dbenv, stderr);
-    dbenv->set_errpfx(dbenv, "oops");
-    dbenv->set_cachesize(dbenv, 0, db_cache_mem_val, 0);
-    rc = dbenv->open(dbenv, dbhome, NULL,
-	DB_CREATE|DB_THREAD|DB_INIT_MPOOL|DB_PRIVATE,
-	0);
-    if ( rc ) {
-	my_xlog(LOG_SEVERE, "open_db(): Can't open dbenv.\n");
-	dbenv->close(dbenv, 0); dbenv = NULL;
-	return;
-    }
-    rc = db_create(&dbp, dbenv, 0);
-    if ( rc ) {
-	dbenv->close(dbenv, 0); dbenv = NULL;
-	dbp = NULL;
-	return;
-    }
-    dbp->set_bt_compare(dbp, my_bt_compare);
-    dbp->set_pagesize(dbp, OOPS_DB_PAGE_SIZE);
-    rc = dbp->open(dbp, dbname, NULL, DB_BTREE, DB_CREATE, 0);
-    if ( rc ) {
-	my_xlog(LOG_SEVERE, "open_db(): dbp->open(%s): (%d): %s\n", dbname, rc, db_strerror(rc));
-	dbenv->close(dbenv, 0); dbenv = NULL;
-	dbp = NULL;
-	return;
-    }
-#endif
 }
 
 void

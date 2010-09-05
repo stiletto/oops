@@ -1,0 +1,46 @@
+.TH OOPS 8 "Sep 2000" "Oops"
+.SH NAME
+oops \- HTTP caching proxy server
+.SH SYNOPSIS
+.B @OOPS_SBINDIR@/oops
+.RB [-{C|c}\ config_filename]\ [-v]\ [-V]\ [-w\ num]\ [-W\ num]
+.RB [-x\ acdfhinsACDFHINS]\ [-{Z|z}]
+.SH DESCRIPTION
+.B oops
+is a http caching proxy server written with performance as primary goal.
+For detailed information see the well-commented configuration file
+.I @OOPS_SYSCONFDIR@/oops.cfg .
+Anyway You can find useful information at the homepage:
+
+.RI http://zipper.paco.net/~igor/oops.eng/
+(english)
+
+.RI http://zipper.paco.net/~igor/oops/
+(russian)
+.SH OPTIONS
+.IP \fB-h
+Help about the oops's arguments.
+.IP \fB-c\ file\fP
+path to config file.
+.IP \fB-C\ file\fP
+same as the \fB-c\f
+.IP \fB-v\fP
+verbose startup.
+.IP \fB-V\fP
+show version info.
+.IP \fB-w\ number\fP
+use thread pool. number define initial size of the pool.
+.IP \fB-W\ number\fP
+limit thread pool size to number.
+.IP \fB-x[acdfhins]\fP
+log level (a-all, c-notice, d-debug, f-ftp, h-http,
+i-information, n-dns, s-storages).
+.IP \fB-x[ACDFHINS]\fP
+negative log level.
+.IP \fB-z\fP
+format storages.
+.IP \fB-Z\fP
+like the \fB-z\fP
+.PP
+.SH AUTHOR
+Mainly Igor Khasilev <igor@paco.net>

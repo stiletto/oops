@@ -1,4 +1,4 @@
-VER=1.4.6
+VER=1.4.22
 
 
 all:
@@ -7,11 +7,13 @@ all:
 clean:
 	cd src; $(MAKE) clean
 	cd src/modules; $(MAKE) clean
+	cd doc; rm -f oops.8 oopsctl.8
 
 distclean:
 	rm -f config.cache config.status config.log *~;
 	cd src; rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln version.h config.h oops.cfg oops core
-	cd src/modules; rm -f Makefile *o oopsctl *~ *.ln
+	cd src/modules; rm -Rf Templates.DB Makefile *o oopsctl *~ *.ln
+	cd doc; rm -f oops.8 oopsctl.8
 
 tar:
 	$(MAKE) distclean

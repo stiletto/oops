@@ -20,9 +20,44 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_ERR ;
-char	module_name[] = "err" ;
-char	module_info[] = "Error reporting module" ;
+#define	MODULE_NAME	"err"
+#define	MODULE_INFO	"Error reporting module"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_ERR  ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		err(int so, char *msg, char *reason, int code, struct request* rq, int *flags);
+#else
+static	char	module_type   = MODULE_ERR  ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static	int	mod_load();
+static	int	mod_unload();
+static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	err(int so, char *msg, char *reason, int code, struct request* rq, int *flags);
+#endif
+
+struct	err_module err_mod = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_ERR,
+	MODULE_INFO,
+	mod_run
+	},
+	err
+};
+
 
 #define	LANG_EN	0
 #define	LANG_RU	1
@@ -65,6 +100,12 @@ char	*messages[2][8] = {
 	 "Ошибка передачи данных",
 	 "Доступ запрещен ACL"}
 };
+
+int
+mod_run()
+{
+    return(MOD_CODE_OK);
+}
 
 int
 mod_load()
@@ -237,7 +278,6 @@ struct	buff		*body;
 			    if ( rq && (rq->url.port != 0) ) {
 				char buf[10];
 				sprintf(&buf[0],"%d", rq->url.port);
-				printf("m:'%s'\n", buf);
 				attach_data("\n<br>Port:", 10, body);
 				attach_data(buf, strlen(buf), body);
 			    }
@@ -285,7 +325,6 @@ struct	buff		*body;
 			    if ( rq && (rq->url.port != 0) ) {
 				char buf[10];
 				sprintf(&buf[0],"%d", rq->url.port);
-				printf("M:'%s'\n", buf);
 				attach_data("\n<br>Port:", 10, body);
 				attach_data(buf, strlen(buf), body);
 			    }

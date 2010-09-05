@@ -3,7 +3,6 @@
 ## 
 
 nameserver 195.114.128.50
-nameserver 194.93.190.123
 nameserver 193.219.193.130
 
 ##
@@ -34,23 +33,23 @@ icp_port	3130
 #  will be rotated automatically (up to N files up to S bytes in size)
 ##
 logfile		/dev/tty
-#logfile	@prefix@/oops/logs/oops.log { 3 1m } unbuffered
+#logfile	@OOPS_HOME@/logs/oops.log { 3 1m } unbuffered
 
 ##
 #  Accesslog - the same as for squid. Re rotating - see note for logfile
 ##
 accesslog	/dev/tty
-#accesslog	@prefix@/oops/logs/access.log
+#accesslog	@OOPS_HOME@/logs/access.log
 
 ##
 #  Pidfile. for kill -1 `cat oops.pid` and for locking.
 ##
-pidfile		@prefix@/oops/logs/oops.pid
+pidfile		@OOPS_LOCALSTATEDIR@/oops.pid
 
 ##
 # Statistics file - once per minute flush some statistics to this file
 ##
-statistics	@prefix@/oops/logs/statfile
+statistics	@OOPS_LOCALSTATEDIR@/oops_statfile
 
 ##
 #  icons - where to find link.gif, dir.gif, binary.gif and so on (for 
@@ -75,18 +74,6 @@ mem_max		16m
 #  swaping cachable objects to disk
 ##
 lo_mark		8m
-
-##
-#  This parameter specifies internal cache size of BerkeleyDB.
-#  Increase this parameter for best performance (if you have a lot of memory).
-#  For example:  db_cache_mem	64m
-#  Default and minimum value:	4m
-#
-#  This memory pool is not part of memory pool, specified by mem_max parameter.
-#  WARNING: the amount of RAM used by oops will be increased by the value of
-#  this parameter.
-##
-#db_cache_mem	4m
 
 ##
 # start random early drop when number of clients reach some level.
@@ -202,7 +189,7 @@ insert_via		yes
 #acl	BADPORTS	port		[0:79],110,138,139,513,[6000:6010]
 #acl	BADDOMAIN	dstdom		baddomain1.com baddomain2.com
 #acl	BADDOMREGEX	dstdom_regex	baddomain\.((com)|(org))
-#acl	LOCAL_NETWORKS	src_ip		include:@prefix@/oops/acl_local_networks
+#acl	LOCAL_NETWORKS	src_ip		include:@OOPS_SYSCONFDIR@/acl_local_networks
 #acl	BADNETWORKS	src_ip		192.168.10/24
 #acl	WORKTIME	time		Mon,Tue:Fri 0900:1800
 acl	ADMINS		src_ip		127.0.0.1
@@ -228,6 +215,10 @@ stop_cache	cgi-bin
 
 ##
 #	refresh_pattern ACLNAME min percent max
+#	'min' and 'max' are limits between Expite time will be assigned
+#	Iff document have no expire: header and have Last-Modified: header
+#	we will use 'percent' to estimate how far in the future document will
+#	be expired.
 ##
 #refresh_pattern	CACHEABLECGI	20 50% 200
 #refresh_pattern	WWWPACO		0 0% 0
@@ -363,15 +354,6 @@ group	world	{
 ##
 
 ##
-#  dbhome - directory where all DB indexes reside. Use full path
-#	    this directory must exist.
-#  dbname - filename for index file. Use just filename (no full path)
-##
-
-dbhome	@prefix@/oops/DB
-dbname	dburl
-
-##
 #  Storage description (can be several)
 #  path - filename of storage. can be raw device (be carefull!)
 #  size - size (of storage file). Can be smthng like 100k or 200m or 4g
@@ -379,7 +361,7 @@ dbname	dburl
 ##
 
 storage {
-	path @prefix@/oops/storages/oops_storage ;
+	path @OOPS_HOME@/storages/oops_storage ;
 #	Size of the storage. Can be in bytes or 'auto'. Auto is
 #	usefull for pre-created storages or disk slices.
 #	NOTE: 'size auto' won't work for Linux on disk slices.
@@ -396,7 +378,7 @@ storage {
 }
 
 #storage {
-#	path @prefix@/oops/storages/oops_storage1 ;
+#	path @OOPS_HOME@/storages/oops_storage1 ;
 #	size 600m ;
 #}
 
@@ -405,9 +387,9 @@ module lang {
 	default_charset	koi8-r
 
 	# Recode tables and other charset stuff
-	CharsetRecodeTable windows-1251 @prefix@/oops/tables/koi-win.tab
-	CharsetRecodeTable ISO-8859-5 @prefix@/oops/tables/koi-iso.tab
-	CharsetRecodeTable ibm866 @prefix@/oops/tables/koi-alt.tab
+	CharsetRecodeTable windows-1251 @OOPS_SYSCONFDIR@/tables/koi-win.tab
+	CharsetRecodeTable ISO-8859-5 @OOPS_SYSCONFDIR@/tables/koi-iso.tab
+	CharsetRecodeTable ibm866 @OOPS_SYSCONFDIR@/tables/koi-alt.tab
 	CharsetAgent windows-1251 AIR_Mosaic IWENG/1 MSIE WinMosaic (Windows (WinNT;
 	CharsetAgent windows-1251 (Win16; (Win95; (Win98; (16-bit) Opera/3.0
 	CharsetAgent ibm866 DosLynx Lynx2/OS/2
@@ -417,7 +399,7 @@ module err {
 	# error reporting module
 
 	# template
-	template @prefix@/oops/err_template.html
+	template @OOPS_SYSCONFDIR@/err_template.html
 
 	# Language to use when generate Error messages
 	lang ru
@@ -434,8 +416,8 @@ module passwd_file {
 
 	realm		oops
 	scheme		Basic
-	file		@prefix@/oops/passwd
-	template	@prefix@/oops/auth_template.html
+	file		@OOPS_SYSCONFDIR@/passwd
+	template	@OOPS_SYSCONFDIR@/auth_template.html
 }
 
 module redir {
@@ -452,8 +434,8 @@ module redir {
 	# you don't have to reconfigure oops each time
 	# you edit rules or template, they will be reloaded authomatically
 
-	file		@prefix@/oops/redir_rules
-	template	@prefix@/oops/redir_template.html
+	file		@OOPS_SYSCONFDIR@/redir_rules
+	template	@OOPS_SYSCONFDIR@/redir_template.html
 
 	# This module can process requests which come on http_port
 	# and/or on different port. For example, you wish oops
@@ -469,7 +451,7 @@ module redir {
 
 module oopsctl {
 	# path to oopsctl unix socket
-	socket_path	@prefix@/oops/logs/oopsctl
+	socket_path	@OOPS_LOCALSTATEDIR@/oopsctl
 	# time to auto-refresh page (seconds)
         html_refresh    300
 }
@@ -504,7 +486,7 @@ module	vary {
 #	File with maps and other config directives
 #	Checked once per minute. No need to restart oops if maps changed
 ##
-#	file			@prefix@/oops/accel_maps
+#	file			@OOPS_SYSCONFDIR@/accel_maps
 #}
 
 ##
@@ -544,4 +526,56 @@ module	vary {
 #	buffered
 #	path	/usr/local/oops/logs/access_custom2
 #	format	"%h->%A %l %u [%t] \"%r\" %s %b \"%{User-Agent}i\""
+#}
+
+module	berkeley_db {
+    ##
+    #  dbhome - directory where all DB indexes reside. Use full path
+    #	    this directory must exist.
+    #  dbname - filename for index file. Use just filename (no full path)
+    ##
+
+	dbhome	@OOPS_HOME@/DB
+	dbname	dburl
+
+    ##
+    #  This parameter specifies internal cache size of BerkeleyDB.
+    #  Increase this parameter for best performance (if you have a lot of memory).
+    #  For example:  db_cache_mem	64m
+    #  Default and minimum value:	4m
+    #
+    #  This memory pool is not part of memory pool, specified by mem_max parameter.
+    #  WARNING: the amount of RAM used by oops will be increased by the value of
+    #  this parameter.
+    ##
+    #db_cache_mem	4m
+
+}
+
+#module	gigabase_db {
+#    This module enable GigaBASE as database engine.
+#    You can use berkeley_db or gigabase_db, not both.
+#    Also, important notice - indexes created with different modules
+#    are not compatible.
+#    ##
+#    #  dbhome - directory where all DB indexes reside. Use full path
+#    #	    this directory must exist.
+#    #  dbname - filename for index file. Use just filename (no full path)
+#    ##
+#
+#	dbhome	@OOPS_HOME@/DB
+#	dbname	gdburl
+#
+#    ##
+#    #  This parameter specifies internal cache size of BerkeleyDB.
+#    #  Increase this parameter for best performance (if you have a lot of memory).
+#    #  For example:  db_cache_mem	64m
+#    #  Default and minimum value:	4m
+#    #
+#    #  This memory pool is not part of memory pool, specified by mem_max parameter.
+#    #  WARNING: the amount of RAM used by oops will be increased by the value of
+#    #  this parameter.
+#    ##
+#    #db_cache_mem	4m
+#
 #}

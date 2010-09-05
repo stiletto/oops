@@ -1,4 +1,8 @@
-FTP reget
-HTTP ranges and reget
+FTP reget		done
+HTTP ranges and reget	done
 Per-session bandwidth
-More info on error page
+More info on error page	done
+per peer acl		done
+TCP_MEM_HIT
+'ignore if-modified-since' option for accel
+AS-based acl

@@ -36,9 +36,45 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 int		natfd;
 #endif
 
-char	module_type   = MODULE_REDIR ;
-char	module_name[] = "transparent" ;
-char	module_info[] = "Tranparent proxy" ;
+#define	MODULE_NAME	"transparent"
+#define	MODULE_INFO	"Transparent proxy"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_REDIR ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int     	mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		redir(int so, struct group *group, struct request *rq, int *flags);
+#else
+static	char	module_type   = MODULE_REDIR ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static  int     mod_load();
+static  int     mod_unload();
+static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	redir(int so, struct group *group, struct request *rq, int *flags);
+#endif
+
+struct  redir_module    transparent = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_REDIR,
+	MODULE_INFO,
+	mod_run
+	},
+	redir,
+	NULL,
+	NULL
+};
 
 static	rwl_t	tp_lock;
 #define	RDLOCK_TP_CONFIG	rwl_rdlock(&tp_lock)
@@ -54,7 +90,7 @@ static	char		*myports_string;
 int
 mod_load()
 {
-    verb_printf("Transparent started\n");
+    printf("Transparent started\n");
     rwl_init(&tp_lock);
     nmyports = 0;
 #if	defined(HAVE_IPF)

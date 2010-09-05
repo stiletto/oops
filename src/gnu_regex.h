@@ -213,10 +213,10 @@ extern reg_syntax_t re_syntax_options;
 /* Maximum number of duplicates an interval can allow.  Some systems
    (erroneously) define this in other header files, but we want our
    value, so remove any previous define.  */
-#ifdef RE_DUP_MAX
-#undef RE_DUP_MAX
+#ifdef GNU_RE_DUP_MAX
+#undef GNU_RE_DUP_MAX
 #endif
-#define RE_DUP_MAX ((1 << 15) - 1) 
+#define GNU_RE_DUP_MAX ((1 << 15) - 1) 
 
 
 /* POSIX `cflags' bits (i.e., information for `regcomp').  */

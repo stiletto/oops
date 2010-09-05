@@ -75,8 +75,8 @@ char 			cmdarg[1024];
 	argc--; argv++;
     }
     if ( !path[0] ) {
-	strncpy(path, OOPS_HOME, sizeof(path));
-	strncat(path, "/logs/oopsctl", sizeof(path)-strlen(path));
+	strncpy(path, OOPS_LOCALSTATEDIR, sizeof(path));
+	strncat(path, "/oopsctl", sizeof(path)-strlen(path));
     }
     if ( !strcasecmp(*command, "help") ) {
 	printf("oopsctl [-s pathtosocket] [command]\n");
@@ -88,14 +88,15 @@ char 			cmdarg[1024];
 	printf("reconfigure	- re-read config file\n");
 	printf("shutdown(stop)	- shutdown oops\n");
 	printf("rotate		- rotate logs\n");
-	printf("start		- start oops (same as %s/oops -c %s)\n", OOPS_HOME,OOPS_CFG);
+	printf("verbosity=LVL	- set verbosity (like -x LVL)\n");
+	printf("start		- start oops (same as %s/oops -c %s)\n", OOPS_SBINDIR,OOPS_CFG);
 	exit(0);
     } else
     if ( !strcasecmp(*command, "start") ) {
 	pid_t	child;
 	char	cmdpath[1024];
 
-	sprintf(cmdpath,"%s/oops", OOPS_HOME);
+	sprintf(cmdpath,"%s/oops", OOPS_SBINDIR);
 	*(1+command) = cmdpath;
         chdir(OOPS_HOME);
 	child = fork();
@@ -118,7 +119,7 @@ char 			cmdarg[1024];
     }
     if ( !strcasecmp(*command, "chkconfig") ) {
 	char	cmdpath[1024], cmdarg[1024];
-	sprintf(cmdpath,"%s/oops", OOPS_HOME);
+	sprintf(cmdpath,"%s/oops", OOPS_SBINDIR);
 	sprintf(cmdarg, "-C%s", OOPS_CFG);
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
@@ -131,7 +132,7 @@ char 			cmdarg[1024];
 	int	stat;
 
 	/* first check if config is OK */
-	sprintf(cmdpath,"%s/oops", OOPS_HOME);
+	sprintf(cmdpath,"%s/oops", OOPS_SBINDIR);
 	sprintf(cmdarg, "-C%s", OOPS_CFG);
 	*(1+command) = cmdpath;
 	*(2+command) = cmdarg;
@@ -159,6 +160,7 @@ char 			cmdarg[1024];
 	 !strcasecmp(*command,"reconfigure") ||
 	 !strcasecmp(*command,"rotate") ||
 	 !strcasecmp(*command,"stop") ||
+	 !strncasecmp(*command,"verbosity=", 10) ||
 	 !strcasecmp(*command,"shutdown")
         ) {
 srv_conn:

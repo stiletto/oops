@@ -1,69 +1,75 @@
 CC = @CC@
+CXX = @CXX@
 LIBS = @LIBS@
 CFLAGS = @CFLAGS@ @DEFS@
 LDFLAGS = @LDFLAGS@
 LD = @LD@
 SOFLAGS = @SOFLAGS@
 OPT_MODS = @OPT_MODS@
+CXXCOMPFLAGS=@CXXCOMPFLAGS@
+CXXSOFLAGS=@CXXSOFLAGS@
 
-.SUFFIXES:	.c .o .so
+.SUFFIXES:	.c .cpp .o .so
 
-#.c.o:
-#	${CC} ${CFLAGS} ${CDEFS} -c $<
+.c.o:
+	${CC} ${CFLAGS} ${CDEFS} -c $<
 #
-#.o.so:
-#	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o $@ $<
+.o.so:
+	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
 
+.c.so:
+	${CC} ${CFLAGS} ${SOFLAGS} ${CDEFS} -c $<
+	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $(<:.c=.o) $(LIBS)
 
-all:	log_dummy.so err.so passwd_file.so lang.so redir.so oopsctl_mod.so oopsctl \
-	vary_header.so accel.so transparent.so custom_log.so fastredir.so $(OPT_MODS)
+.cpp.o:
+	${CXX} ${CFLAGS} ${SOFLAGS} ${CDEFS} $(CXXCOMPFLAGS) $< -o $*.a
+	mv $*.a $*.o
 
-log_dummy.so:	log_dummy.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c log_dummy.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o log_dummy.so log_dummy.o
+.cpp.so:
+	${CXX} ${CFLAGS} ${CXXSOFLAGS} ${CDEFS} $< $(LDFLAGS) @LIBGB_PATH@ @LIBGB_NAME@ $(LIBS) -o $@
 
-err.so:		err.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c err.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o err.so err.o
+all:	log_dummy.@MOD_EXT@ \
+	err.@MOD_EXT@ \
+	passwd_file.@MOD_EXT@ \
+	lang.@MOD_EXT@ \
+	redir.@MOD_EXT@ \
+	oopsctl_mod.@MOD_EXT@ \
+	oopsctl \
+	vary_header.@MOD_EXT@ \
+	accel.@MOD_EXT@ \
+	transparent.@MOD_EXT@ \
+	custom_log.@MOD_EXT@ \
+	fastredir.@MOD_EXT@ \
+	berkeley_db_api.@MOD_EXT@ \
+	gigabase_db_api.@MOD_EXT@ \
+	$(OPT_MODS)
 
-lang.so:	lang.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c lang.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o lang.so lang.o
+log_dummy.@MOD_EXT@:	log_dummy.c ../modules.h ../oops.h
 
-oopsctl_mod.so:	oopsctl_mod.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c oopsctl_mod.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o oopsctl_mod.so oopsctl_mod.o
+err.@MOD_EXT@:		err.c ../modules.h ../oops.h
 
-passwd_file.so:	passwd_file.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c passwd_file.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o passwd_file.so passwd_file.o
+lang.@MOD_EXT@:		lang.c ../modules.h ../oops.h
 
-redir.so:	redir.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c redir.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o redir.so redir.o
+oopsctl_mod.@MOD_EXT@:	oopsctl_mod.c ../modules.h ../oops.h
 
-fastredir.so:	fastredir.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c fastredir.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o fastredir.so fastredir.o
+passwd_file.@MOD_EXT@:	passwd_file.c ../modules.h ../oops.h
 
-vary_header.so:	vary_header.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c vary_header.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o vary_header.so vary_header.o
+redir.@MOD_EXT@:	redir.c ../modules.h ../oops.h
 
-accel.so:	accel.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c accel.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o accel.so accel.o
+fastredir.@MOD_EXT@:	fastredir.c ../modules.h ../oops.h
 
-transparent.so:	transparent.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c transparent.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o transparent.so transparent.o
+vary_header.@MOD_EXT@:	vary_header.c ../modules.h ../oops.h
 
-custom_log.so:	custom_log.c ../modules.h ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} -c custom_log.c
-	${LD} $(SOFLAGS) $(LDFLAGS) $(LIBS) -o custom_log.so custom_log.o
+accel.@MOD_EXT@:	accel.c ../modules.h ../oops.h
+
+transparent.@MOD_EXT@:	transparent.c ../modules.h ../oops.h
+
+custom_log.@MOD_EXT@:	custom_log.c ../modules.h ../oops.h
+
+berkeley_db_api.@MOD_EXT@:	berkeley_db_api.c ../modules.h ../oops.h
 
 oopsctl: oopsctl.c ../modules.h ../config.h  ../oops.h
-	${CC} ${CFLAGS} ${CDEFS} oopsctl.c $(LIBS) -o oopsctl
+	${CC} ${CFLAGS} ${CDEFS} oopsctl.c ${LDFLAGS} ${LIBS} -o oopsctl
 
 clean:
 	rm -f *.o *.so oopsctl

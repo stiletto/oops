@@ -171,8 +171,8 @@ int		 purge = PURGE_INTERVAL;
 	  FILE *statl = fopen(statisticslog, "w");
 
 	    if ( statl ) {
-		fprintf(statl,"clients      : %d\n", (int)temp_stat.clients);
-		fprintf(statl,"uptime       : %d sec.\n", (utime_t)(global_sec_timer-start_time));
+		fprintf(statl,"clients      : %d\n", (unsigned)temp_stat.clients);
+		fprintf(statl,"uptime       : %ld sec.\n", (utime_t)(global_sec_timer-start_time));
 		fprintf(statl,"http_requests: %d\n", (unsigned)temp_stat.requests_http);
 		fprintf(statl,"http_hits    : %d\n", (unsigned)temp_stat.hits);
 		fprintf(statl,"icp_requests : %d\n", (unsigned)temp_stat.requests_icp);

@@ -1,3 +1,19 @@
+	02.10.00 - manpages (contributed by Tamas SZERB <toma@rulez.org>)
+	27.09.00 - Fixed bug in clean_disc.c (core during expire with GigaBASE)
+		   Fixed bug with oops.pid reopen (oopsctl reconfigure effectively
+		   do oopsctl stop). It was introduced during FreeBSD port prepare.
+	21.09.00 - oopsctl verbosity=LVL
+	14.09.00 - fixed security fix ([a:b] in badports procssed incorrectly)
+	13.09.00 - configure can produce "FreeBSD port"-ready Makefile
+		   fixed bug in lang.c (by Peter S. Voronov)
+	16.08.00 - parse_myports(): bind problem for FreeBSD solved.
+	14.08.00 - parse_myports(): bind problem report.
+	11.08.00 - fixed bug in refresh_pattern percent calculation
+		   Mark expired documents as dead during leave.
+	10.08.00 - GigaBASE seems to to work now.
+	02.08.00 - compile without BerkeleyDB
+		   peer_access using ACL option
+	01.08.00 - fixed bug when icp-peer have no allow and deny statements
 version 1.4.6
 	09.06.00 - Authorisation with parent/sibling
 		   --with-malloc option in configure (for exapmle

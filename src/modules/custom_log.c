@@ -44,9 +44,46 @@ static	rwl_t		cloglock;
 static	void		close_logfiles(void);
 static	void		process_log_record(logfile_t*, int, struct request*, struct mem_obj*);
 
-char	module_type = MODULE_LOG;
-char	module_info[] ="Customized access log.";
-char	module_name[] ="CustomLog";
+#define		MODULE_INFO	"Customized access log."
+#define		MODULE_NAME	"CustomLog"
+
+#if	defined(MODULES)
+char		module_type 	= MODULE_LOG;
+char		module_info[]	= MODULE_INFO;
+char		module_name[]	= MODULE_NAME;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		mod_log(int elapsed, struct request *rq, struct mem_obj *obj);
+int		mod_reopen(void);
+#else
+static	char	module_type 	= MODULE_LOG;
+static	char	module_info[]	= MODULE_INFO;
+static	char	module_name[]	= MODULE_NAME;
+static	int	mod_load();
+static	int	mod_unload();
+static	int	mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	mod_log(int elapsed, struct request *rq, struct mem_obj *obj);
+static	int	mod_reopen(void);
+#endif
+
+struct	log_module custom_log = {
+	{
+	NULL,NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_LOG,
+	MODULE_INFO,
+	mod_run
+	},
+	mod_log,
+	mod_reopen
+};
 
 int
 mod_log(int elapsed, struct request *rq, struct mem_obj *obj)
@@ -177,7 +214,7 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 				attr_value(rq->av_pairs, "Authorization")) != NULL ) ) {
 
 			if ( !strncasecmp(authorization, "Basic", 5 ) ) {
-			    char	*data, *up = NULL, *u, *p;
+			    char	*data, *up = NULL, *p;
 			    data = authorization + 5;
 			    while ( *data && IS_SPACE(*data) ) data++;
 			    if ( *data && ((up = base64_decode(data)) != NULL) ) {

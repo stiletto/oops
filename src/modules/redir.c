@@ -20,9 +20,46 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"../oops.h"
 #include	"../modules.h"
 
-char	module_type   = MODULE_REDIR ;
-char	module_name[] = "redir" ;
-char	module_info[] = "Regex URL Redirector" ;
+#define	MODULE_NAME	"redir"
+#define	MODULE_INFO	"Regex URL Redirector"
+
+#if	defined(MODULES)
+char		module_type   = MODULE_REDIR ;
+char		module_name[] = MODULE_NAME ;
+char		module_info[] = MODULE_INFO ;
+int		mod_load();
+int		mod_unload();
+int		mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+int		redir(int so, struct group *group, struct request *rq, int *flags);
+#else
+static	char	module_type   = MODULE_REDIR ;
+static	char	module_name[] = MODULE_NAME ;
+static	char	module_info[] = MODULE_INFO ;
+static  int     mod_load();
+static  int     mod_unload();
+static  int     mod_config_beg(), mod_config_end(), mod_config(), mod_run();
+static	int	redir(int so, struct group *group, struct request *rq, int *flags);
+#endif
+
+struct  redir_module    redir_mod = {
+	{
+	NULL, NULL,
+	MODULE_NAME,
+	mod_load,
+	mod_unload,
+	mod_config_beg,
+	mod_config_end,
+	mod_config,
+	NULL,
+	MODULE_REDIR,
+	MODULE_INFO,
+	mod_run
+	},
+	redir,
+	NULL,
+	NULL
+};
+
 
 struct	redir_rule {
 	char			*redirect;	/* if not null send HTTP redirect */
@@ -30,6 +67,14 @@ struct	redir_rule {
 	regex_t			preg;
 	struct	redir_rule	*next;
 };
+
+#define	MAXMATCH	10
+#define INIT_PMATCH(p)          do {\
+				    int i;\
+				    for(i=0;i<MAXMATCH;i++)\
+				    p[i].rm_so = p[i].rm_eo = -1;\
+				} while(0)
+
 
 static	rwl_t	redir_lock;
 #define	RDLOCK_REDIR_CONFIG	rwl_rdlock(&redir_lock)
@@ -52,7 +97,7 @@ static	struct redir_rule *redir_rules;			/* list of rules */
 static	void		  free_rules(struct redir_rule*);
 static	void		  reload_redir_rules(void), check_rules_age(void);
 static	void		  reload_redir_template(void), check_template_age(void);
-
+static	char		  *build_destination(char*, regmatch_t *, char*);
 static	char		  *default_template = "\
 		<body bgcolor=white>Requested URL forbidden<p>\n\
 		<hr>\n\
@@ -62,7 +107,7 @@ static	int	default_template_size;
 int
 mod_load()
 {
-    verb_printf("Redirector started\n");
+    printf("Redirector started\n");
     rwl_init(&redir_lock);
     redir_rules_file[0] = 0;
     redir_template[0] = 0;
@@ -162,6 +207,7 @@ int	url_len, rc;
 struct	redir_rule	*rr;
 struct	output_object	*oobj = NULL;
 struct	buff		*body = NULL;
+regmatch_t		pmatch[MAXMATCH];
 
     my_xlog(LOG_DBG|LOG_INFORM, "redir(): redir called.\n");
     if ( !rq ) return(MOD_CODE_OK);
@@ -195,8 +241,9 @@ struct	buff		*body = NULL;
     check_template_age();
     RDLOCK_REDIR_CONFIG ;
     rr = redir_rules;
+    INIT_PMATCH(pmatch);
     while ( rr ) {
-	if ( !regexec(&rr->preg, url, 0,  NULL, 0) ) {
+	if ( !regexec(&rr->preg, url, MAXMATCH, (regmatch_t*)&pmatch, 0) ) {
 	    if ( rr->orig_regex ) my_xlog(LOG_DBG|LOG_INFORM, "redir(): %s matched %s\n", url, rr->orig_regex);
 	    /* matched */
 	    if ( rr->redirect ) {
@@ -204,12 +251,18 @@ struct	buff		*body = NULL;
 		oobj = malloc(sizeof(*oobj));
 		bzero(oobj, sizeof(*oobj));
 		if ( oobj ) {
+		  char	*new_dest = NULL;
 		    bzero(oobj, sizeof(*oobj));
 		    put_av_pair(&oobj->headers, "HTTP/1.0", "302 Moved temporary");
 		    put_av_pair(&oobj->headers,"Expires:", "Thu, 01 Jan 1970 00:00:01 GMT");
-		    put_av_pair(&oobj->headers,"Location:", rr->redirect);
+		    new_dest = build_destination(url, (regmatch_t*)&pmatch, rr->redirect);
+		    if ( new_dest )
+			     put_av_pair(&oobj->headers,"Location:", new_dest);
+			else
+			     put_av_pair(&oobj->headers,"Location:", rr->redirect);
 		    put_av_pair(&oobj->headers,"Content-Type:", "text/html");
 		    process_output_object(so, oobj, rq);
+		    IF_FREE(new_dest);
 		}
 		if ( flags ) *flags |= MOD_AFLAG_OUT|MOD_AFLAG_BRK;
 		goto done;
@@ -350,7 +403,7 @@ struct	redir_rule	*new_rr, *last;
 		bzero(new_rr, sizeof(*new_rr));
 		if ( new_rr ) {
 		    char	*rr_url, *rr_orig;
-		    if ( regcomp(&new_rr->preg, reg, REG_NOSUB|REG_ICASE|REG_EXTENDED) ) {
+		    if ( regcomp(&new_rr->preg, reg, REG_ICASE|REG_EXTENDED) ) {
 			free(new_rr);
 			continue;
 		    }
@@ -480,3 +533,76 @@ check_rules_age(void)
 	return;
     reload_redir_rules();
 }
+
+char*
+build_destination(char *src, regmatch_t *pmatch, char *target)
+{
+char		*result = NULL, *s, *d, esc, doll;
+regmatch_t      *curr = pmatch+1;
+int		length = 0, subs = 0, n;
+
+    if ( !src || !pmatch ) return(NULL);
+    while ( curr->rm_so > -1 ) {
+	length += curr->rm_eo - curr->rm_so + 1;
+	subs++;
+	curr++;
+    }
+    length += strlen(src) + 1;
+    result = malloc(length);
+    if ( !result ) return(NULL);
+    esc = doll = 0;
+    s = target;
+    d = result;
+    while ( *s ) {
+	if ( (*s == '\\') && !esc ) {
+	    esc = TRUE;
+	    s++;
+	    continue;
+	}
+	if ( (*s == '$') && esc ) {
+	    esc = FALSE;
+	    *d = '$';
+	    s++;d++;
+	    continue;
+	}
+	if ( (*s == '\\') && esc ) {
+	    esc = FALSE;
+	    *d = '\\';
+	    s++;d++;
+	    continue;
+	}
+	esc = FALSE;
+	if ( *s == '$' ) {
+	    doll = TRUE;
+	    s++;
+	    continue;
+ 	}
+	if ( IS_DIGIT(*s) && doll ) {
+	    /* insert n-th subexpression */
+	    n = *s - '0';
+	    if ( ( n > 0 ) && (n<=subs) && ( n < MAXMATCH) ) {
+	        int     copylen;
+	        curr = &pmatch[n];
+
+		if ( curr->rm_so != -1 ) {
+		    copylen = curr->rm_eo - curr->rm_so;
+
+		    if ( copylen > 0 ) {
+			memcpy(d, src+curr->rm_so, copylen);
+			d+=copylen;
+		    }
+		}
+	    }
+	    s++;
+	    doll = FALSE;
+	    continue;
+	}
+	doll = FALSE;
+	*d = *s;
+	s++;d++;
+    }
+    *d = 0;
+
+    return(result);
+}
+

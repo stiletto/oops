@@ -24,7 +24,7 @@ int	parser_errors;
 %}
 
 %s	groupst peerst
-%s	httpst icpst aclst
+%s	httpst icpst aclst peeraclst
 %s	storagest modulest modulebody
 
 nl	\n
@@ -41,17 +41,16 @@ logfile		[Ll][Oo][Gg][Ff][Ii][Ll][Ee]
 accesslog	[Aa][Cc][Cc][Ee][Ss][Ss][Ll][Oo][Gg]
 pidfile		[Pp][Ii][Dd][Ff][Ii][Ll][Ee]
 nameserver	[Nn][Aa][Mm][Ee][Ss][Ee][Rr][Vv][Ee][Rr]
-http_port	[Hh][Tt][Tt][Pp]_[Pp][Oo][Rr][Tt]
-icp_port	[Ii][Cc][Pp]_[Pp][Oo][Rr][Tt]
+http_port	[Hh][Tt][Tt][Pp][_-][Pp][Oo][Rr][Tt]
+icp_port	[Ii][Cc][Pp][_-][Pp][Oo][Rr][Tt]
 icons_host	[Ii][Cc][Oo][Nn][Ss]-[Hh][Oo][Ss][Tt]
 icons_path	[Ii][Cc][Oo][Nn][Ss]-[Pp][Aa][Tt][Hh]
 icons_port	[Ii][Cc][Oo][Nn][Ss]-[Pp][Oo][Rr][Tt]
-expire_value	[Dd][Ee][Ff][Aa][Uu][Ll][Tt]-[Ee][Xx][Pp][Ii][Rr][Ee]-[Vv][Aa][Ll][Uu][Ee]
-expire_interval	[Dd][Ee][Ff][Aa][Uu][Ll][Tt]-[Ee][Xx][Pp][Ii][Rr][Ee]-[Ii][Nn][Tt][Ee][Rr][Vv][Aa][Ll]
-mem_max		[Mm][Ee][Mm]_[Mm][Aa][Xx]
-lo_mark		[Ll][Oo]_[Mm][Aa][Rr][Kk]
-hi_mark		[Hh][Ii]_[Mm][Aa][Rr][Kk]
-stop_cache	[Ss][Tt][Oo][Pp]_[Cc][Aa][Cc][Hh][Ee]
+expire_interval	[Dd][Ee][Ff][Aa][Uu][Ll][Tt][_-][Ee][Xx][Pp][Ii][Rr][Ee][_-][Ii][Nn][Tt][Ee][Rr][Vv][Aa][Ll]
+mem_max		[Mm][Ee][Mm][_-][Mm][Aa][Xx]
+lo_mark		[Ll][Oo][_-][Mm][Aa][Rr][Kk]
+hi_mark		[Hh][Ii][_-][Mm][Aa][Rr][Kk]
+stop_cache	[Ss][Tt][Oo][Pp][_-][Cc][Aa][Cc][Hh][Ee]
 http		[Hh][Tt][Tt][Pp]
 icp		[Ii][Cc][Pp]
 allow		[Aa][Ll][Ll][Oo][Ww]
@@ -64,17 +63,17 @@ size		[Ss][Ii][Zz][Ee]
 dbname		[Dd][Bb][Nn][Aa][Mm][Ee]
 dbhome		[Dd][Bb][Hh][Oo][Mm][Ee]
 maxresident	[Mm][Aa][Xx][Rr][Ee][Ss][Ii][Dd][Ee][Nn][Tt]
-connect_from	[Cc][Oo][Nn][Nn][Ee][Cc][Tt]-[Ff][Rr][Oo][Mm]
-disk_low_free	[Dd][Ii][Ss][Kk]-[Ll][Oo][Ww]-[Ff][Rr][Ee][Ee]
-disk_hi_free	[Dd][Ii][Ss][Kk]-[Oo][Kk]-[Ff][Rr][Ee][Ee]
+connect_from	[Cc][Oo][Nn][Nn][Ee][Cc][Tt][_-][Ff][Rr][Oo][Mm]
+disk_low_free	[Dd][Ii][Ss][Kk][_-][Ll][Oo][Ww][_-][Ff][Rr][Ee][Ee]
+disk_hi_free	[Dd][Ii][Ss][Kk][_-][Oo][Kk][_-][Ff][Rr][Ee][Ee]
 bandwidth	[Bb][Aa][Nn][Dd][Ww][Ii][Dd][Tt][Hh]
 miss		[Mm][Ii][Ss][Ss]
 parent		[Pp][Aa][Rr][Ee][Nn][Tt]
 peer		[Pp][Ee][Ee][Rr]
 sibling		[Ss][Ii][Bb][Ll][Ii][Nn][Gg]
-local_domain	[Ll][Oo][Cc][Aa][Ll]-[Dd][Oo][Mm][Aa][Ii][Nn]
-local_networks	[Ll][Oo][Cc][Aa][Ll]-[Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]
-icp_timeout	[Ii][Cc][Pp]_[Tt][Ii][Mm][Ee][Oo][Uu][Tt]
+local_domain	[Ll][Oo][Cc][Aa][Ll][_-][Dd][Oo][Mm][Aa][Ii][Nn]
+local_networks	[Ll][Oo][Cc][Aa][Ll][_-][Nn][Ee][Tt][Ww][Oo][Rr][Kk][Ss]
+icp_timeout	[Ii][Cc][Pp][_-][Tt][Ii][Mm][Ee][Oo][Uu][Tt]
 statistics	[Ss][Tt][Aa][Tt][Ii][Ss][Tt][Ii][Cc][Ss]
 module		[Mm][Oo][Dd][Uu][Ll][Ee]
 string		[^ \t\n\{\}\;\[\]\,]+
@@ -177,8 +176,11 @@ line		[^\n]+
 <INITIAL>{icp_timeout}	{
 		return(ICP_TIMEOUT);
 		}
-<INITIAL>{expire_value}	{
+<INITIAL>[Dd][Ee][Ff][Aa][Uu][Ll][Tt][_-][Ee][Xx][Pp][Ii][Rr][Ee][_-][Vv][Aa][Ll][Uu][Ee] {
 		return(EXPIRE_VALUE);
+		}
+<INITIAL>[Dd][Bb]_[Cc][Aa][Cc][Hh][Ee][_][Mm][Ee][Mm]   {
+		return(DB_CACHE_MEM);
 		}
 <INITIAL>[Aa][Cc][Ll] {
 		BEGIN(aclst);
@@ -219,6 +221,10 @@ line		[^\n]+
 		}
 <peerst>{sibling} {
 		return(PEER_SIBLING_T);
+		}
+<peerst>[Pp][Ee][Ee][Rr][-_][Aa][Cc][Cc][Ee][Ss][Ss] {
+		BEGIN(peeraclst);
+		return(PEER_ACCESS_T);
 		}
 <peerst>[Mm][Yy]_[Aa][Uu][Tt][Hh] {
 		return(MY_AUTH_T);
@@ -263,9 +269,6 @@ line		[^\n]+
 		}
 <INITIAL>{hi_mark}	{
 		return(HI_MARK);
-		}
-<INITIAL>[Dd][Bb]_[Cc][Aa][Cc][Hh][Ee][_][Mm][Ee][Mm]	{
-		return(DB_CACHE_MEM);
 		}
 <INITIAL>[Ii][Nn][Ss][Ee][Rr][Tt]_[Xx]_[Ff][Oo][Rr][Ww][Aa][Rr][Dd][Ee][Dd]_[Ff][Oo][Rr] {
 		return(INSERT_X_FORWARDED_FOR_T);
@@ -416,6 +419,15 @@ line		[^\n]+
 		yylval.STRPTR=(char*)malloc(strlen(yytext)+1);
 		strcpy(yylval.STRPTR, yytext);
 		return(STRING);
+		}
+<peeraclst>[^;\n]+ {
+		yylval.STRPTR=(char*)malloc(strlen(yytext)+1);
+		strcpy(yylval.STRPTR, yytext);
+		return(STRING);
+		}
+<peeraclst>{nl}	{
+		atline++;
+		BEGIN(peerst);
 		}
 <aclst>{nl}	{
 		atline++;
