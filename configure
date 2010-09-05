@@ -1584,6 +1584,165 @@ if test "$need_daemon" = "yes"; then
 	CFLAGS="$CFLAGS -DNEED_DAEMON"
 fi
 
+echo $ac_n "checking for pread""... $ac_c" 1>&6
+echo "configure:1589: checking for pread" >&5
+if eval "test \"`echo '$''{'ac_cv_func_pread'+set}'`\" = set"; then
+  echo $ac_n "(cached) $ac_c" 1>&6
+else
+  cat > conftest.$ac_ext <<EOF
+#line 1594 "configure"
+#include "confdefs.h"
+/* System header to define __stub macros and hopefully few prototypes,
+    which can conflict with char pread(); below.  */
+#include <assert.h>
+/* Override any gcc2 internal prototype to avoid an error.  */
+/* We use char because int might match the return type of a gcc2
+    builtin and then its argument prototype would still apply.  */
+char pread();
+
+int main() {
+
+/* The GNU C library defines this for functions which it implements
+    to always fail with ENOSYS.  Some functions are actually named
+    something starting with __ and the normal name is an alias.  */
+#if defined (__stub_pread) || defined (__stub___pread)
+choke me
+#else
+pread();
+#endif
+
+; return 0; }
+EOF
+if { (eval echo configure:1617: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; } && test -s conftest; then
+  rm -rf conftest*
+  eval "ac_cv_func_pread=yes"
+else
+  echo "configure: failed program was:" >&5
+  cat conftest.$ac_ext >&5
+  rm -rf conftest*
+  eval "ac_cv_func_pread=no"
+fi
+rm -f conftest*
+fi
+
+if eval "test \"`echo '$ac_cv_func_'pread`\" = yes"; then
+  echo "$ac_t""yes" 1>&6
+  have_pread=yes
+else
+  echo "$ac_t""no" 1>&6
+have_pread=no
+fi
+
+if test "$have_pread" = "yes"; then
+	CFLAGS="$CFLAGS -DHAVE_PREAD"
+fi
+
+echo $ac_n "checking for pwrite""... $ac_c" 1>&6
+echo "configure:1642: checking for pwrite" >&5
+if eval "test \"`echo '$''{'ac_cv_func_pwrite'+set}'`\" = set"; then
+  echo $ac_n "(cached) $ac_c" 1>&6
+else
+  cat > conftest.$ac_ext <<EOF
+#line 1647 "configure"
+#include "confdefs.h"
+/* System header to define __stub macros and hopefully few prototypes,
+    which can conflict with char pwrite(); below.  */
+#include <assert.h>
+/* Override any gcc2 internal prototype to avoid an error.  */
+/* We use char because int might match the return type of a gcc2
+    builtin and then its argument prototype would still apply.  */
+char pwrite();
+
+int main() {
+
+/* The GNU C library defines this for functions which it implements
+    to always fail with ENOSYS.  Some functions are actually named
+    something starting with __ and the normal name is an alias.  */
+#if defined (__stub_pwrite) || defined (__stub___pwrite)
+choke me
+#else
+pwrite();
+#endif
+
+; return 0; }
+EOF
+if { (eval echo configure:1670: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; } && test -s conftest; then
+  rm -rf conftest*
+  eval "ac_cv_func_pwrite=yes"
+else
+  echo "configure: failed program was:" >&5
+  cat conftest.$ac_ext >&5
+  rm -rf conftest*
+  eval "ac_cv_func_pwrite=no"
+fi
+rm -f conftest*
+fi
+
+if eval "test \"`echo '$ac_cv_func_'pwrite`\" = yes"; then
+  echo "$ac_t""yes" 1>&6
+  have_pwrite=yes
+else
+  echo "$ac_t""no" 1>&6
+have_pwrite=no
+fi
+
+if test "$have_pwrite" = "yes"; then
+	CFLAGS="$CFLAGS -DHAVE_PWRITE"
+fi
+
+echo $ac_n "checking for poll""... $ac_c" 1>&6
+echo "configure:1695: checking for poll" >&5
+if eval "test \"`echo '$''{'ac_cv_func_poll'+set}'`\" = set"; then
+  echo $ac_n "(cached) $ac_c" 1>&6
+else
+  cat > conftest.$ac_ext <<EOF
+#line 1700 "configure"
+#include "confdefs.h"
+/* System header to define __stub macros and hopefully few prototypes,
+    which can conflict with char poll(); below.  */
+#include <assert.h>
+/* Override any gcc2 internal prototype to avoid an error.  */
+/* We use char because int might match the return type of a gcc2
+    builtin and then its argument prototype would still apply.  */
+char poll();
+
+int main() {
+
+/* The GNU C library defines this for functions which it implements
+    to always fail with ENOSYS.  Some functions are actually named
+    something starting with __ and the normal name is an alias.  */
+#if defined (__stub_poll) || defined (__stub___poll)
+choke me
+#else
+poll();
+#endif
+
+; return 0; }
+EOF
+if { (eval echo configure:1723: \"$ac_link\") 1>&5; (eval $ac_link) 2>&5; } && test -s conftest; then
+  rm -rf conftest*
+  eval "ac_cv_func_poll=yes"
+else
+  echo "configure: failed program was:" >&5
+  cat conftest.$ac_ext >&5
+  rm -rf conftest*
+  eval "ac_cv_func_poll=no"
+fi
+rm -f conftest*
+fi
+
+if eval "test \"`echo '$ac_cv_func_'poll`\" = yes"; then
+  echo "$ac_t""yes" 1>&6
+  have_poll=yes
+else
+  echo "$ac_t""no" 1>&6
+have_poll=no
+fi
+
+if test "$have_poll" = "yes"; then
+	CFLAGS="$CFLAGS -DHAVE_POLL"
+fi
+
 case "$host_os" in
 irix*)    CFLAGS="-D_SGI_MP_SOURCE";;
 osf*)     CFLAGS="-D_REENTRANT";;

@@ -174,9 +174,10 @@ struct	buff		*body;
     put_av_pair(&obj->headers,"Expires:", "Thu, 01 Jan 1970 00:00:01 GMT");
     put_av_pair(&obj->headers,"Content-Type:", "text/html");
 
+    check_template_age();
+
     RDLOCK_ERR_CONFIG ;
 
-    check_template_age();
 
     if ( template ) {
 	char 	*tptr, *tptrend, *proc;
@@ -272,9 +273,9 @@ check_template_age()
 {
     if ( global_sec_timer - template_check_time < 5 )
 	return;
-    /* must be called under locked err_config_lock */
+    WRLOCK_ERR_CONFIG ;
     reload_template();
-
+    UNLOCK_ERR_CONFIG ;
 }
 
 void
@@ -284,6 +285,7 @@ struct stat sb;
 int	rc, size;
 char	*in_mem;
 
+    /* must be called under locked err_config_lock */
     rc = stat(err_template, &sb);
     if ( rc != -1 ) {
 	if ( sb.st_mtime <= template_mtime )

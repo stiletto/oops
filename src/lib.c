@@ -16,6 +16,10 @@
 #include	<sys/socketvar.h>
 #include	<sys/resource.h>
 
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+#include	<sys/poll.h>
+#endif
+
 #include	<netinet/in.h>
 
 #include	<arpa/inet.h>
@@ -83,8 +87,11 @@ log_access(int elapsed, struct sockaddr_in *sa, char *tag,
 	char *content, char *source)
 {
 char	*s;
-    if ( !accesslogf ) return;
     pthread_mutex_lock(&accesslog_lock);
+    if ( !accesslogf ) {
+	pthread_mutex_unlock(&accesslog_lock);
+	return;
+    }
     s = my_inet_ntoa(sa);
     if ( s ) fprintf(accesslogf, "%u %d %s %s/%d %d %s %s://%s%s - %s/%s %s\n", (unsigned)time(NULL), elapsed, s,
 	tag, code, size, meth, url->proto, url->host, url->path, hierarchy, source,
@@ -962,11 +969,134 @@ rwl_unlock(rwl_t *rwlp)
 void
 my_sleep(int sec)
 {
-struct timeval	tv;
+    (void)poll_descriptors(0, NULL, sec*1000);
+}
 
-    tv.tv_sec =  sec ;
-    tv.tv_usec = 0 ;
-    select(1, NULL, NULL, NULL, &tv);
+int
+poll_descriptors(int n, struct pollarg *args, int msec)
+{
+int	rc=-1;
+
+    if ( n > 0 ) {
+
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
+			    *pollfdsaved = NULL, *pfdc;
+	struct	pollarg *pa;
+	int		i;
+
+	if ( msec < 0 ) msec = -1;
+	if ( n > MAXPOLLFD ) {
+	    pollfdsaved = pollptr = xmalloc(n*sizeof(struct pollfd),"");
+	    if ( !pollptr ) return(-1);
+	} else
+	    pollptr = pollfd;
+	/* copy args to poll argument */
+	pfdc = pollptr;
+	bzero(pollptr, n*sizeof(struct pollfd));
+	pa = args;
+	for(i=0;i<n;i++) {
+	    if ( pa->fd>0)
+		pfdc->fd = pa->fd;
+	      else
+		pfdc->fd = -1;
+	    pfdc->revents = 0;
+	    if ( pa->request & FD_POLL_RD ) pfdc->events |= POLLIN;
+	    if ( pa->request & FD_POLL_WR ) pfdc->events |= POLLOUT;
+	    if ( !(pfdc->events & (POLLIN|POLLOUT) ) )
+		pfdc->fd = -1;
+	    pa->answer = 0;
+	    pa++;
+	    pfdc++;
+	}
+	rc = poll(pollptr, n, msec);
+	if ( rc <= 0 ) {
+	    if ( pollfdsaved ) xfree(pollfdsaved);
+	    return(rc);
+	}
+	/* copy results back */
+	pfdc = pollptr;
+	pa = args;
+	for(i=0;i<n;i++) {
+	    if ( pfdc->revents & (POLLIN|POLLHUP) ) pa->answer  |= FD_POLL_RD;
+	    if ( pfdc->revents & (POLLOUT|POLLHUP) ) pa->answer |= FD_POLL_WR;
+	    pa++;
+	    pfdc++;
+	}
+	if ( pollfdsaved ) xfree(pollfdsaved);
+	return(rc);
+#else
+	fd_set	rset, wset;
+	int	maxfd = 0,i, have_read = 0, have_write = 0;
+	struct	pollarg *pa;
+	struct timeval	tv, *tvp = &tv;
+
+
+	if ( msec >= 0 ) {
+	    tv.tv_sec =  msec/1000 ;
+	    tv.tv_usec = (msec%1000)*1000 ;
+	} else {
+	    tvp = NULL;
+	}
+	FD_ZERO(&rset);
+	FD_ZERO(&wset);
+	pa = args;
+	for(i=0;i<n;i++){
+	    if ( pa->request & FD_POLL_RD ) {
+		have_read = 1;
+		FD_SET(pa->fd, &rset);
+		maxfd = MAX(maxfd, pa->fd);
+	    }
+	    if ( pa->request & FD_POLL_WR ) {
+		have_write = 1;
+		FD_SET(pa->fd, &wset);
+		maxfd = MAX(maxfd, pa->fd);
+	    }
+	    pa->answer = 0;
+	    pa++;
+	}
+	if ( have_read && !have_write  )
+	    rc = select(maxfd+1, &rset, NULL, NULL, tvp);
+	else if ( !have_read && have_write  )
+	    rc = select(maxfd+1, NULL, &wset, NULL, tvp);
+	else if ( have_read && have_write   )
+	    rc = select(maxfd+1, &rset, &wset, NULL, tvp);
+	else if ( !have_read && !have_write )
+	    rc = select(maxfd+1, NULL, NULL, NULL, tvp);
+	if ( rc <= 0 )
+	    return(rc);
+	/* copy results back */
+	pa = args;
+	for(i=0;i<n;i++){
+	    if ( pa->request & FD_POLL_RD ) {
+		/* was request on read */
+		if ( FD_ISSET(pa->fd, &rset) )
+			pa->answer |= FD_POLL_RD;
+	    }
+	    if ( pa->request & FD_POLL_WR ) {
+		/* was request on write */
+		if ( FD_ISSET(pa->fd, &wset) )
+			pa->answer |= FD_POLL_WR;
+	    }
+	    pa++;
+	}
+	return(rc);
+#endif
+
+    } else {
+
+#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+	rc = poll(NULL, 0, msec);
+#else
+	struct timeval	tv;
+
+	tv.tv_sec =  msec/1000 ;
+	tv.tv_usec = (msec%1000)*1000 ;
+	rc = select(1, NULL, NULL, NULL, &tv);
+#endif
+
+    }
+    return(rc);
 }
 
 char*
@@ -1009,7 +1139,7 @@ void
 analyze_header(char *p, struct server_answ *a)
 {
 char	*t;
-time_t	now = time(NULL);
+time_t	now;
 
     /*my_log("--->'%s'\n", p);*/
     if ( !a->status_code ) {
@@ -1038,7 +1168,8 @@ time_t	now = time(NULL);
 	/* length */
 	x=p + 6; /* strlen("date: ") */
 	while( *x && isspace(*x) ) x++;
-	a->times.date = now;
+	a->times.date  = time(NULL);
+;
 	if (http_date(x, &a->times.date) ) my_log("Can't parse date: %s\n", x);
 	return;
     }
@@ -1089,7 +1220,7 @@ time_t	now = time(NULL);
 	/* length */
 	x=p + 9; /* strlen("Expires: ") */
 	while( *x && isspace(*x) ) x++;
-	a->times.expires = now;
+	a->times.expires  = time(NULL);
 	if (http_date(x, &a->times.expires)) {
 		my_log("Can't parse date: %s\n", x);
 		return;
@@ -1935,6 +2066,7 @@ struct	av	*av;
 struct	timeval	tv;
 struct	buff	*send_hot_buff;
 fd_set		wset;
+struct	pollarg	pollarg;
 
 #ifdef	MODULES
 int	mod_flags = 0;
@@ -1960,7 +2092,10 @@ send_it:;
     FD_ZERO(&wset);
     FD_SET(so, &wset);
     tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-    r = select(so+1, NULL, &wset, NULL, &tv);
+/*    r = select(so+1, NULL, &wset, NULL, &tv);*/
+    pollarg.fd = so;
+    pollarg.request = FD_POLL_WR;
+    r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 ) goto done;
     ssended = sended;
     if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0) )

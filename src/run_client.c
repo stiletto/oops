@@ -185,8 +185,13 @@ re: /* here we go if client want persistent connection */
 	goto done;
     }
 #ifdef	MODULES
-    /* time to visit auth modules */
     group = inet_to_group(&request.client_sa.sin_addr);
+    /* check for redirects */
+    if ( check_redirect(so, &request, group, &mod_flags) ) {
+	UNLOCK_CONFIG;
+	goto done;
+    }
+    /* time to visit auth modules */
     mod_flags = 0;
     if ( check_auth(so, &request, group, &mod_flags) == MOD_CODE_ERR) {
 	if ( !TEST(mod_flags, MOD_AFLAG_OUT) ) {
@@ -215,6 +220,11 @@ re: /* here we go if client want persistent connection */
 	goto done;
     }
 
+    if ( !request.url.host[0] ) {
+	    say_bad_request(so, "No host part in URL\n", NULL,
+		    ERR_BAD_URL, &request);
+	    goto done;
+    }
     if ( strcasecmp(request.url.proto, "ftp")   && /* ftp processed below */
     	((!request.meth==METH_GET) 		||
 	 ( request.flags & RQ_HAS_NO_STORE) 	||

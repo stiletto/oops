@@ -5,7 +5,7 @@
 %token	PARENT_T PEER_T SIBLING_T LOCAL_DOMAIN_T LOCAL_NETWORKS_T
 %token	GROUP NETWORK NETWORKS HTTP ICP
 %token	NUMBER NUMBER_K NUMBER_M STRING
-%token	ALLOW DENY BADPORTS_T MISS_T AUTH_MODS_T
+%token	ALLOW DENY BADPORTS_T MISS_T AUTH_MODS_T REDIR_MODS_T
 %token	DSTDOMAIN
 %token	STORAGE SIZE PATH DBNAME DBHOME
 %token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T
@@ -15,7 +15,7 @@
 %type	<STRPTR>	group_name string module_name
 %type	<STRING_LIST>	mod_op mod_ops string_list string_list_e
 %type	<GROUPOPS>	group_op group_ops
-%type	<GROUPOPS>	http icp badports bandwidth miss auth_mods
+%type	<GROUPOPS>	http icp badports bandwidth miss auth_mods redir_mods
 %type	<STORAGEST>	st_op st_ops
 %type	<INT>		num
 %type	<ACL>		allow_acl deny_acl allow_acls deny_acls
@@ -342,6 +342,11 @@ module		: MODULE module_name '{' mod_ops '}' L_EOS {
 			free($2);
 		}
 		| MODULE module_name '{' '}' L_EOS {
+#ifdef	MODULES
+			struct general_module	*mod = module_by_name($2);
+			if ( mod && mod->config_beg ) (*mod->config_beg)();
+			if ( mod && mod->config_end ) (*mod->config_end)();
+#endif
 			free($2);
 		}
 mod_ops		: mod_op {
@@ -512,6 +517,9 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 				case OP_AUTH_MODS:
 					new_grp->auth_mods = ops->val;
 					break;
+				case OP_REDIR_MODS:
+					new_grp->redir_mods = ops->val;
+					break;
 				default:
 					printf("Unknown OP\n");
 					break;
@@ -544,6 +552,7 @@ group_op	: NETWORKS network_list ';' {
 		| icp		{ $$ = $1; }
 		| miss		{ $$ = $1; }
 		| auth_mods	{ $$ = $1; }
+		| redir_mods	{ $$ = $1; }
 
 miss		: MISS_T DENY ';' {
 		    struct	group_ops_struct	*new_op;
@@ -586,6 +595,21 @@ auth_mods	: AUTH_MODS_T string_list ';' {
 			} else {
 			    new_op->op = OP_AUTH_MODS;
 			    printf("AUTH_MODS\n");
+			    new_op->val= $2;
+			    new_op->next=NULL;
+			    $$ = new_op;
+			}
+		}
+redir_mods	: REDIR_MODS_T string_list ';' {
+		    struct	group_ops_struct	*new_op;
+
+			new_op = xmalloc(sizeof(*new_op), "");
+			if ( !new_op ) {
+				yyerror();
+				$$ = NULL;
+			} else {
+			    new_op->op = OP_REDIR_MODS;
+			    printf("REDIR_MODS\n");
 			    new_op->val= $2;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -909,6 +933,7 @@ string_list_e	: string {
 			strcpy(new->string, $1);
 			new->next = NULL;
 			$$ = new;
+			free($1);
 		}
 domainlist	: domain { $$ = $1; }
 		| domain domainlist {

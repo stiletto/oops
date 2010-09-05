@@ -1,0 +1,4 @@
+http://.*/.*banner.*
+http://.*xxx.*/			http://www.cnn.com/
+127.0.0.1/aaa			http://127.0.0.1/bbb
+127.0.0.1/bbb

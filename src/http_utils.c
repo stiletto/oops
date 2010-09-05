@@ -161,6 +161,17 @@ int			have_code = 0, sent = 0;
 	    if ( r <= 0 )
 		goto done;
 	}
+#ifdef	LINUX
+	/* at least redhat 6.02 have such feature: close of the
+	   socket with unread data reset connection (send RST flag).
+	   This confuse browsers. So read any pending data (actually
+	   can be only \n or \n\n after request body
+	*/
+	while( wait_for_read(so, 1000) > 0 ) {
+	    int rc = readt(so, answer, ANSW_SIZE, 10);
+	    if ( rc <= 0 ) goto done;
+	}
+#endif
     }
     while(1) {
 	r = readt(server_so, answer, ANSW_SIZE, READ_ANSW_TIMEOUT);
@@ -386,11 +397,11 @@ send_data_from_obj(struct request *rq, int so, struct mem_obj *obj, int flags)
 {
 int 		r, sended, received, state, send_hot_pos, pass=0, sf=0, ssended;
 struct	buff	*send_hot_buff;
-fd_set		wset;
 struct	timeval	tv;
 char		*content_type, *transfer_encoding;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
 int		rest_in_chunk = 0;
+struct	pollarg	pollarg;
 
     if (   ((rq->http_major <= 1) && (rq->http_minor < 1)) &&
 	   (obj->headers && !strcmp(obj->headers->attr,"HTTP/1.1")) ) {
@@ -480,10 +491,9 @@ send_ready:
     }
     if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
 	SLOWDOWN ;
-    FD_ZERO(&wset);
-    FD_SET(so, &wset);
-    tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-    r = select(so+1, NULL, &wset, NULL, &tv);
+    pollarg.fd = so;
+    pollarg.request = FD_POLL_WR;
+    r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 ) goto done;
     ssended = sended;
     if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
@@ -526,7 +536,6 @@ struct	mem_obj 	*new_obj = NULL;
 char			*answer = NULL;
 struct	server_answ	answer_stat;
 int			r, maxfd;
-fd_set			rset;
 struct	timeval		tv;
 struct	buff		*to_server_request = NULL;
 
@@ -597,11 +606,11 @@ struct	buff		*to_server_request = NULL;
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
 	my_log("fcntl: %s\n", strerror(errno));
     while(1) {
-	FD_ZERO(&rset);
-	FD_SET(server_so, &rset);
-	maxfd = server_so;
-	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-        r = select(maxfd+1, &rset, NULL, NULL, &tv);
+	struct pollarg pollarg;
+
+	pollarg.fd = server_so;
+	pollarg.request = FD_POLL_RD;
+	r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 	if ( r < 0  ) {
 	    my_log("select: error on new_obj\n");
 	    goto validate_err;
@@ -610,7 +619,7 @@ struct	buff		*to_server_request = NULL;
 	    my_log("select: timed out on new_obj\n");
 	    goto validate_err;
 	}
-	if ( !FD_ISSET(server_so, &rset) )
+	if ( !IS_READABLE(&pollarg) )
 	    continue;
 	r = read(server_so, answer, ANSW_SIZE);
 	if ( r <  0 ) {
@@ -889,8 +898,14 @@ int			source_type;
     if ( fcntl(server_so, F_SETFL, fcntl(server_so, F_GETFL, 0)|O_NONBLOCK) )
 	my_log("fcntl: %s\n", strerror(errno));
     while(1) {
+	struct pollarg pollarg[2];
+
 	FD_ZERO(&rset); FD_ZERO(&wset);
 	FD_SET(server_so, &rset);
+	pollarg[0].fd = server_so;
+	pollarg[0].request = FD_POLL_RD;
+	pollarg[1].fd = 0;
+	pollarg[1].request = 0;
 	if ( server_so > so ) maxfd = server_so;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
@@ -900,21 +915,26 @@ int			source_type;
 		if ( r < 75 ) /* low load */
 		    goto ignore_bw_overload;
 		else if ( r < 95 ) /* start to slow down */
-		    tv.tv_usec = 250;
+		    tv.tv_usec = 250000;
 		else if ( r < 100 )
-		    tv.tv_usec = 500;
+		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(2, r/100);
-		r = select(maxfd+1, &rset, NULL, NULL, &tv);
+/*		r = select(maxfd+1, &rset, NULL, NULL, &tv);*/
+		r = poll_descriptors(1, &pollarg[0],
+			tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) goto error;
 		if ( r== 0 ) continue;
 		goto read_s;
 	    }
 	ignore_bw_overload:
 	    FD_SET(so, &wset);
+	    pollarg[1].fd = so;
+	    pollarg[1].request = FD_POLL_WR;
 	}
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-        r = select(maxfd+1, &rset, &wset, NULL, &tv);
+/*        r = select(maxfd+1, &rset, &wset, NULL, &tv);*/
+	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
 	    my_log("select: %s\n", strerror(errno));
 	    change_state(obj, OBJ_READY);
@@ -927,7 +947,7 @@ int			source_type;
 	    obj->flags |= FLAG_DEAD;
 	    goto error;
 	}
-	if ( (so != -1) && FD_ISSET(so, &wset) ) {
+	if ( (so != -1) && IS_WRITEABLE(&pollarg[1]) ) {
 	   int	sf, ssended = sended;
 	   r--;
 	   sf = (rq->flags & RQ_HAS_BANDWIDTH);
@@ -948,7 +968,7 @@ int			source_type;
 	    }
 	}
     read_s:
-	if ( !FD_ISSET(server_so, &rset) ) {
+	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
 		my_log("select bug(?)\n");
@@ -981,12 +1001,16 @@ int			source_type;
 	    change_state(obj, OBJ_READY);
 	    while( (so != -1) && send_hot_buff && (received > sended) ) {
 		int	ssended, sf;
+		struct pollarg pollarg;
 		if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) )
 		    SLOWDOWN ;
 		FD_ZERO(&wset);
 		FD_SET(so, &wset);
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-		r = select(so+1, NULL, &wset, NULL, &tv);
+		pollarg.fd = so;
+		pollarg.request = FD_POLL_WR;
+		/*r = select(so+1, NULL, &wset, NULL, &tv);*/
+		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
 		ssended = sended;
 		sf = (rq->flags & RQ_HAS_BANDWIDTH);
@@ -1189,8 +1213,12 @@ char			*answer=NULL;
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
 	my_log("fcntl: %s\n", strerror(errno));
     while(1) {
+	struct	pollarg pollarg[2];
+
 	FD_ZERO(&rset); FD_ZERO(&wset);
 	FD_SET(server_so, &rset);
+	pollarg[0].fd = server_so; pollarg[0].request = FD_POLL_RD;
+	pollarg[1].fd = 0; pollarg[1].request = 0;
 	if ( server_so > so ) maxfd = server_so;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
@@ -1200,21 +1228,25 @@ char			*answer=NULL;
 		if ( r < 75 ) /* low load */
 		    goto ignore_bw_overload;
 		else if ( r < 95 ) /* start to slow down */
-		    tv.tv_usec = 250;
+		    tv.tv_usec = 250000;
 		else if ( r < 100 )
-		    tv.tv_usec = 500;
+		    tv.tv_usec = 500000;
 		else
 		    tv.tv_sec = MIN(2, r/100);
-		r = select(maxfd+1, &rset, NULL, NULL, &tv);
+/*		r = select(maxfd+1, &rset, NULL, NULL, &tv);*/
+		r = poll_descriptors(1, &pollarg[0], tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) goto error;
 		if ( r== 0 ) continue;
 		goto read_s;
 	    }
 	ignore_bw_overload:
 	    FD_SET(so, &wset);
+	    pollarg[1].fd = so;
+	    pollarg[1].request = FD_POLL_WR;
 	}
 	tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-        r = select(maxfd+1, &rset, &wset, NULL, &tv);
+/*        r = select(maxfd+1, &rset, &wset, NULL, &tv);*/
+	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r < 0 ) {
 	    my_log("select: %s\n", strerror(errno));
 	    obj->flags |= FLAG_DEAD;
@@ -1227,7 +1259,7 @@ char			*answer=NULL;
 	    change_state(obj, OBJ_READY);
 	    goto error;
 	}
-	if ( (so != -1) && FD_ISSET(so, &wset) ) {
+	if ( (so != -1) && IS_WRITEABLE(&pollarg[1]) ) {
 	   r--;
 	   if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0) ) {
 		so = -1;
@@ -1249,7 +1281,7 @@ char			*answer=NULL;
 	    my_log("Continue to load - we are not alone\n");
 	}
     read_s:;
-	if ( !FD_ISSET(server_so, &rset) ) {
+	if ( !IS_READABLE(&pollarg[0]) ) {
 	    if ( r ) {
 		/* this is solaris 2.6 select bug(?) workaround */
 		my_log("select bug(?)\n");
@@ -1279,12 +1311,17 @@ char			*answer=NULL;
 	    }
 	    change_state(obj, OBJ_READY);
 	    while( (so != -1) && (received > sended) ) {
+		struct pollarg pollarg;
+
 		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
 		    SLOWDOWN ;
 		FD_ZERO(&wset);
 		FD_SET(so, &wset);
+		pollarg.fd = so;
+		pollarg.request = FD_POLL_WR;
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
-        	r = select(so+1, NULL, &wset, NULL, &tv);
+/*        	r = select(so+1, NULL, &wset, NULL, &tv);*/
+		r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
 		if ( r <= 0 ) break;
 		ssended = sended;
 		if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) sf = RQ_HAS_BANDWIDTH;
@@ -1321,6 +1358,7 @@ int		r, to_send;
 struct	buff	*b = *hot;
 fd_set		wset;
 struct	timeval tv;
+struct	pollarg	pollarg;
 
     if ( !*hot )
 	return(0);
@@ -1341,7 +1379,10 @@ do_it:
     FD_SET(so, &wset);
     tv.tv_sec = READ_ANSW_TIMEOUT; tv.tv_usec = 0 ;
 
-    r = select(so+1, NULL, &wset, NULL, &tv);
+    pollarg.fd = so;
+    pollarg.request = FD_POLL_WR;
+/*    r = select(so+1, NULL, &wset, NULL, &tv);*/
+    r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 )
 	return(r);
     r = write(so, b->data+*pos, to_send);

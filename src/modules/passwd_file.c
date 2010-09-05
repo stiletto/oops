@@ -68,9 +68,9 @@ Your browser proposed unsupported scheme\n\
 <hr>\n\
 <i><font size=-1>by \'passwd_file\' module to Oops.";
 
-#define	RDLOCK_PWF_CONFIG	rwl_rdlock(&pwf_lock);
-#define	WRLOCK_PWF_CONFIG	rwl_wrlock(&pwf_lock);
-#define	UNLOCK_PWF_CONFIG	rwl_unlock(&pwf_lock);
+#define	RDLOCK_PWF_CONFIG	rwl_rdlock(&pwf_lock)
+#define	WRLOCK_PWF_CONFIG	rwl_wrlock(&pwf_lock)
+#define	UNLOCK_PWF_CONFIG	rwl_unlock(&pwf_lock)
 
 static	void	reload_pwf(), reload_pwf_template();
 static	void	check_pwf_age(), check_pwf_template_age();
@@ -200,9 +200,12 @@ char	*authorization = NULL;
 	return(MOD_CODE_OK);
     }
 
-    RDLOCK_PWF_CONFIG ;
+    WRLOCK_PWF_CONFIG ;
     check_pwf_age();
     check_pwf_template_age();
+    UNLOCK_PWF_CONFIG;
+
+    RDLOCK_PWF_CONFIG ;
     if ( !pwds ) {
 	my_log("Passwd file was not loaded\n");
 	UNLOCK_PWF_CONFIG ;
@@ -275,6 +278,7 @@ reload_pwf()
 struct	stat	sb;
 int		rc, size, fd;
 
+    pwf_check_time = global_sec_timer;
     if ( !pwf_name[0] ) return;
     rc = stat(pwf_name, &sb);
     if ( rc != -1 ) {
@@ -292,7 +296,6 @@ int		rc, size, fd;
 		    free(pwds);pwds = NULL;
 		} else {
 		    pwf_mtime = sb.st_mtime;
-		    pwf_check_time = global_sec_timer;
 		    *(pwds+1+size)=0;
 		}
 		close(fd);

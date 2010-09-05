@@ -252,6 +252,9 @@ line		[^\n]+
 <groupst>[Aa][Uu][Tt][Hh]_[Mm][Oo][Dd][Ss] {
 		return(AUTH_MODS_T);
 		}
+<groupst>[Rr][Ee][Dd][Ii][Rr]_[Mm][Oo][Dd][Ss] {
+		return(REDIR_MODS_T);
+		}
 <groupst>{icp}	{
 		BEGIN(icpst);
 		return(ICP);

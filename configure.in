@@ -168,6 +168,21 @@ if test "$need_daemon" = "yes"; then
 	CFLAGS="$CFLAGS -DNEED_DAEMON"
 fi
 
+AC_CHECK_FUNC(pread, have_pread=yes,have_pread=no)
+if test "$have_pread" = "yes"; then
+	CFLAGS="$CFLAGS -DHAVE_PREAD"
+fi
+
+AC_CHECK_FUNC(pwrite, have_pwrite=yes,have_pwrite=no)
+if test "$have_pwrite" = "yes"; then
+	CFLAGS="$CFLAGS -DHAVE_PWRITE"
+fi
+
+AC_CHECK_FUNC(poll, have_poll=yes,have_poll=no)
+if test "$have_poll" = "yes"; then
+	CFLAGS="$CFLAGS -DHAVE_POLL"
+fi
+
 case "$host_os" in
 irix*)    CFLAGS="-D_SGI_MP_SOURCE";;
 osf*)     CFLAGS="-D_REENTRANT";;

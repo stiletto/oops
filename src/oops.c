@@ -67,7 +67,8 @@ void	print_dom_list(struct domain_list *);
 void	free_peers(struct peer *);
 extern	int	str_to_sa(char*, struct sockaddr *);
 
-size_t	db_cachesize = 1024*1024;	/* 1M */
+size_t	db_cachesize = 4*1024*1024;	/* 4M */
+static	int	my_bt_compare(const DBT*,const DBT*);
 
 int
 usage(void)
@@ -209,6 +210,8 @@ run:
     bzero(&dbenv, sizeof(dbenv));
     bzero(&dbinfo,sizeof(dbinfo));
     dbinfo.db_cachesize = db_cachesize;
+    dbinfo.db_pagesize = 16*1024;	/* 16k */
+    dbinfo.bt_compare = my_bt_compare;
 
     if ( stop_cache )
 	free_stop_cache();
@@ -383,6 +386,7 @@ struct	cidr_net	*nets, *next_net;
 	}
 	if ( groups->badports ) free(groups->badports);
 	if ( groups->auth_mods ) free_string_list(groups->auth_mods);
+	if ( groups->redir_mods ) free_string_list(groups->redir_mods);
 	free_acl(groups->http);
 	free_acl(groups->icp);
 
@@ -676,4 +680,10 @@ struct	peer	*next;
 	free(peer);
 	peer = next;
     }
+}
+int
+my_bt_compare(const DBT* a, const DBT* b)
+{
+    if ( a->size != b->size ) return(a->size-b->size);
+    return(memcmp(a->data, b->data, a->size));
 }

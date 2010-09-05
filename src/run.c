@@ -63,7 +63,7 @@ int			cli_addr_len;
 fd_set			rq;
 int			icp_sa_len;
 struct	sockaddr_in	cli_addr, icp_sa;
-
+struct	pollarg		pollarg[2];
 
     if ( server_so != -1 )
     	close(server_so);
@@ -154,7 +154,12 @@ wait_clients:
     FD_ZERO(&rq);
     FD_SET(server_so, &rq);
     FD_SET(icp_so, &rq);
-    r = select(MAX(server_so, icp_so)+1, &rq, NULL, NULL, NULL);
+    pollarg[0].fd = server_so;
+    pollarg[0].request = FD_POLL_RD;
+    pollarg[1].fd = icp_so;
+    pollarg[1].request = FD_POLL_RD;
+/*    r = select(MAX(server_so, icp_so)+1, &rq, NULL, NULL, NULL);*/
+    r = poll_descriptors(2, &pollarg[0], -1);
     if ( r == -1 || huped || killed ) {
 	if ( huped ) {
 	    my_log("reconfigure request\n");
@@ -170,7 +175,7 @@ wait_clients:
 	my_log("failed to select: %s\n", strerror(errno));
 	goto wait_clients;
     }
-    if ( FD_ISSET(icp_so, &rq) ) {
+    if ( IS_READABLE(&pollarg[1]) ) {
 	/* icp request */
 	icp_sa_len = sizeof(icp_sa);
 	r = recvfrom(icp_so, icp_buf, sizeof(icp_buf), 0, (struct sockaddr*)&icp_sa, &icp_sa_len);
@@ -180,7 +185,7 @@ wait_clients:
 	    process_icp_msg(icp_so, icp_buf, r, &icp_sa);
 	}
     }
-    if ( FD_ISSET(server_so, &rq) ) {
+    if ( IS_READABLE(&pollarg[0]) ) {
 	cli_addr_len = sizeof(cli_addr);
 	r = accept(server_so, (struct sockaddr*)&cli_addr, &cli_addr_len);
 	if ( r >= 0 ) {

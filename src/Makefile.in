@@ -32,10 +32,36 @@ mkinstalldirs:
 
 install: all mkinstalldirs
 	$(INSTALL) oops @prefix@/oops
-	$(INSTALL_DATA) oops.cfg @prefix@/oops
-	$(INSTALL_DATA) err_template.html @prefix@/oops
-	$(INSTALL_DATA) auth_template.html @prefix@/oops
-	$(INSTALL_DATA) passwd @prefix@/oops
+	if [ -f @prefix@/oops/oops.cfg ]; then\
+		$(INSTALL_DATA) oops.cfg @prefix@/oops/oops.cfg.sample ;\
+	   else\
+		$(INSTALL_DATA) oops.cfg @prefix@/oops/oops.cfg ;\
+	fi
+	if [ -f @prefix@/oops/err_template.html ]; then\
+		$(INSTALL_DATA) err_template.html @prefix@/oops/err_template.html.sample ;\
+	   else\
+		$(INSTALL_DATA) err_template.html @prefix@/oops/err_template.html ;\
+	fi
+	if [ -f @prefix@/oops/auth_template.html ]; then\
+		$(INSTALL_DATA) auth_template.html @prefix@/oops/auth_template.html.sample ;\
+	   else\
+		$(INSTALL_DATA) auth_template.html @prefix@/oops/auth_template.html;\
+	fi
+	if [ -f @prefix@/oops/passwd ]; then\
+		$(INSTALL_DATA) passwd @prefix@/oops/passwd.sample ;\
+	   else\
+		$(INSTALL_DATA) passwd @prefix@/oops/passwd ;\
+	fi
+	if [ -f @prefix@/oops/redir_rules ]; then\
+		$(INSTALL_DATA) redir_rules @prefix@/oops/redir_rules.sample ;\
+	   else\
+		$(INSTALL_DATA) redir_rules @prefix@/oops/redir_rules ;\
+	fi
+	if [ -f @prefix@/oops/redir_template.html ]; then\
+		$(INSTALL_DATA) redir_template.html @prefix@/oops/redir_template.html.sample ;\
+	   else\
+		$(INSTALL_DATA) redir_template.html @prefix@/oops/redir_template.html ;\
+	fi
 	if test "X@SOFLAGS@" != "X"; then \
 	for m in modules/*so ; do \
 		$(INSTALL) $$m @prefix@/oops/modules ; \

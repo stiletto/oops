@@ -1,24 +1,55 @@
+28.06.99 version 1.1 ----------------------------------------------
+	22.06.99
+		some performance emprovements: bt_pagesize=16k, instead
+		of default 8k, WRLOCK_DB moved out of loop in clean_disk.c
+	18.06.99
+		poll() support added. fixed bug in clean_disk.c (close cursor
+		on closed base).
+		"feature" in Redhat 6.0x linux workaround: "Connection reset by
+		server" message in browser(http_utils.c) in POST requests.
+	14.06.99
+		pread/pwrite used to access storages on systems with support.
+		this will save lot of lseek() calls.
+	13.06.99
+		1.bug in clean_disk.c fixed (UNLOCK_DB without LOCK_DB).
+			It was able to lock access to DB in very rare case.
+		2. bt_compare (DB) changed from default to special function.
+		3. format of url stored in DB changed.
+			Must emprove performance. Last two changes lead to
+			non-fatal incompatibility with ready bases. New
+			records will overwrite old ones after some time.
+		4. Now you can create storages with dd if=/dev/zero of=storage_name ...
+			During format routine (oops -z) file will not be
+			truncated, only format records will be written
+			to the beginning of file and size will be adjusted
+			( if ready file is smaller then need ).
+	10.06.99
+		1. regex redirector (url filter) module.
+		2. During make install all config files are
+		   installed with suffix .sample, so that all current
+		   configs are preserved.
 	31.05.99
-		core: bug in run_client.c which manifest itself only under
-		FreeBSD (frequently reused thread ids)
-		config: -export-dynamic for LDFLAGS (for Linux and FreeBSD)
-24.05.99 version 1.0c
+		1. bug in run_client.c which manifest itself only under
+			FreeBSD (frequently reused thread ids). It looks
+			like hi CPU usage by oops. Fixed.
+		2. config: -export-dynamic for LDFLAGS (for Linux and FreeBSD)
+24.05.99 version 1.0c ------------------------------------------------
 	24.05.99
-		module lang - handle all language things for
-		err.so and passwd_file.so
+		1. module lang - handle all language things for
+			err.so and passwd_file.so
 	20.05.99
-		Authentication module passwd_file - proxy-authentication
-		using file with passwords.
+		1. Authentication module passwd_file - proxy-authentication
+			using file with passwords.
 	10.05.99
-		Several memory leaks in reconfig procedure fixed.
+		1. Several memory leaks in reconfig procedure fixed.
 	29.04.99
-		Some code cleanup (too many warnings) - Ilia.
-		Added 'total hits' and storages_free to statistics
+		1. Some code cleanup (too many warnings) - Ilia.
+			Added 'total hits' and storages_free to statistics
 	26.04.99
 	other: file statistics
 		some prob. with local-networks fixed.
 		For FreeBSD 2.2.7+ setsockopt(TCP_NODELAY) was excluded
-14.04.99 version 1.0b
+14.04.99 version 1.0b -------------------------------------------------
 	http:
 		drop objects when memory usage become larger then mem_max -
 		this must stop unlimited memory growth under very heavy load
@@ -31,7 +62,7 @@
 		first complete module err.c: customizable error messages with
 		national languages support.
 
-03.04.99 first public release 1.0a
+03.04.99 first public release 1.0a ------------------------------------
 	config:
 		icp_timeout - configurable
 01.04.99
@@ -60,14 +91,3 @@
 	     doc, received by request of 1.1 client.
 	other: minor decorations (version file, DB_VERSION_STRING...)
 
-12.03.99
-	http:
-	     сделана корректная отправка transfer-Encoding: chunked
-	     клиентам HTTP/1.0 (конвертация в не-chunked).
-	     в send_from_buff_no_wait максимальный размер для write
-	     установлен 2048. Раньше бывали write неограниченной длины, что
-	     грузило систему.
-	ftp:
-	     correct mime types. mime type определяется по расширению.
-	     Нужно что-то типа файла mimetypes b читать расширения/типы
-	     из него, а не использовать вкомпилированное.

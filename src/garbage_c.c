@@ -51,7 +51,7 @@ struct dhs_hash		*dns_hash_curr;
 	    UNLOCK_DB ;
 	}
 	UNLOCK_CONFIG ;
-	my_sleep(7);
+	my_sleep(9);
 
 	/* clean dns hash */
 	k = 0;
@@ -166,7 +166,7 @@ struct dhs_hash		*dns_hash_curr;
 			if (chain) xfree(chain);
 			goto stored;
 		    }
-		    sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
+		    sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
 		    /* insert this url in DB */
 		    bzero(&key, sizeof(key));
 		    bzero(&data,sizeof(data));

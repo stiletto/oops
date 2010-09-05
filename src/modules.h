@@ -9,6 +9,7 @@
 #define	MODULE_ERR	2
 #define	MODULE_AUTH	3
 #define	MODULE_OUTPUT	4
+#define	MODULE_REDIR	5
 
 #define	MODNAMELEN	16
 
@@ -47,6 +48,12 @@ struct	auth_module {
 	struct	general_module	general;
 	int	(*auth)(int, struct group*, struct request*, int*);
 };
+
+struct	redir_module {
+	struct	general_module	general;
+	int	(*redir)(int, struct group*, struct request*, int*);
+};
+
 struct	output_module {
 	struct	general_module	general;
 	int	(*output)(int, struct output_object*, struct request*, int*);

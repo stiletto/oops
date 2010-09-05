@@ -34,6 +34,7 @@ struct	sockaddr_in	server_sa;
 char			*ce = "HTTP/1.0 200 Connection established\r\n\r\n";
 int			celen = sizeof("HTTP/1.0 200 Connection established\r\n\r\n");
 struct	url		*url = &rq->url;
+struct	pollarg		pollarg[2];
 
     my_log("CONNECTING %s:%d\n", rq->url.host, rq->url.port);
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -60,18 +61,16 @@ struct	url		*url = &rq->url;
     r = writet(so, ce, celen, READ_ANSW_TIMEOUT);
     if ( r < 0 ) goto done;
     while(1) {
-	struct timeval tv;
-	fd_set rset;
     sel_again:
-	FD_ZERO(&rset);
-	FD_SET(so, &rset);
-	FD_SET(server_so, &rset);
-	tv.tv_sec = READ_ANSW_TIMEOUT; tv.tv_usec = 0;
-	r = select(MAX(so, server_so)+1, &rset, NULL, NULL, &tv);
+	pollarg[0].fd = server_so;
+	pollarg[1].fd = so;
+	pollarg[0].request = FD_POLL_RD;
+	pollarg[1].request = FD_POLL_RD;
+	r = poll_descriptors(2, &pollarg[0], READ_ANSW_TIMEOUT*1000);
 	if ( r <= 0) {
 	    goto done;
 	}
-	if ( FD_ISSET(server_so, &rset) ) {
+	if ( IS_READABLE(&pollarg[0]) ) {
 	    char b[1024];
 	    /* read from server */
 	    r = read(server_so, b, sizeof(b));
@@ -82,7 +81,7 @@ struct	url		*url = &rq->url;
 	    r = writet(so, b, r, READ_ANSW_TIMEOUT);
 	    if ( r < 0 ) goto done;
 	}
-	if ( FD_ISSET(so, &rset) ) {
+	if ( IS_READABLE(&pollarg[1]) ) {
 	    char b[1024];
 	    /* read from client */
 	    r = read(so, b, sizeof(b));

@@ -40,6 +40,7 @@ struct	log_module	*log_first = NULL;
 struct	err_module	*err_first = NULL;
 struct	auth_module	*auth_first = NULL;
 struct	output_module	*output_first = NULL;
+struct	redir_module	*redir_first = NULL;
 
 void	insert_module(struct general_module*, struct general_module**);
 
@@ -60,6 +61,12 @@ struct general_module	*res;
 	res = res->next;
     }
     res = (struct general_module*)auth_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return(res);
+	res = res->next;
+    }
+    res = (struct general_module*)redir_first;
     while( res ) {
 	if ( !strcasecmp(res->name, name) )
 	    return(res);
@@ -87,6 +94,19 @@ struct general_module	*res;
     return((struct auth_module*)res);
 }
 
+struct	redir_module *
+redir_module_by_name(char *name)
+{
+struct general_module	*res;
+    res = (struct general_module*)redir_first;
+    while( res ) {
+	if ( !strcasecmp(res->name, name) )
+	    return((struct redir_module*)res);
+	res = res->next;
+    }
+    return((struct redir_module*)res);
+}
+
 int
 check_auth(int so, struct request *rq, struct group *group, int *flag)
 {
@@ -106,6 +126,27 @@ struct	string_list	*mod_list = group->auth_mods;
 }
 
 int
+check_redirect(int so, struct request *rq, struct group *group, int *flag)
+{
+int			rc = MOD_CODE_OK;
+struct	redir_module	*module;
+struct	string_list	*mod_list = group->redir_mods;
+
+    if ( flag ) *flag = 0;
+    while( mod_list && (rc == MOD_CODE_OK) ) {
+	module = NULL;
+	if ( mod_list->string ) module = redir_module_by_name(mod_list->string);
+	if ( module && module->redir ) {
+	    rc = module->redir(so, group, rq, flag);
+	}
+	if ( flag && TEST(*flag, (MOD_AFLAG_BRK|MOD_AFLAG_OUT)) )
+	    return(MOD_CODE_ERR);
+	mod_list = mod_list->next;
+    }
+    return(rc);
+}
+
+int
 load_modules()
 {
 void			*modh;
@@ -115,6 +156,7 @@ int			gc;
 struct	log_module	*log_module;
 struct	err_module	*err_module;
 struct	auth_module	*auth_module;
+struct	redir_module	*redir_module;
 struct	output_module	*output_module;
 char			*nptr;
 
@@ -204,6 +246,31 @@ char			*nptr;
 			(*MOD_LOAD(auth_module))();
 		insert_module((struct general_module*)auth_module,
 			      (struct general_module**)&auth_first);
+		break;
+	      case MODULE_REDIR:
+		printf("(Redirect module)\n");
+		/* allocate module structure */
+		redir_module = (struct redir_module*)xmalloc(sizeof(*redir_module), "for redir_module");
+		if ( !redir_module ) {
+		    dlclose(modh);
+		}
+		bzero(redir_module, sizeof(*redir_module));
+		MOD_HANDLE(redir_module) = modh;
+		MOD_LOAD(redir_module)   = (mod_load_t*)dlsym(modh, "mod_load");
+		MOD_UNLOAD(redir_module) = (mod_load_t*)dlsym(modh, "mod_unload");
+		MOD_CONFIG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config");
+		MOD_CONFIG_BEG(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_beg");
+		MOD_CONFIG_END(redir_module) = (mod_load_t*)dlsym(modh, "mod_config_end");
+		*MOD_NAME(redir_module) = 0;
+		nptr = (char*)dlsym(modh, "module_name");
+		if ( nptr )
+		    strncpy(MOD_NAME(redir_module), nptr, MODNAMELEN-1);
+
+		redir_module->redir = (mod_load_t*)dlsym(modh, "redir");
+		if ( MOD_LOAD(redir_module) )
+			(*MOD_LOAD(redir_module))();
+		insert_module((struct general_module*)redir_module,
+			      (struct general_module**)&redir_first);
 		break;
 	      case MODULE_OUTPUT:
 		printf("(Output module)\n");

@@ -111,6 +111,7 @@ time_t			now;
 		my_log("cursor: %s\n", strerror(rc));
 		goto err;
 	    }
+	    WRLOCK_DB ;
 	    while ((total_free*100)/total_blks < disk_hi_free ) {
 		bzero(&key, sizeof(key));
 		bzero(&data, sizeof(data));
@@ -118,18 +119,17 @@ time_t			now;
 		rc = dbcp->c_get(dbcp, &key, &data, DB_NEXT);
 		if ( rc > 0 ) {
 		    my_log("c_get: %s\n", strerror(rc));
+		    UNLOCK_DB;
 		    goto done;
 	        }
 	        if ( rc < 0 ) {
 		    forced_cleanup = FALSE ;
 		    dbcp->c_close(dbcp);
-		    dbp->sync(dbp, 0);
 		    UNLOCK_DB ;
 		    goto done;
 		}
 	        disk_ref = data.data;
 		storage = locate_storage_by_id(disk_ref->id);
-		WRLOCK_DB ;
 		dbcp->c_del(dbcp, 0);
 		if ( storage ) {
 		    WRLOCK_STORAGE(storage);
@@ -144,12 +144,11 @@ time_t			now;
 		if ( time(NULL) - now >= KEEP_NO_LONGER_THAN || MUST_BREAK ) {
 		    forced_cleanup = TRUE ;
 		    dbcp->c_close(dbcp);
-		    dbp->sync(dbp, 0);
 		    UNLOCK_DB ;
 		    goto done;
 		}
-		UNLOCK_DB ;
 	    }
+	    UNLOCK_DB ;
 	    forced_cleanup = FALSE;
 	} else {
 	    my_log("Skip cleanup: %d out of %d (%d%%) free\n", total_free, total_blks,(total_free*100)/total_blks);
@@ -177,13 +176,15 @@ struct	storage_st	*storage;
     if ( now - last_expire < default_expire_interval )
 	return ;
 
-    if ( !dbp || !storages )
+    RDLOCK_CONFIG ;
+    if ( !dbp || !storages ) {
+	UNLOCK_CONFIG ;
 	return ;
+    }
     last_expire = started = now ;
 
     /* otherwise start expire */
-    RDLOCK_CONFIG ;
-    if ( !dbp ) goto nodb;
+
 run:
     WRLOCK_DB ;
     /* I'd like lo lock all storages now, but can this lead to deadlocks?	*/
@@ -237,7 +238,6 @@ run:
 	if ( (get_counter > 20) &&
 	     (time(NULL)-now >= KEEP_NO_LONGER_THAN) ) {
 		/* must break */
-	    dbp->sync(dbp, 0);
 	    UNLOCK_DB ;
 	    /* cursor used acros runs, so we can't release CONFIG */
 	    my_sleep(5);
@@ -245,12 +245,11 @@ run:
 	}
     }
 done:
-    dbp->sync(dbp, 0);
     UNLOCK_DB ;
 nodb:
-    UNLOCK_CONFIG ;
     if ( dbcp )
 	dbcp->c_close(dbcp);
+    UNLOCK_CONFIG ;
     my_log("EXPIRE Finished: %d expires, %d seconds, %d total\n",
 	expired_cnt, time(NULL)-started, total_cnt);
 }

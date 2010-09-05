@@ -192,9 +192,9 @@ typedef	unsigned	uint32_t;
 #define	ERR_ACC_DENIED		6
 #define	ERR_TRANSFER		7
 
-#define	SET(a,b)		(a|=b)
+#define	SET(a,b)		(a|=(b))
 #define	CLR(a,b)		(a&=~b)
-#define	TEST(a,b)		(a&b)
+#define	TEST(a,b)		((a)&(b))
 
 #define	malloc(x)	xmalloc(x, NULL)
 #define	free(x)		xfree(x)
@@ -402,6 +402,7 @@ struct	group_ops_struct {
 #define	OP_BANDWIDTH	5
 #define	OP_MISS		6
 #define	OP_AUTH_MODS	7
+#define	OP_REDIR_MODS	8
 	int				op;
 	void				*val;
 	struct	group_ops_struct	*next;
@@ -440,6 +441,7 @@ struct	group	{
 	int			bandwidth;
 	int			miss_deny;	/* TRUE if deny	*/
 	struct	string_list	*auth_mods;	/* auth modules */
+	struct	string_list	*redir_mods;	/* redir modules */
 	pthread_mutex_t		group_mutex;
 	struct	group_stat	cs0;		/* current	*/
 	struct	group_stat	cs1;		/* prev second	*/
@@ -534,6 +536,18 @@ struct	oops_stat {
 	uint32_t	requests_http0;	/* current minute requests		*/
 	uint32_t	hits0;		/* current minute hits			*/
 	uint32_t	storages_free;	/* current free storage %%		*/
+};
+
+#define	MAXPOLLFD	(64)
+#define	FD_POLL_RD	(1)
+#define	FD_POLL_WR	(2)
+#define	IS_READABLE(a)	(((a)->answer)&FD_POLL_RD)
+#define	IS_WRITEABLE(a)	(((a)->answer)&FD_POLL_WR)
+
+struct	pollarg {
+	int	fd;
+	short	request;
+	short	answer;
 };
 
 struct		mem_obj	*youngest_obj, *oldest_obj;
@@ -718,3 +732,4 @@ int		free_charsets(struct charset*);
 int		miss_deny(struct group*);
 int		put_av_pair(struct av **, char *, char*);
 struct	av	*lookup_av_by_attr(struct av*, char*);
+int		poll_descriptors(int, struct pollarg*, int);

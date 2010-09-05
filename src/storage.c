@@ -221,7 +221,7 @@ char		*map_ptr;
 	}
 	my_log("Formatting storage %s for %d bytes\n", storage->path, size);
 	gettimeofday(&tv, NULL);
-	fd = open(storage->path, O_CREAT|O_RDWR|O_TRUNC, 0644);
+	fd = open(storage->path, O_CREAT|O_RDWR, 0644);
 	if ( fd == -1 ) {
 	    my_log("open(%s): %s\n", storage->path, strerror(errno));
 	    goto try_next;
@@ -404,7 +404,6 @@ char		*allocated = NULL;
 	}
 	set_bits(storage->map, *po, 1);
     }
-    flush_super(storage);
     return allocated;
 error:
     if ( allocated ) xfree(allocated);
@@ -534,8 +533,14 @@ buff_to_blks(struct buff *b, struct storage_st * storage, uint32_t *n, uint32_t 
 {
 char		*c;
 int		to_move, rc, space;
+off_t		next_position;
 
+#ifdef	HAVE_PWRITE
+    next_position = *n*BLKSIZE;
+#else
     lseek(storage->fd, *n*BLKSIZE, SEEK_SET);
+#endif
+
     space = BLKSIZE;
     while ( b && needed ) {
 	c = b->data;
@@ -543,23 +548,40 @@ int		to_move, rc, space;
     cwb:
 	if ( !to_move ) goto nextb;
 	if ( to_move <= space ) {
+#ifdef	HAVE_PWRITE
+	    rc = pwrite(storage->fd, c, to_move, next_position);
+	    next_position += to_move;
+#else
 	    rc = write(storage->fd, c, to_move);
+#endif
 	    space -= to_move;
 	    if ( space <= 0 ) {
 		needed--;
 		n++;
 		space = BLKSIZE;
+#ifdef	HAVE_PWRITE
+		next_position = *n*BLKSIZE;
+#else
 		lseek(storage->fd, *n*BLKSIZE, SEEK_SET);
+#endif
 	    }
 	    to_move = 0;
 	} else {
+#ifdef	HAVE_PWRITE
+	    rc = pwrite(storage->fd, c, space, next_position);
+#else
 	    rc = write(storage->fd, c, space);
+#endif
 	    needed--;
 	    to_move -= space;
 	    c += space;
 	    space = BLKSIZE;
 	    n++;
+#ifdef	HAVE_PWRITE
+	    next_position = *n*BLKSIZE;
+#else
 	    lseek(storage->fd, *n*BLKSIZE, SEEK_SET);
+#endif
 	    goto cwb;
 	}
     nextb:
@@ -599,7 +621,7 @@ struct storage_st	*storage;
     url_str = xmalloc(ROUND(urll, CHUNK_SIZE), "url_str");
     if ( !url_str )
 	return(-1);
-    sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
+    sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
     bzero(&key,  sizeof(key));
     bzero(&data, sizeof(data));
     key.data = url_str;
@@ -658,11 +680,18 @@ char			answer[BLKSIZE+1];
 	goto err;
 
     bzero(&a, sizeof(a));
-s:  rc = lseek(fd, *n*BLKSIZE, SEEK_SET);
+s:  
+#ifndef	HAVE_PREAD
+    rc = lseek(fd, *n*BLKSIZE, SEEK_SET);
     if ( rc == -1 )
 	goto err;
+#endif
 r:  next_read = MIN(BLKSIZE, to_load);
-    rc = read(fd, answer, next_read);
+#ifdef	HAVE_PREAD
+    rc = pread(fd, answer, next_read, *n*BLKSIZE);
+#else
+    rc =  read(fd, answer, next_read);
+#endif
     if ( rc != next_read )
 	goto err;
     if ( !(a.state & GOT_HDR) ) {

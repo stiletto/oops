@@ -10,9 +10,20 @@
 #include	<sys/time.h>
 #include	<sys/types.h>
 
+#include	<pthread.h>
+#include        <sys/param.h>
+#include        <sys/socket.h>
+#include        <sys/types.h>
+#include        <sys/stat.h>
+#include        <sys/file.h>
+#include        <sys/time.h>
 
-#define		FALSE	0
-#define		TRUE	1
+#include        <netinet/in.h>
+
+#include	<db.h>
+
+#include	"oops.h"
+
 
 int
 readn(int so, char* buf, int len, int tmo)
@@ -22,17 +33,16 @@ char		*p = buf;
 fd_set		fdr;
 struct	timeval tv;
 time_t		start, now;
+struct	pollarg	pa;
 
 	if ( so < 0 ) return(0);
 	if ( len <= 0 ) return(0);
 	start = time(NULL);
 rl1:
 	now = time(NULL);
-	FD_ZERO(&fdr);
-	FD_SET(so, &fdr);
-	tv.tv_sec  = tmo - (start-now);
-	tv.tv_usec = 0;
-	sr = select(so+1, &fdr, NULL, NULL, &tv);
+	pa.fd = so;
+	pa.request = FD_POLL_RD;
+	sr = poll_descriptors(1, &pa, (tmo - (start-now))*1000);
 	if ( sr < 0 ) {
 		if ( errno == EINTR ) return(readed);
 		return(sr);
@@ -62,6 +72,7 @@ readt(int so, char* buf, int len, int tmo)
 int		to_read = len, sr, readed = 0, got;
 char		*p = buf;
 fd_set		fdr;
+struct	pollarg	pollarg;
 struct	timeval tv;
 
 	if ( so < 0 ) return(0);
@@ -71,7 +82,10 @@ struct	timeval tv;
 	FD_SET(so, &fdr);
 	tv.tv_sec  = tmo;
 	tv.tv_usec = 0;
-	sr = select(so+1, &fdr, NULL, NULL, &tv);
+	pollarg.fd = so;
+	pollarg.request = FD_POLL_RD;
+	sr = poll_descriptors(1, &pollarg, tmo*1000);
+/*	sr = select(so+1, &fdr, NULL, NULL, &tv); */
 	if ( sr < 0 ) {
 		if ( errno == EINTR ) return(readed);
 		return(sr);
@@ -91,13 +105,17 @@ wait_for_read(int so, int tmo_m)
 fd_set		fdr;
 struct	timeval tv;
 int		sr;
+struct	pollarg	pollarg;
 
 	if ( so < 0 ) return(FALSE);
 	FD_ZERO(&fdr);
 	FD_SET(so, &fdr);
 	tv.tv_sec  =  tmo_m/1000;
 	tv.tv_usec = (tmo_m*1000)%1000000;
-	sr = select(so+1, &fdr, NULL, NULL, &tv);
+/*	sr = select(so+1, &fdr, NULL, NULL, &tv);*/
+	pollarg.fd = so;
+	pollarg.request = FD_POLL_RD;
+	sr = poll_descriptors(1, &pollarg, tmo_m);
 	if ( sr <= 0 )
 		return(FALSE);
 	return(TRUE);
@@ -136,6 +154,7 @@ char		*p = buf;
 fd_set		fdw;
 struct	timeval tv;
 time_t		start, now;
+struct pollarg	pollarg;
 
     if ( so < 0 ) return(-1);
     if ( len <= 0 ) return(0);
@@ -148,7 +167,10 @@ time_t		start, now;
 	FD_SET(so, &fdw);
 	tv.tv_sec  = tmo - (start-now);
 	tv.tv_usec = 0;
-	sr = select(so+1, NULL, &fdw, NULL, &tv);
+/*	sr = select(so+1, NULL, &fdw, NULL, &tv);*/
+	pollarg.fd = so;
+	pollarg.request = FD_POLL_WR;
+	sr = poll_descriptors(1, &pollarg, (tmo - (start-now))*1000);
 	if ( sr < 0 ) {
 	    return(sr);
 	}
