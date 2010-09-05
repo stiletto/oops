@@ -1,4 +1,5 @@
 /* src/config.h.in.  Generated automatically from configure.in by autoheader.  */
+
 #undef OOPS_HOME
 #undef OOPS_CFG
 #undef OOPS_CC
@@ -18,124 +19,96 @@
 #undef HAVE_UINT32_T
 #undef HAVE__GMTOFF__
 #undef HAVE_STRUCT_TIMESPEC
-#undef HAVE_WORKING_SSCANF
+#undef HAVE_PTHREAD_RWLOCK_INIT
 #undef HAVE_IP6_H
 #undef HAVE_SYSERRLIST
 #undef HAVE_TIME_T_AS_DOUBLE
+#undef HAVE_GETOPT
 #undef HAVE_GIGABASE
 #undef HAVE_BERKELEYDB
+#undef HAVE_MYSQL
+#undef HAVE_PGSQL
+#undef MYSQL_PATH
+#undef PGSQL_PATH
+#undef HAVE_ZLIB
 
-/* Define if you have the `atoll' function. */
+/* Define if you have the atoll function.  */
 #undef HAVE_ATOLL
 
-/* Define if you have the `bzero' function. */
+/* Define if you have the bzero function.  */
 #undef HAVE_BZERO
 
-/* Define if you have the `chroot' function. */
+/* Define if you have the chroot function.  */
 #undef HAVE_CHROOT
 
-/* Define if you have the <crypt.h> header file. */
-#undef HAVE_CRYPT_H
-
-/* Define if you have the `ctime_r' function. */
+/* Define if you have the ctime_r function.  */
 #undef HAVE_CTIME_R
 
-/* Define if you have the `daemon' function. */
+/* Define if you have the daemon function.  */
 #undef HAVE_DAEMON
 
-/* Define if you have the `getdomainname' function. */
+/* Define if you have the directio function.  */
+#undef HAVE_DIRECTIO
+
+/* Define if you have the getdomainname function.  */
 #undef HAVE_GETDOMAINNAME
 
-/* Define if you have the `gethostbyname_r' function. */
+/* Define if you have the gethostbyname_r function.  */
 #undef HAVE_GETHOSTBYNAME_R
 
-/* Define if you have the `getopt' function. */
-#undef HAVE_GETOPT
-
-/* Define if you have the <getopt.h> header file. */
-#undef HAVE_GETOPT_H
-
-/* Define if you have the `getrlimit' function. */
+/* Define if you have the getrlimit function.  */
 #undef HAVE_GETRLIMIT
 
-/* Define if you have the `getrusage' function. */
+/* Define if you have the getrusage function.  */
 #undef HAVE_GETRUSAGE
 
-/* Define if you have the `gmtime_r' function. */
+/* Define if you have the gmtime_r function.  */
 #undef HAVE_GMTIME_R
 
-/* Define if you have the `c' library (-lc). */
-#undef HAVE_LIBC
-
-/* Define if you have the `crypt' library (-lcrypt). */
-#undef HAVE_LIBCRYPT
-
-/* Define if you have the `dl' library (-ldl). */
-#undef HAVE_LIBDL
-
-/* Define if you have the `fl' library (-lfl). */
-#undef HAVE_LIBFL
-
-/* Define if you have the `l' library (-ll). */
-#undef HAVE_LIBL
-
-/* Define if you have the `pcre' library (-lpcre). */
-#undef HAVE_LIBPCRE
-
-/* Define if you have the `pcreposix' library (-lpcreposix). */
-#undef HAVE_LIBPCREPOSIX
-
-/* Define if you have the `posix' library (-lposix). */
-#undef HAVE_LIBPOSIX
-
-/* Define if you have the `pthread' library (-lpthread). */
-#undef HAVE_LIBPTHREAD
-
-/* Define if you have the `pthreads' library (-lpthreads). */
-#undef HAVE_LIBPTHREADS
-
-/* Define if you have the `localtime_r' function. */
+/* Define if you have the localtime_r function.  */
 #undef HAVE_LOCALTIME_R
 
-/* Define if you have the `poll' function. */
+/* Define if you have the poll function.  */
 #undef HAVE_POLL
 
-/* Define if you have the `pread' function. */
+/* Define if you have the pread function.  */
 #undef HAVE_PREAD
 
-/* Define if you have the <pthread.h> header file. */
-#undef HAVE_PTHREAD_H
-
-/* Define if you have the `pwrite' function. */
+/* Define if you have the pwrite function.  */
 #undef HAVE_PWRITE
 
-/* Define if you have the `setegid' function. */
+/* Define if you have the setegid function.  */
 #undef HAVE_SETEGID
 
-/* Define if you have the `setrlimit' function. */
+/* Define if you have the setrlimit function.  */
 #undef HAVE_SETRLIMIT
 
-/* Define if you have the `snprintf' function. */
+/* Define if you have the snprintf function.  */
 #undef HAVE_SNPRINTF
 
-/* Define if you have the `strcasestr' function. */
+/* Define if you have the strcasestr function.  */
 #undef HAVE_STRCASESTR
 
-/* Define if you have the `strerror_r' function. */
+/* Define if you have the strerror_r function.  */
 #undef HAVE_STRERROR_R
 
-/* Define if you have the <strings.h> header file. */
-#undef HAVE_STRINGS_H
-
-/* Define if you have the <string.h> header file. */
-#undef HAVE_STRING_H
-
-/* Define if you have the `strtoll' function. */
+/* Define if you have the strtoll function.  */
 #undef HAVE_STRTOLL
 
-/* Define if you have the <unistd.h> header file. */
-#undef HAVE_UNISTD_H
+/* Define if you have the <crypt.h> header file.  */
+#undef HAVE_CRYPT_H
 
-/* Define if `lex' declares `yytext' as a `char *' by default, not a `char[]'.
-   */
-#undef YYTEXT_POINTER
+/* Define if you have the <getopt.h> header file.  */
+#undef HAVE_GETOPT_H
+
+/* Define if you have the <pthread.h> header file.  */
+#undef HAVE_PTHREAD_H
+
+/* Define if you have the <string.h> header file.  */
+#undef HAVE_STRING_H
+
+/* Define if you have the <strings.h> header file.  */
+#undef HAVE_STRINGS_H
+
+/* Define if you have the <unistd.h> header file.  */
+#undef HAVE_UNISTD_H

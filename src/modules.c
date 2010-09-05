@@ -621,6 +621,8 @@ load_modules(void)
     insert_module(&err_mod.general, (struct general_module **)&err_first);
 
     insert_module(&passwd_file.general, (struct general_module **)&auth_first);
+    insert_module(&passwd_mysql.general, (struct general_module **)&auth_first);
+    insert_module(&passwd_pgsql.general, (struct general_module **)&auth_first);
 
     insert_module(&vary_header.general, (struct general_module **)&headers_first);
 
@@ -709,6 +711,7 @@ struct		sockaddr_in	sin_addr;
 	    pptr->port = port;
 	    pptr->so = -1;	/* this is sign to use server_so */
 	    pptr++;
+	    continue;
 	} else
 	if ( (so = tcp_port_in_use(port, &sin_addr.sin_addr)) !=0 ) {
 	    nres++;
@@ -716,6 +719,7 @@ struct		sockaddr_in	sin_addr;
 	    pptr->port = port;
 	    pptr->so = so;
 	    pptr++;
+	    continue;
 	} else
 #if	defined(FREEBSD)
 	/*

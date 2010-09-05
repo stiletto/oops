@@ -11,6 +11,7 @@ case $1 in
 acc)
     # AIX cc (3.6.5, 4.4)
     CC="cc_r -O3 -qstrict -qmaxmem=65535"
+    CXX="xlC_r -O3 -qstrict -qmaxmem=65535"
     CPPFLAGS="-I/usr/include -I/usr/local/include"
     CFLAGS="-I/usr/include -I/usr/local/include"
     LDFLAGS="-L/usr/local/lib"
@@ -43,6 +44,7 @@ esac
 
 
 CC="$CC" \
+CXX="$CXX" \
 CPPFLAGS="$CPPFLAGS" \
 CFLAGS="$CFLAGS" \
 LDFLAGS="$LDFLAGS" \

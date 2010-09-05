@@ -106,6 +106,7 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 
     if ( !rq->url.host ) return(0);
     strncpy(host, (*rq).url.host, sizeof(host)-1);
+    host[sizeof(host)-1] = 0;
     if ( !strchr(host, '.') ) {
 	gethostname(lh, sizeof(lh));
 	t = strchr(lh, '.');
@@ -113,6 +114,7 @@ struct	dstdomain_cache_entry	**dst_he = NULL, *dst_he_data = NULL;
 		     has no domain */
 		return(0);
 	strncpy(host+strlen(host), t, sizeof(host) - strlen(host) -1 );
+	host[sizeof(host)-1] = 0;
     }
     if ( !group ) group = rq_to_group(rq);
     s = my_inet_ntoa(&rq->client_sa);
@@ -330,7 +332,7 @@ char		todaybit, dmask,yestdbit;
 
     if ( !dt ) return(0);
 
-    localtime_r(&global_sec_timer, &tm);
+    localtime_r((time_t*)&global_sec_timer, &tm);
     cm = tm.tm_hour * 60 + tm.tm_min;
     todaybit = 1 << tm.tm_wday;
 
@@ -409,6 +411,8 @@ named_acl_type_by_name(char *type)
 	return(ACL_SRCDOMREGEX);
     if ( !strcasecmp(type, "time") )
 	return(ACL_TIME);
+    if ( !strcasecmp(type, "content_type") )
+	return(ACL_CONTENT_TYPE);
     return((char)-1);
 }
 void
@@ -457,6 +461,11 @@ case ACL_TIME:
 	    acl->data = NULL;
 	}
 	break;
+case ACL_CONTENT_TYPE:
+	if ( acl->data ) {
+	    acl_ct_data_t	*ctd = (acl_ct_data_t*)acl->data;
+	    IF_FREE(ctd->ct);
+	}
 default:
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "free_named_acl(): Try to free unknown named acl %s\n", acl->name);
     }
@@ -564,6 +573,7 @@ case ACL_TIME:
 	    return(0);
 	}
 	strncpy(dayspec, tb, sizeof(dayspec) - 2);
+	dayspec[sizeof(dayspec) - 2] = 0;
 	verb_printf("dayspec: `%s'\n", dayspec);
 	tb = (char*)strtok_r(NULL, " \t", &tokptr);
 	if ( !tb ) {
@@ -572,6 +582,7 @@ case ACL_TIME:
 	    return(0);
 	}
 	strncpy(timespec, tb, sizeof(timespec) - 2);
+	timespec[sizeof(timespec) - 2] = 0;
 	verb_printf("timespec: `%s'\n", timespec);
 	if ( sscanf(timespec, "%d:%d", &start_m, &end_m) != 2 ) {
 	    verb_printf("Wrong time acl: %s\n", data);
@@ -649,6 +660,18 @@ case ACL_METHOD:
 	if ( data ) acl->data = strdup(data);
 	if ( must_free_data ) free(data);
 	return(0);
+case ACL_CONTENT_TYPE:
+	printf("acl->data: `%s'\n", data);
+	if ( data ) {
+	    acl_ct_data_t *ctd = malloc(sizeof(*ctd));
+	    if ( ctd ) {
+		ctd->ct = strdup(data);
+		ctd->len = strlen(data);
+		acl->data = ctd;
+	    }
+	    if ( must_free_data ) free(data);
+	}
+	return(0);
 case ACL_USERCHARSET:
 	/* string with charset name			*/
 	{
@@ -660,6 +683,7 @@ case ACL_USERCHARSET:
 	    }
 	    bzero(ucsd, sizeof(*ucsd));
 	    strncpy(ucsd->name, data, sizeof(ucsd->name)-1);
+	    ucsd->name[sizeof(ucsd->name)-1] = 0;
 	    acl->data = ucsd;
 	}
 	if ( must_free_data ) free(data);
@@ -707,9 +731,10 @@ case ACL_SRC_IP:
 	    verb_printf("SRC_IP: %s\n", data);
 	    t = data;
 	    while ( (p = (char*)strtok_r(t, "\t \n", &tptr)) != 0 ) {
-	      char	*slash = NULL, masklen, *tt, *pp, *ttptr;
-	      int	net = 0, i = 24;
-	      struct	cidr_net *new;
+	      char		*slash = NULL, masklen, *tt, *pp, *ttptr;
+	      int		net = 0, i = 24;
+	      struct		cidr_net *new;
+	      struct	sockaddr_in	hostsa;
 
 		t = NULL;
 		verb_printf("SRC: %s\n", p);
@@ -720,13 +745,16 @@ case ACL_SRC_IP:
 		    masklen = 32;
 		}
 		tt = p;
+		bzero(&hostsa, sizeof(hostsa));
+		if ( !slash && !str_to_sa(p, (struct sockaddr*)&hostsa) ) {
+		    net = hostsa.sin_addr.s_addr;
+		} else
 		while ( (pp = (char*)strtok_r(tt,".", &ttptr)) != 0 ) {
 		    tt = NULL;
 
 		    net |= (atol(pp) << i);
 		    i -= 8;
 		}
-		if ( slash ) *slash = '/';
 		verb_printf("NET: %0x/%d\n", net, masklen);
 		new = malloc(sizeof(*new));
 		if ( !new ) continue;
@@ -771,6 +799,33 @@ default:
     }
     if ( must_free_data ) free(data);
     return(0);
+}
+
+int
+obj_match_named_acl(struct mem_obj *obj, struct request *rq, named_acl_t *acl)
+{
+    if ( !obj || !acl || !acl->data ) return(FALSE);
+
+    switch(acl->type) {
+	case ACL_CONTENT_TYPE:
+	    /* compare content type with document content-type */
+	    {
+		char		*document_type;
+		acl_ct_data_t	*acl_ct_data =  (acl_ct_data_t*)acl->data;
+
+		if ( !obj->headers ) return(FALSE);
+		document_type = attr_value(obj->headers, "Content-Type");
+		if ( document_type && acl_ct_data->ct && acl_ct_data->len ) {
+		    if ( !strncasecmp(acl_ct_data->ct, document_type, acl_ct_data->len) )
+			return(TRUE);
+		}
+	    }
+	    break;
+	default:
+	    return (rq_match_named_acl(rq, acl));
+	    break;
+    }
+    return(FALSE);
 }
 
 int
@@ -1105,6 +1160,20 @@ acl_chk_list_hdr_t *curr = acl_access;
     return(FALSE);
 }
 
+int
+obj_check_acl_access(acl_chk_list_hdr_t *acl_access, struct mem_obj *obj, struct request *rq)
+{
+acl_chk_list_hdr_t *curr = acl_access;
+
+    while(curr) {
+	if ( obj_check_acl_list((acl_chk_list_t*)curr, obj, rq) == TRUE ) {
+	    return(TRUE);
+	}
+	curr = curr->next_list;
+    }
+    return(FALSE);
+}
+
 /* return TRUE if request pass list	*/
 int
 check_acl_list(acl_chk_list_t *list, struct request *rq)
@@ -1114,6 +1183,23 @@ int	res;
     while(list) {
 	if ( list->acl ) {
 	    res = rq_match_named_acl(rq, list->acl);
+	    res ^= list->sign;
+	    if ( res == FALSE ) return(FALSE);
+	}
+	list = list->next;
+    }
+    return(TRUE);
+}
+
+/* return TRUE if object pass list	*/
+int
+obj_check_acl_list(acl_chk_list_t *list, struct mem_obj *obj, struct request *rq)
+{
+int	res;
+
+    while(list) {
+	if ( list->acl ) {
+	    res = obj_match_named_acl(obj, rq, list->acl);
 	    res ^= list->sign;
 	    if ( res == FALSE ) return(FALSE);
 	}

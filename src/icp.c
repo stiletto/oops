@@ -54,7 +54,6 @@ struct	peer	*peer_by_addr(struct sockaddr_in*);
 int	process_miss(void*, void*);
 int	process_hit(void*, void*);
 
-
 #define	icp_opcode	icp_hdr->w0.opcode
 #define	icp_version	icp_hdr->w0.version
 #define	icp_msg_len	icp_hdr->w0.msg_len
@@ -62,7 +61,8 @@ int	process_hit(void*, void*);
 #define	icp_opt		icp_hdr->opt
 #define	icp_opt_data	icp_hdr->opt_data
 
-/* 1) Запросы посылаются всем.
+/* 1) Запросы посылаются: тем кому не запрещено acl-ями и т.д.
+	не-icp peer-ам (icp-порт 0) запрсы не посылаются, считается что они ответят MISS
 	соседи в состоянии DOWN не учитываются для ожидания.
    2) При получении первого хита - обрыв ожидания, идем к тому от кого хит
    3) При получении MISS:
@@ -78,7 +78,7 @@ int	process_hit(void*, void*);
 int
 send_icp_requests(struct request *rq, struct icp_queue_elem *qe)
 {
-int		len,succ=0,rr;
+int		len,succ=0,rr, nonicps=0;
 char		*buf;
 struct	icp_hdr	*icp_hdr;
 struct	peer	*peer;
@@ -128,8 +128,15 @@ struct	peer	*peer;
 		    peer->addr_age = rq->request_time - ADDR_AGE + 60 ;
 		  else
 		    peer->addr_age += 60;
+		pthread_mutex_unlock(&icp_resolver_lock);
+		peer = peer->next;
+		continue;
 	    }
 	    pthread_mutex_unlock(&icp_resolver_lock);
+	}
+	if ( peer->addr.sin_addr.s_addr == INADDR_ANY ) {
+	    peer = peer->next;
+	    continue;
 	}
 	if ( peer->peer_access && !use_peer(rq, peer) ) {
 	    peer = peer->next;
@@ -137,6 +144,26 @@ struct	peer	*peer;
 	}
 	/* skip if we don't want to use this peers for this domain */
 	if ( peer->acls && !is_domain_allowed(rq->url.host, peer->acls) ) {
+	    peer = peer->next;
+	    continue;
+	}
+	if ( peer->icp_port == 0 ) {
+	    /* this is not icp-capable peer
+	       we can use it if is up or it is down but enough
+	       long time,  so we can try to use it
+	    */
+	    if ( (peer->state == PEER_DOWN)
+	         && (global_sec_timer - peer->down_time > peer->down_timeout ) )
+			peer->state = PEER_UP;
+	    if ( peer->state != PEER_UP ) {
+		peer = peer->next;
+		continue;
+	    }
+	    nonicps++;
+	    qe->type    = peer->type;
+	    qe->peer_sa = peer->addr;
+	    qe->peer_sa.sin_port = htons(peer->http_port);
+	    qe->status = TRUE;
 	    peer = peer->next;
 	    continue;
 	}
@@ -155,9 +182,12 @@ struct	peer	*peer;
     }
     UNLOCK_CONFIG ;
     xfree(buf);
-    if ( !succ ) {
+    if ( !succ && !nonicps ) {
    	return(-1);
     }
+    if ( !succ && nonicps )
+	return(0);
+
     /* requests was sent */
     qe->requests_sent = succ;
     /* put qe in list	 */

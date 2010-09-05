@@ -134,13 +134,15 @@ u_char		*s;
 
     if ( so < 0 ) return(-1);
     if ( len <= 0 ) return(0);
-    recoded = malloc(len);
+    recoded = malloc(len+1);
     if ( !recoded )
 	return(-1);
     s = (u_char*)buf; d = recoded;
     while ( (s-(u_char*)buf) < len ) {
 	u_char	c, cd;
-	if ( escapes && (*s == '%' && isxdigit(*(s+1)) && isxdigit(*(s+2))) ) {
+	if ( escapes
+	    && ((s-(u_char*)buf) + 2 < len)
+	    && (*s == '%' && isxdigit(*(s+1)) && isxdigit(*(s+2))) ) {
 	    if ( isdigit(*(s+1)) ) {
 		c = 16 * (*(s+1)-'0');
 	    } else

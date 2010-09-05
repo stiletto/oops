@@ -69,13 +69,13 @@ static	char		*template;
 static	int		template_size;
 static	time_t		template_mtime;
 static	time_t		template_check_time;
-static	rwl_t		err_config_lock;
-static	void		check_template_age(void);
-static	void		reload_template(void);
+static	pthread_rwlock_t	err_config_lock;
+static	void			check_template_age(void);
+static	void			reload_template(void);
 
-#define	WRLOCK_ERR_CONFIG	rwl_wrlock(&err_config_lock)
-#define	RDLOCK_ERR_CONFIG	rwl_rdlock(&err_config_lock)
-#define	UNLOCK_ERR_CONFIG	rwl_unlock(&err_config_lock)
+#define	WRLOCK_ERR_CONFIG	pthread_rwlock_wrlock(&err_config_lock)
+#define	RDLOCK_ERR_CONFIG	pthread_rwlock_rdlock(&err_config_lock)
+#define	UNLOCK_ERR_CONFIG	pthread_rwlock_unlock(&err_config_lock)
 
 char	*messages[2][8] = {
 
@@ -118,7 +118,7 @@ mod_load()
     template_size = 0;
     template_mtime = 0;
     template_check_time = 0;
-    rwl_init(&err_config_lock);
+    pthread_rwlock_init(&err_config_lock, NULL);
     return(MOD_CODE_OK);
 }
 int

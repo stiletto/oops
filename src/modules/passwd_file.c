@@ -59,7 +59,7 @@ struct	auth_module	passwd_file = {
 };
 
 
-static	rwl_t	pwf_lock;
+static	pthread_rwlock_t	pwf_lock;
 static	char	*pwds = NULL;
 static	char	*template = NULL;
 static	time_t	pwf_mtime, pwf_check_time;
@@ -87,9 +87,9 @@ Your browser proposed unsupported scheme\n\
 <hr>\n\
 <i><font size=-1>by \'passwd_file\' module to Oops.";
 
-#define	RDLOCK_PWF_CONFIG	rwl_rdlock(&pwf_lock)
-#define	WRLOCK_PWF_CONFIG	rwl_wrlock(&pwf_lock)
-#define	UNLOCK_PWF_CONFIG	rwl_unlock(&pwf_lock)
+#define	RDLOCK_PWF_CONFIG	pthread_rwlock_rdlock(&pwf_lock)
+#define	WRLOCK_PWF_CONFIG	pthread_rwlock_wrlock(&pwf_lock)
+#define	UNLOCK_PWF_CONFIG	pthread_rwlock_unlock(&pwf_lock)
 
 static	void	reload_pwf(void), reload_pwf_template(void);
 static	void	check_pwf_age(void), check_pwf_template_age(void);
@@ -110,7 +110,7 @@ int
 mod_load()
 {
     printf("Passwd_file started\n");
-    rwl_init(&pwf_lock);
+    pthread_rwlock_init(&pwf_lock, NULL);
 #if	!defined(SOLARIS)
     pthread_mutex_init(&crypt_lock, NULL);
 #endif

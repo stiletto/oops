@@ -73,6 +73,7 @@ ERRBUF ;
     if ( !verbose_startup ) return;
 
     strncpy(fbuf, form, sizeof(fbuf)-1);
+    fbuf[sizeof(fbuf)-1] = 0;
     while((s = strstr(s, "%m")) != NULL) {
 	pe = STRERROR_R(err, ERRBUFS);
 	le = strlen(pe);
@@ -114,6 +115,7 @@ ERRBUF ;
     if ( c ) *c = ' ';
 
     strncpy(fbuf, form, sizeof(fbuf)-1);
+    fbuf[sizeof(fbuf)-1] = 0;
     while((s = strstr(s, "%m")) != NULL) {
 	pe = STRERROR_R(err, ERRBUFS);
 	le = strlen(pe);
@@ -239,8 +241,9 @@ char			*proto, *host, *path, *user;
     sbuf = malloc(maxlen + strlen(meth) + strlen(tag) + strlen(hierarchy)
     			 + strlen(content) + strlen(source)
     			 + strlen(user) + 128);
-    if ( sbuf ) {
-	sprintf(sbuf, "%u.000 %d %s %s/%d %d %s %-.128s %s %s/%s %s\n", (unsigned)global_sec_timer, elapsed, s,
+    if ( sbuf && urlp ) {
+	sprintf(sbuf, "%u.000 %d %s %s/%d %d %s %-.128s %s %s/%s %s\n",
+	(unsigned)global_sec_timer, elapsed, s,
 	tag, code, size, meth, urlp, user,
 	hierarchy, source,
 	content);
@@ -350,6 +353,7 @@ int	ba_addr;
 
     if ( rq && ( ba_addr = find_bind_acl(rq) ) ) {
 	struct	sockaddr_in	sa;
+	bzero(&sa, sizeof(sa));
 	sa.sin_addr.s_addr = ba_addr;
 	sa.sin_family = AF_INET;
 #if     !defined(SOLARIS) && !defined(LINUX) && !defined(OSF) && !defined(_WIN32)
@@ -380,8 +384,10 @@ int	ip_addr;
     domain_name[0] = 0;
     gethostname(tmpname, sizeof(tmpname));
     strncpy(host_name, tmpname, sizeof(host_name)-1);
+    host_name[sizeof(host_name)-1] = 0;
     if ( (t = strchr(host_name, '.')) != 0 ) {
 	strncpy(domain_name, t, sizeof(domain_name)-1);
+	domain_name[sizeof(domain_name)-1] = 0;
 	my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 1: host_name = `%s' domain_name = `%s'\n",
 		host_name, domain_name);
 	return;
@@ -391,10 +397,12 @@ int	ip_addr;
 	if ( (ip_addr = inet_addr(bind_addr)) == -1 ) {
 	    if ( (t = strchr(bind_addr, '.')) != 0 ) {
 		strncpy(domain_name, t, sizeof(domain_name)-1);
+		domain_name[sizeof(domain_name)-1] = 0;
 		if ( host_name[0] != 0 && !strchr(host_name, '.') )
 		    strncat(host_name, domain_name, sizeof(host_name) - strlen(host_name)-1);
 		else
 		    strncpy(host_name, bind_addr, sizeof(host_name)-1);
+		host_name[sizeof(host_name)-1] = 0;
 		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 2: host_name = `%s' domain_name = `%s'\n",
 			host_name, domain_name);
 		return;
@@ -405,10 +413,12 @@ int	ip_addr;
 	if ( (ip_addr = inet_addr(connect_from)) == -1 ) {
 	    if ( (t = strchr(connect_from, '.')) != 0 ) {
 		strncpy(domain_name, t, sizeof(domain_name)-1);
+		domain_name[sizeof(domain_name)-1] = 0;
 		if ( host_name[0] != 0 && !strchr(host_name, '.') )
 		    strncat(host_name, domain_name, sizeof(host_name) - strlen(host_name)-1);
 		else
 		    strncpy(host_name, connect_from, sizeof(host_name)-1);
+		host_name[sizeof(host_name)-1] = 0;
 		my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 3: host_name = `%s' domain_name = `%s'\n",
 			host_name, domain_name);
 		return;
@@ -424,6 +434,7 @@ int	ip_addr;
     if ( !domain_name[0] && host_name[0] ) {
 	if ( (t = strchr(host_name, '.')) != 0 )
 		strncpy(domain_name, t, sizeof(domain_name)-1);
+		domain_name[sizeof(domain_name)-1] = 0;
     }
     my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "init_domain_name(): 4: host_name = `%s' domain_name = `%s'\n",
 	    host_name, domain_name);
@@ -511,8 +522,10 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
     /* check if this is full name */
     if ( !strchr(name, '.') ) {
 	if ( domain_name[0] ) /* join */ {
-	    strcpy((char*)tmpname, name);
+	    strncpy((char*)tmpname, name, sizeof(tmpname)-1);
+	    tmpname[sizeof(tmpname)-1] = 0;
 	    strncat((char*)tmpname, domain_name, sizeof(tmpname)-strlen((char*)tmpname) -1 );
+	    tmpname[sizeof(tmpname)-1] = 0;
 	    name=(char*)tmpname;
 	}
 	if ( (result = lookup_dns_cache((char*)tmpname, NULL, 0)) != 0 )
@@ -530,9 +543,9 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 #if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF) && !defined(_WIN32)
     dns_sa.sin_len = sizeof(dns_sa);
 #endif
-    rwl_rdlock(&config_lock);
+    pthread_rwlock_rdlock(&config_lock);
     dns_sa.sin_addr.s_addr = ns_sa[0].sin_addr.s_addr;
-    rwl_unlock(&config_lock);
+    pthread_rwlock_unlock(&config_lock);
     dns_sa.sin_port	   = htons(53);
     bzero(dnsq, sizeof(dnsq));
 
@@ -650,14 +663,15 @@ find_IN_A:
     if ( results >= 1 ) {
 	struct dns_cache_item	*dns_items, *ci;
 	char			*dns_name;
-	unsigned int			i;
+	unsigned int		i, dnsnlen;
 
 	dns_items = xmalloc(sizeof(*dns_items)*results,"my_gethostbyname(): dns_items");
-	dns_name  = xmalloc(strlen(name)+1, "my_gethostbyname(): dns_name");
+	dnsnlen = strlen(name) + 1 ;
+	dns_name  = xmalloc(dnsnlen, "my_gethostbyname(): dns_name");
 	if ( !dns_items || !dns_name )
 	    goto dns_c_failed;
 	my_xlog(LOG_DNS|LOG_DBG, "my_gethostbyname(): Put %d answers in dns_cache\n", results);
-	strcpy(dns_name, (char*)&tmpname[0]);
+	strncpy(dns_name, (char*)&tmpname[0], dnsnlen);
 	ci = dns_items; current = answers;
 	for(i=0;i<results;i++,current++,ci++) {
 	    ci->time = global_sec_timer;
@@ -1198,12 +1212,13 @@ strerror_r(int err, char *errbuf, size_t lerrbuf)
 	char	b[80];
 	sprintf(b, "Unknown error: (%d)", err);
 	if ( lerrbuf > 0 ) strncpy(errbuf, b, lerrbuf-1);
+	errbuf[lerrbuf-1] = 0;
 #endif  /* HAVE_SNPRINTF */
 	return(-1);
     }
     else
 	strncpy(errbuf, strerror(err), lerrbuf);
-
+	errbuf[lerrbuf-1] = 0;
     return(0);
 }
 #endif	/* !HAVE_STRERROR_R && !_WIN32 */
@@ -1380,74 +1395,6 @@ int		rs = 0;
 	b = b->next;
     }
     return(rs);
-}
-
-/* read/write locks	*/
-void
-rwl_init(rwl_t	*rwlp)
-{
-    pthread_mutex_init(&rwlp->m, NULL);
-    pthread_cond_init(&rwlp->readers_ok, NULL);
-    pthread_cond_init(&rwlp->writer_ok, NULL);
-    rwlp->rwlock = 0;
-    rwlp->waiting_writers = 0;
-}
-
-void
-rwl_destroy(rwl_t *rwlp)
-{
-    pthread_mutex_destroy(&rwlp->m);
-    pthread_cond_destroy(&rwlp->readers_ok);
-    pthread_cond_destroy(&rwlp->writer_ok);
-}
-
-/* acquire read lock */
-void
-rwl_rdlock(rwl_t *rwlp)
-{
-    if ( !pthread_mutex_lock(&rwlp->m) ) {
-	while( rwlp->rwlock < 0 || rwlp->waiting_writers )
-	    pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
-	rwlp->rwlock++;
-	pthread_mutex_unlock(&rwlp->m);
-    } else
-	my_xlog(LOG_SEVERE, "rwl_rdlock(): Can't rdlock\n");
-}
-
-/* acquire write lock */
-void
-rwl_wrlock(rwl_t *rwlp)
-{
-    if ( !pthread_mutex_lock(&rwlp->m) ) {
-	while (rwlp->rwlock != 0 ) {
-	    rwlp->waiting_writers++;
-	    pthread_cond_wait(&rwlp->writer_ok, &rwlp->m);
-	    rwlp->waiting_writers--;
-	}
-	rwlp->rwlock = -1;
-	pthread_mutex_unlock(&rwlp->m);
-    } else
-	my_xlog(LOG_SEVERE, "rwl_wrlock(): Can't rwlock\n");
-}
-
-/* unlock rwlock */
-void
-rwl_unlock(rwl_t *rwlp)
-{
-    int ww, wr;
-
-    pthread_mutex_lock(&rwlp->m);
-    if ( rwlp->rwlock < 0 )
-	rwlp->rwlock = 0;
-    else
-	rwlp->rwlock--;
-    ww = ( rwlp->waiting_writers && (rwlp->rwlock == 0) ) ;
-    wr = ( rwlp->waiting_writers == 0 );
-    pthread_mutex_unlock(&rwlp->m);
-    if ( ww )
-	pthread_cond_signal(&rwlp->writer_ok);
-    else if ( wr )
-	pthread_cond_broadcast(&rwlp->readers_ok);
 }
 
 void
@@ -2523,6 +2470,8 @@ char		   *ext;
 	}
 	mt++;
     }
+    ext = strrchr(path, '/');
+    if ( ext && !strcasecmp(ext+1, "README") ) return("text/plain");
     return("application/octet-stream");
 }
 
@@ -2763,7 +2712,7 @@ send_it:
     r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 ) goto done;
     ssended = sended;
-    if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0, NULL, NULL) )
+    if ( send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, NULL, 0, NULL, NULL, NULL) )
 	goto done;
     if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
     if ( sended >= obj->body->used )
@@ -2801,6 +2750,7 @@ struct av	*avp, *new_av;
 
     if ( !obj || !obj->container ) return(1);
     if ( !obj->insertion_point || obj->tail_length<=0 ) return(1);
+    if ( obj->tail_length >= sizeof(tbuf) ) return(1);
     if ( !attr || !val ) return(1);
 
     memcpy(tbuf, obj->container->data + obj->insertion_point, obj->tail_length);
@@ -3224,4 +3174,18 @@ struct	buff	*b = NULL;
     pthread_mutex_unlock(&fb->lock);
     /* place this buff to queue	*/
     if ( b != NULL ) dataq_enqueue(&fb->queue, b);
+}
+
+/* find in array of internal docs. Array mus be ended with structure with empty name */
+internal_doc_t*
+find_internal(char *name, internal_doc_t *array)
+{
+internal_doc_t	*res = array;
+
+    while( res->internal_name[0] ) {
+	if ( !strcasecmp(name, res->internal_name) )
+	    return(res);
+	res++;
+    }
+    return(NULL);
 }

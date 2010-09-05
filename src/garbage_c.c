@@ -56,13 +56,14 @@ struct mem_obj	*obj;
 	continue;
     }
     UNLOCK_CONFIG ;
+    my_xlog(LOG_STOR, "flush_mem_chache: total_size: %d.\n", total_size);
     if ( total_size < lo_mark_val ) return;
     if ( total_size > mem_max_val ) {
 	gc_mode = GC_DROP ;
-	my_xlog(LOG_STOR, "flush_mem_chache: DROPout documents.");
+	my_xlog(LOG_STOR, "flush_mem_chache: DROPout documents.\n");
     } else {
 	gc_mode = GC_EASY ;
-	my_xlog(LOG_STOR, "flush_mem_chache: SWAPout documents.");
+	my_xlog(LOG_STOR, "flush_mem_chache: SWAPout documents.\n");
     }
     /* create kill-list */
     kill_size = total_size - lo_mark_val;
@@ -257,6 +258,7 @@ struct	storage_st	*storage;
 	disk_ref = (struct disk_ref*)chain;
 	disk_ref->size = obj->size;
 	disk_ref->blk  = blk ;
+	disk_ref->created = global_sec_timer;
 	if ( obj->flags & ANSW_HAS_EXPIRES )
 	    disk_ref->expires = obj->times.expires ;
 	else {

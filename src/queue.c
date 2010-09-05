@@ -91,7 +91,6 @@ int
 dataq_dequeue_no_wait(dataq_t *dataq, void **outptr)
 {
 	dataq_data_t *dptr;
-	dataq_waiter_t *sleeper = NULL;
 
 	pthread_mutex_lock(&dataq->lock);
 	dptr = (dataq_data_t *) ll_dequeue(&dataq->data);

@@ -47,17 +47,19 @@ char 			cmdarg[1024];
 	    if ( strlen(*argv) <= 2 ) {
 		/* mustbe next argv */
 		argv++;argc--;
-		strncpy(path, *argv, sizeof(path));
+		strncpy(path, *argv, sizeof(path)-1);
 	    } else
 		strncpy(path, (*argv+2), sizeof(path));
+	    path[sizeof(path)-1] = 0;
         } else if (!strncasecmp(*argv, "-c", 2)) {
             /* path to config file */
             if ( strlen(*argv) <= 2 ) {
                 /* mustbe next argv */
                 argv++;argc--;
-		strncpy(cpath, *argv, sizeof(cpath));
+		strncpy(cpath, *argv, sizeof(cpath)-1);
 	    } else
-		strncpy(cpath, (*argv+2), sizeof(cpath));
+		strncpy(cpath, (*argv+2), sizeof(cpath)-1);
+	    cpath[sizeof(cpath)-1] = 0;
             *(3 + command) = cpath;
 	} else {
             if ( i < 19 ) {
@@ -75,8 +77,9 @@ char 			cmdarg[1024];
 	argc--; argv++;
     }
     if ( !path[0] ) {
-	strncpy(path, OOPS_LOCALSTATEDIR, sizeof(path));
-	strncat(path, "/oopsctl", sizeof(path)-strlen(path));
+	strncpy(path, OOPS_LOCALSTATEDIR, sizeof(path)-1);
+	strncat(path, "/oopsctl", sizeof(path)-strlen(path)-1);
+	path[sizeof(path)-1] = 0;
     }
     if ( !strcasecmp(*command, "help") ) {
 	printf("oopsctl [-s pathtosocket] [command]\n");
@@ -161,6 +164,7 @@ char 			cmdarg[1024];
 	 !strcasecmp(*command,"rotate") ||
 	 !strcasecmp(*command,"stop") ||
 	 !strncasecmp(*command,"verbosity=", 10) ||
+	 !strncasecmp(*command,"requests", 8) ||
 	 !strcasecmp(*command,"shutdown")
         ) {
 srv_conn:

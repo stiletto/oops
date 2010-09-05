@@ -71,11 +71,11 @@ struct	headers_module	vary_header = {
 	match_headers
 };
 
-#define	WRLOCK_VARY_CONFIG	rwl_wrlock(&vary_config_lock)
-#define	RDLOCK_VARY_CONFIG	rwl_rdlock(&vary_config_lock)
-#define	UNLOCK_VARY_CONFIG	rwl_unlock(&vary_config_lock)
+#define	WRLOCK_VARY_CONFIG	pthread_rwlock_wrlock(&vary_config_lock)
+#define	RDLOCK_VARY_CONFIG	pthread_rwlock_rdlock(&vary_config_lock)
+#define	UNLOCK_VARY_CONFIG	pthread_rwlock_unlock(&vary_config_lock)
 
-rwl_t	vary_config_lock;
+pthread_rwlock_t	vary_config_lock;
 
 void	free_action(struct header_action*);
 
@@ -89,7 +89,7 @@ int
 mod_load()
 {
     printf("Vary: started\n");
-    rwl_init(&vary_config_lock);
+    pthread_rwlock_init(&vary_config_lock, NULL);
     actions = NULL;
     return(MOD_CODE_OK);
 }

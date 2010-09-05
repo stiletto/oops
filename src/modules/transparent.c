@@ -76,10 +76,10 @@ struct  redir_module    transparent = {
 	NULL
 };
 
-static	rwl_t	tp_lock;
-#define	RDLOCK_TP_CONFIG	rwl_rdlock(&tp_lock)
-#define	WRLOCK_TP_CONFIG	rwl_wrlock(&tp_lock)
-#define	UNLOCK_TP_CONFIG	rwl_unlock(&tp_lock)
+static	pthread_rwlock_t	tp_lock;
+#define	RDLOCK_TP_CONFIG	pthread_rwlock_rdlock(&tp_lock)
+#define	WRLOCK_TP_CONFIG	pthread_rwlock_wrlock(&tp_lock)
+#define	UNLOCK_TP_CONFIG	pthread_rwlock_unlock(&tp_lock)
 
 #define	NMYPORTS	4
 static	myport_t	myports[NMYPORTS];	/* my ports		*/
@@ -91,7 +91,7 @@ int
 mod_load()
 {
     printf("Transparent started\n");
-    rwl_init(&tp_lock);
+    pthread_rwlock_init(&tp_lock, NULL);
     nmyports = 0;
 #if	defined(HAVE_IPF)
     natfd = -1;
@@ -192,8 +192,8 @@ char			*dd = NULL;
     if ( !host ) {
 	/* We can try to fetch destination using IPF */
 #if	defined(HAVE_IPF)
-	struct natlookup natLookup;
-	static int natfd = -1;
+	struct natlookup natLookup, *natLookupP = &natLookup;
+	static int natfd = -1, r;
 
 	natLookup.nl_inport = rq->my_sa.sin_port;
 	natLookup.nl_outport = rq->client_sa.sin_port;
@@ -207,7 +207,13 @@ char			*dd = NULL;
 		goto notdone;
 	    }
 	}
-	if (ioctl(natfd, SIOCGNATL, &natLookup) < 0) {
+#define	NEWSIOCGNATLCMD	_IOWR('r', 63, struct natlookup *)
+        if ( SIOCGNATL == NEWSIOCGNATLCMD)
+		r = ioctl(natfd, SIOCGNATL, &natLookupP);
+        else
+		r = ioctl(natfd, SIOCGNATL, &natLookup);
+#undef	NEWSIOCGNATLCMD
+        if ( r < 0 ) {
 	    my_xlog(LOG_HTTP|LOG_DBG|LOG_SEVERE, "redir(): transparent: NAT lookup failed: ioctl(SIOCGNATL).\n");
 	    goto notdone;
 	} else {
@@ -215,13 +221,13 @@ char			*dd = NULL;
 	    bzero(&sa, sizeof(sa));
 	    sa.sin_addr = natLookup.nl_realip;
 	    rq->url.host = my_inet_ntoa(&sa);
-	    rq->url.port = natLookup.nl_realport;
+	    rq->url.port = ntohs(natLookup.nl_realport);
 	    goto done;
 	}
 #else
 	/* last resort - take destination ip from my_sa */
 	rq->url.host = my_inet_ntoa(&rq->my_sa);
-	rq->url.port = rq->my_sa.sin_port;
+	rq->url.port = ntohs(rq->my_sa.sin_port);
 	goto notdone;
 #endif
     }

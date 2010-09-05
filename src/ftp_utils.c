@@ -236,7 +236,7 @@ have_p:
 	r = try_rest(&ftp_request);
 	if ( r >= 0 ) {
 	    r = try_retr(&ftp_request);
-	   if ( r == -1 ) goto error;
+	    if ( r == -1 ) goto error;
 	    r = recv_ftp_data(&ftp_request);
 	    if ( r ) goto error;
 	    goto error1;	/* because we never save part of document */
@@ -289,7 +289,7 @@ done:
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
-    rq->tag = strdup("TCP_MISS");
+    IF_STRDUP(rq->tag, "TCP_MISS");
     rq->code = 200;
     rq->received = ftp_request.received;
     rq->hierarchy = strdup("DIRECT");
@@ -371,19 +371,27 @@ char		*mime_type;
     r = send_http_header(client, mime_type, ftp_r->size, ftp_r->obj, ftp_r);
     if ( r < 0 ) return(r);
     ftp_r->received = 0;
-    read_size = (TEST(rq->flags, RQ_HAS_BANDWIDTH))?(MIN(512,(sizeof(buf)-1))):
+    read_size = (TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW))?
+    		(MIN(512,(sizeof(buf)-1))):
 		(sizeof(buf)-1);
-    if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): Slow down request.\n");
+    if (TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) 
+    	my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): Slow down request.\n");
     while((r = readt(data, buf, read_size, READ_ANSW_TIMEOUT)) > 0) {
 	ftp_r->received += r;
+	ftp_r->request->doc_received += r;
 	buf[r] = 0;
-	if (TEST(rq->flags, RQ_HAS_BANDWIDTH) && ((++pass)%2) ) SLOWDOWN ;
+	if (TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) && ((++pass)%2) )
+			SLOWDOWN ;
+	if ( rq->sess_bw )
+			SLOWDOWN_SESS ;
 	if ( (writet(client, buf, r, READ_ANSW_TIMEOUT) < 0) &&
 	      !FORCE_COMPLETION(obj) ) {
 	    my_xlog(LOG_FTP|LOG_DBG, "recv_ftp_data(): Ftp aborted.\n");
 	    return(-1);
 	}
-	if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, r);
+	ftp_r->request->doc_sent += r;
+	if (TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) update_transfer_rate(rq, r);
+	if (rq->sess_bw) update_sess_transfer_rate(rq, r);
 	if ( obj && !TEST(obj->flags, FLAG_DEAD) ) {
 		store_in_chain(buf, r, obj);
 		obj->size += r;
@@ -550,7 +558,7 @@ struct		url url = req->request->url;
 
 	pTmp = malloc(len+1);
 	if ( pTmp ) {
-	    strncpy(pTmp, req->server_path, len+1);
+	    strncpy(pTmp, req->server_path, len);
 	    while ( ( len>0 ) && (pTmp[len-1] == '/') ) {
 		len--;
 		pTmp[len] = 0;
@@ -797,7 +805,7 @@ char	*htmlized_path = NULL;
 char	*htmlized_file = NULL;
 char	*htmlized_something = NULL;
 char	myhostname[MAXHOSTNAMELEN];
-char	portb[10];
+char	portb[20];
 
 /* if not in nlst, then assumed line is something like that:
 drwxr-xr-x   2 ms    ms          512 Jul 28 09:52 usr
@@ -839,7 +847,9 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
 	 !TEST(req->request->flags,RQ_HAS_AUTHORIZATION ) ) {
 	dovesok += strlen(req->request->url.password);
     }
-    tempbuf = xmalloc(strlen(line)*3 + strlen(myhostname) + dovesok , "list_parser(): 1");
+    dovesok += icons_host[0]?strlen(icons_host):strlen(myhostname);
+    dovesok += icons_path[0]?strlen(icons_path):(sizeof("icons")+1);
+    tempbuf = xmalloc(strlen(line)*6 + strlen(myhostname) + dovesok , "list_parser(): 1");
     if ( !tempbuf ) {
 	my_xlog(LOG_SEVERE, "list_parser(): No space for tembuf\n");
 	return(0);
@@ -1526,6 +1536,7 @@ retrieve_size:
 
     c+=3;while(*c && IS_SPACE(*c) ) c++;
     ftp_r->size = atoi(c);
+    ftp_r->request->doc_size = ftp_r->size;
     my_xlog(LOG_FTP|LOG_DBG, "try_size(): SIZE: %d\n", ftp_r->size);
     /* we will not store large files */
 error:
@@ -2044,7 +2055,7 @@ char		answer[ANSW_SIZE+1];
     if ( !resp_buff ) return(1);
     checked = 0;
     server_so = ftp_r->control;
-    rq_buff=malloc(strlen(ftp_r->dehtml_path)+strlen("MKD \r\n")+1); 
+    rq_buff=malloc(strlen(dir)+strlen("MKD \r\n")+1); 
     if ( !rq_buff ) goto error;
     sprintf(rq_buff, "MKD %s\r\n", dir);
     r = writet(server_so, rq_buff, strlen(rq_buff), READ_ANSW_TIMEOUT);
@@ -2108,7 +2119,7 @@ char			*accepted_ok =
     started = time(NULL);
     checked = 0;
 
-    rq_buff = xmalloc(strlen(ftp_r->dehtml_path)+strlen("RETR \r\n")+1,"ftp_put(): rq_buff");
+    rq_buff = xmalloc(strlen(ftp_r->dehtml_path)+strlen("STOR \r\n")+1,"ftp_put(): rq_buff");
     if ( !rq_buff ) {
 	my_xlog(LOG_SEVERE, "ftp_put(): Can't alloc mem.\n");
 	goto error;

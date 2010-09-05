@@ -13,6 +13,14 @@ General procedure:
 6) ./oops -c oops.cfg    - run proxy
 
 
+If you use regexes extensively in your oops config files, we recommended to
+compile oops with --with-regexp=pcre to speed it up.
+The latest release of PCRE is always available from
+ftp://ftp.csx.cam.ac.uk/pub/software/programming/pcre/pcre-xxx.tar.gz
+
+WARNING: If you upgrade from version prior to 1.5.0 to any later - reformat
+your storages... Forrmat of data on disk changed.
+
 Known problems:
 
 1) linux - Don't use MIT_PTHREADS. Use LinuxThreads and glibc later
@@ -21,9 +29,14 @@ Known problems:
    Latest RedHat comes with right libraries. If you
    have any info re other Linux distributions, please, send me info.
 
+   Linux Slackware older than 4.0. OOPS require to reinstall BerkeleyDB library.
+
 2) FreeBSD - don't use old libdb which is supplied with new FreeBSD (3.x) -
    use DB from Sleepycat.
    This programm can hang under old versions of FreeBSD (prior to 3.3)
+
+3) Solaris, WS 5.0 - if you use GigaBASE, you MUST compile it with -compat=4
+   compiler option.
 
 
 To build FreeBSD port use next configure options:

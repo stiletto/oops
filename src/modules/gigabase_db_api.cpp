@@ -123,14 +123,12 @@ class	URL_Info {
     public:
 	char*			url;
 	int			accessed;
-	int			created;
 	struct	disk_ref	disk_ref;
 	dbArray<int8>		blocks;
 
     TYPE_DESCRIPTOR((
 		    KEY(url, INDEXED|HASHED),
 		    FIELD(accessed),
-		    FIELD(created),
 		    RAWFIELD(disk_ref),
 		    FIELD(blocks)
 			));
@@ -150,11 +148,11 @@ static	int		gdb_in_use = FALSE;
 static	char		dbhome[MAXPATHLEN];
 static	char		dbname[MAXPATHLEN];
 static	int		db_cache_mem;
-static  rwl_t		giga_db_config_lock;
+static  pthread_rwlock_t	giga_db_config_lock;
 
-#define RDLOCK_GDB_CONFIG       rwl_rdlock(&giga_db_config_lock)
-#define WRLOCK_GDB_CONFIG       rwl_wrlock(&giga_db_config_lock)
-#define UNLOCK_GDB_CONFIG       rwl_unlock(&giga_db_config_lock)
+#define RDLOCK_GDB_CONFIG       pthread_rwlock_rdlock(&giga_db_config_lock)
+#define WRLOCK_GDB_CONFIG       pthread_rwlock_wrlock(&giga_db_config_lock)
+#define UNLOCK_GDB_CONFIG       pthread_rwlock_unlock(&giga_db_config_lock)
 
 int
 mod_run()
@@ -168,7 +166,7 @@ mod_load()
     printf("%s started\n", module_name);
     dbname[0] = dbhome[0] = 0;
     gdb_in_use = FALSE;
-    rwl_init(&giga_db_config_lock);
+    pthread_rwlock_init(&giga_db_config_lock, NULL);
     return(MOD_CODE_OK);
 }
 
@@ -230,7 +228,6 @@ char	*p = config;
 int
 db_api_open(int *aflag)
 {
-int	rc;
 
     WRLOCK_GDB_CONFIG ;
     if ( gdb_in_use == TRUE ) {
@@ -341,7 +338,6 @@ URL_Info		UI;
 
     memcpy(&UI.disk_ref, data->data, sizeof(disk_ref));
     UI.accessed = obj?obj->accessed:0;
-    UI.created = obj?obj->created:0;
     UI.url = new (char[key->size + 1]);
     if ( UI.url ) {
 	memcpy(UI.url, key->data, key->size);

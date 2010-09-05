@@ -43,6 +43,10 @@ void		increment_clients(void);
 void		decrement_clients(void);
 void		make_purge(int, struct request *);
 int		parse_connect_url(char* src, char *httpv, struct url *url, int so);
+void		insert_request_in_hash(struct request *);
+void		remove_request_from_hash(struct request *);
+void		insert_request_in_ip_hash(struct request *);
+void		remove_request_from_ip_hash(struct request *);
 
 #if	defined(DEMO)
 static	int	served = 0;
@@ -69,35 +73,38 @@ int			so, new_object, redir_mods_visited, auth_mods_visited;
 int			accepted_so;
 struct	work		*work;
 
-   work = (struct work*)arg;
-   if ( !work ) return(NULL);
-   so = work->so;
-   accepted_so = work->accepted_so;
-   xfree(work);	/* we don't need it anymore	*/
+    work = (struct work*)arg;
+    if ( !work ) return(NULL);
+    so = work->so;
+    accepted_so = work->accepted_so;
+    xfree(work);	/* we don't need it anymore	*/
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
 	my_xlog(LOG_SEVERE, "run_client(): fcntl(): %m\n");
 
-   increment_clients();
-   set_socket_options(so);
+    increment_clients();
+    set_socket_options(so);
 
-   /* here we go if client want persistent connection */
-   bzero(&request, sizeof(request));
-   request.accepted_so = accepted_so;
-   getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen);
-   getsockname(so, (struct sockaddr*)&request.my_sa, &mysalen);
-   request.request_time = started = time(NULL);
-   redir_mods_visited = FALSE;
-   auth_mods_visited  = FALSE;
-   buf = xmalloc(READ_BUFF_SZ, "run_client(): For client request.");
-   if ( !buf ) {
+    /* here we go if client want persistent connection */
+    bzero(&request, sizeof(request));
+    request.accepted_so = accepted_so;
+    request.so = so;
+    getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen);
+    getsockname(so, (struct sockaddr*)&request.my_sa, &mysalen);
+    request.request_time = started = time(NULL);
+    insert_request_in_hash(&request);
+    insert_request_in_ip_hash(&request);
+    redir_mods_visited = FALSE;
+    auth_mods_visited  = FALSE;
+    buf = xmalloc(READ_BUFF_SZ, "run_client(): For client request.");
+    if ( !buf ) {
 	my_xlog(LOG_SEVERE, "run_client(): No mem for header!\n");
 	goto done;
-   }
-   current_size = READ_BUFF_SZ;
-   cp = buf; ip = buf;
+    }
+    current_size = READ_BUFF_SZ;
+    cp = buf; ip = buf;
 
-   forever() {
+    forever() {
 	got = readt(so, (char*)cp, current_size-(cp-ip), 100);
 	if ( got == 0 ) {
 	    my_xlog(LOG_FTP|LOG_HTTP|LOG_DBG, "run_client(): Client closed connection.\n");
@@ -244,6 +251,20 @@ ck_group:
 
     if ( group && group->bandwidth )
 	request.flags |= RQ_HAS_BANDWIDTH;
+    if ( group && group->per_sess_bw )
+	request.sess_bw = group->per_sess_bw;
+    if ( group && group->per_ip_bw ) {
+	request.flags |= RQ_HAVE_PER_IP_BW;
+	request.per_ip_bw = group->per_ip_bw;
+    }
+    if ( request.ip_hash_ptr &&
+	 group->per_ip_conn &&
+	 (request.ip_hash_ptr->refcount > group->per_ip_conn) ) {
+	UNLOCK_CONFIG;
+	say_bad_request(so, "Please contact cachemaster\n",
+			     "Connections limit.", ERR_ACC_DENIED, &request);
+	goto done;
+    }
     pthread_mutex_lock(&group->group_mutex);
     group->cs0.requests++;
     pthread_mutex_unlock(&group->group_mutex);
@@ -328,7 +349,6 @@ ck_group:
 
     if ( always_check_freshness && (request.proto == PROTO_HTTP) )
 	mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
-
     if ( request.flags & RQ_HAS_NO_CACHE )
 	mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
     if ( request.flags &
@@ -389,6 +409,10 @@ ck_group:
 	    if ( freshness_lifetime < current_obj_age(stored_url) + request.min_fresh)
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	}
+	if ( !TEST(mem_send_flags, MEM_OBJ_MUST_REVALIDATE) 
+		&& always_check_freshness_acl
+		&& obj_check_acl_access(always_check_freshness_acl, stored_url, &request) )
+		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
 	CLOSE(so); so = -1;
 	leave_obj(stored_url);
@@ -435,6 +459,10 @@ read_net:
 	     if ( stored_url->times.expires < global_sec_timer )
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	}
+	if ( !TEST(mem_send_flags, MEM_OBJ_MUST_REVALIDATE) 
+		&& always_check_freshness_acl
+		&& obj_check_acl_access(always_check_freshness_acl, stored_url, &request) )
+		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	my_xlog(LOG_HTTP|LOG_FTP|LOG_DBG, "run_client(): read <%s:%s:%s> from mem.\n",
 		request.url.proto, request.url.host, request.url.path);
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
@@ -445,6 +473,7 @@ read_net:
 
 done:
     IF_FREE(buf);
+    remove_request_from_hash(&request);
     free_request(&request);
     if ( so != -1 ) CLOSE(so);
     decrement_clients();
@@ -936,10 +965,8 @@ go:
 		if ( (from >= 0 ) && (to == -1 ) ) {
 		    request->range_from = from;
 		    request->range_to = to;
-		} else
-		    my_xlog(LOG_SEVERE, "check_headers(): unsupported Range: %s\n", x);
-	    } else
-		my_xlog(LOG_SEVERE, "check_headers(): unsupported Range: %s\n", x);
+		}
+	    }
 	    request->flags |= RQ_HAVE_RANGE;
 	}
 	*t = saver;
@@ -1515,6 +1542,8 @@ struct	av	*av, *next;
     IF_FREE(rq->proxy_user);
     IF_FREE(rq->original_path);
     IF_FREE(rq->peer_auth);
+    IF_FREE(rq->decoding_buff);
+    remove_request_from_ip_hash(rq);
 }
 
 void
@@ -1677,4 +1706,94 @@ int
 obj_rate(struct mem_obj *obj)
 {
     return(0);
+}
+
+void
+insert_request_in_hash(struct request *rq)
+{
+int	index;
+    if ( !rq ) return;
+    index = rq->so % RQ_HASH_MASK;
+    pthread_mutex_lock(&(rq_hash[index].lock));
+    rq->next = rq_hash[index].link;
+    if ( rq->next ) rq->next->prev = rq;
+    rq->prev = NULL;
+    rq_hash[index].link = rq;
+    pthread_mutex_unlock(&(rq_hash[index].lock));
+}
+
+void
+remove_request_from_hash(struct request *rq)
+{
+int	index;
+    if ( !rq ) return;
+    index = rq->so % RQ_HASH_MASK;
+    pthread_mutex_lock(&(rq_hash[index].lock));
+    if ( rq->next ) rq->next->prev = rq->prev;
+    if ( rq->prev )
+	rq->prev->next = rq->next;
+      else
+	rq_hash[index].link = rq->next;
+    pthread_mutex_unlock(&(rq_hash[index].lock));
+}
+
+void
+insert_request_in_ip_hash(struct request *rq)
+{
+int		index;
+ip_hash_entry_t	*he = NULL;
+
+    if ( !rq ) return;
+    /* if it is already there */
+    index = ((rq->client_sa.sin_addr.s_addr >> 16) ^ 
+    	    (rq->client_sa.sin_addr.s_addr) ) % IP_HASH_MASK;
+    pthread_mutex_lock(&ip_hash[index].lock);
+    he = ip_hash[index].link;
+    while ( he ) {
+	if ( he->addr.s_addr == rq->client_sa.sin_addr.s_addr ) /* it is */
+	    break;
+	he = he->next;
+    }
+    if ( he ) {
+	pthread_mutex_lock(&he->lock);
+	he->refcount++;
+	he->access = global_sec_timer;
+	rq->ip_hash_ptr = he;
+	pthread_mutex_unlock(&he->lock);
+    } else {
+	he = calloc(sizeof(*he),1);
+	if ( he ) {
+	    pthread_mutex_init(&he->lock, NULL);
+	    he->addr = rq->client_sa.sin_addr;
+	    he->refcount = 1;
+	    he->access = global_sec_timer;
+	    he->prev = NULL;
+	    he->next = ip_hash[index].link;
+	    if ( he->next ) he->next->prev = he;
+	    ip_hash[index].link = he;
+	    rq->ip_hash_ptr = he;
+	}
+    }
+    pthread_mutex_unlock(&ip_hash[index].lock);
+}
+
+void
+remove_request_from_ip_hash(struct request *rq)
+{
+int		index;
+ip_hash_entry_t	*he;
+
+    if ( !rq ) return;
+    /* if it is already there */
+    index = ((rq->client_sa.sin_addr.s_addr >> 16) ^ 
+    	    (rq->client_sa.sin_addr.s_addr) ) % IP_HASH_MASK;
+    pthread_mutex_lock(&ip_hash[index].lock);
+    he = rq->ip_hash_ptr;
+    if ( he ) {
+	/* leave this entry */
+	pthread_mutex_lock(&he->lock);
+	if ( he->refcount > 0 ) he->refcount--;
+	pthread_mutex_unlock(&he->lock);
+    }
+    pthread_mutex_unlock(&ip_hash[index].lock);
 }

@@ -19,8 +19,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #if	defined(_WIN32)
-#include	"win32/config.h"
-#include	"win32/environment.h"
+#include	"lib/win32/config.h"
+#include	"lib/win32/environment.h"
 #else
 #include	"config.h"
 #include	"environment.h"
@@ -75,47 +75,47 @@ typedef	unsigned	uint32_t;
 
 #define	WRLOCK_STORAGE(s)\
 	{\
-		rwl_wrlock(&(s->storage_lock));\
+		pthread_rwlock_wrlock(&(s->storage_lock));\
 	}
 
 #define	RDLOCK_STORAGE(s)\
 	{\
-		rwl_rdlock(&(s->storage_lock));\
+		pthread_rwlock_rdlock(&(s->storage_lock));\
 	}
 
 #define	UNLOCK_STORAGE(s)\
 	{\
-		rwl_unlock(&(s->storage_lock));\
+		pthread_rwlock_unlock(&(s->storage_lock));\
 	}
 
 #define	WRLOCK_DB\
 	{\
-		rwl_wrlock(&db_lock);\
+		pthread_rwlock_wrlock(&db_lock);\
 	}
 
 #define	RDLOCK_DB\
 	{\
-		rwl_rdlock(&db_lock);\
+		pthread_rwlock_rdlock(&db_lock);\
 	}
 
 #define	UNLOCK_DB\
 	{\
-		rwl_unlock(&db_lock);\
+		pthread_rwlock_unlock(&db_lock);\
 	}
 
 #define	WRLOCK_CONFIG \
 	{\
-		rwl_wrlock(&config_lock);\
+		pthread_rwlock_wrlock(&config_lock);\
 	}
 
 #define	RDLOCK_CONFIG \
 	{\
-		rwl_rdlock(&config_lock);\
+		pthread_rwlock_rdlock(&config_lock);\
 	}
 
 #define	UNLOCK_CONFIG \
 	{\
-		rwl_unlock(&config_lock);\
+		pthread_rwlock_unlock(&config_lock);\
 	}
 
 #define	MUST_BREAK	( kill_request | reconfig_request )
@@ -127,7 +127,24 @@ typedef	unsigned	uint32_t;
     {\
 	int	r;\
 	struct  timeval tv;\
-	r = group_traffic_load(rq_to_group(rq));\
+	r = traffic_load(rq);\
+	tv.tv_sec = 0;tv.tv_usec = 0;\
+	if ( r >= 50 ) {\
+	    if ( r < 95 ) /* start to slow down */\
+		tv.tv_usec = 100000;\
+	    else if ( r < 100 )\
+		tv.tv_usec = 200000;\
+	    else\
+		tv.tv_sec = MIN(5,r/100);\
+	    r = poll_descriptors(0, NULL, tv.tv_sec*1000+tv.tv_usec/1000);\
+	}\
+    }
+
+#define	SLOWDOWN_SESS \
+    {\
+	int	r;\
+	struct  timeval tv;\
+	r = sess_traffic_load(rq);\
 	tv.tv_sec = 0;tv.tv_usec = 0;\
 	if ( r >= 85 ) {\
 	    if ( r < 95 ) /* start to slow down */\
@@ -135,7 +152,7 @@ typedef	unsigned	uint32_t;
 	    else if ( r < 100 )\
 		tv.tv_usec = 5000;\
 	    else\
-		tv.tv_sec = MIN(2,r/100);\
+		tv.tv_sec = r/100;\
 	    r = poll_descriptors(0, NULL, tv.tv_sec*1000+tv.tv_usec/1000);\
 	}\
     }
@@ -146,12 +163,13 @@ typedef	unsigned	uint32_t;
 	  ( ((obj->size - obj->container->used)*100)/obj->content_length >= force_completion))
 
 #define MID(A)		((40*group->cs0.A + 30*group->cs1.A + 30*group->cs2.A)/100)
+#define MID_IP(A)	((40*(A->traffic0) + 30*(A->traffic1) + 30*(A->traffic2))/100)
 #if	!defined(ABS)
 #define	ABS(x)		((x)>0?(x):(-(x)))
 #endif
 #define	ROUND(x,b)	((x)%(b)?(((x)/(b)+1)*(b)):(x))
 
-#define	MAXNS		(5)
+#define	OOPSMAXNS	(5)
 #define	MAXBADPORTS	(10)
 
 #define		STORAGE_PAGE_SIZE	((off_t)4096)
@@ -229,9 +247,12 @@ typedef	unsigned	uint32_t;
 #define RQ_FORCE_DIRECT		(1<<16)
 #define RQ_HAS_HOST		(1<<17)
 #define RQ_HAVE_RANGE		(1<<18)
+#define RQ_HAVE_PER_IP_BW	(1<<19)
+#define	RQ_CONVERT_FROM_GZIPPED (1<<20)
 
 #define	DOWNGRADE_ANSWER	1
 #define	UNCHUNK_ANSWER		2
+#define	UNGZIP_ANSWER		4
 
 #define	ACCESS_DOMAIN		1
 #define ACCESS_PORT		2
@@ -260,6 +281,8 @@ typedef	unsigned	uint32_t;
 
 #define	ADDR_AGE		(3600)
 
+#define	DECODING_BUF_SZ		(1024)
+
 #define	ERR_BAD_URL		1
 #define	ERR_BAD_PORT		2
 #define	ERR_ACC_DOMAIN		3
@@ -286,15 +309,6 @@ typedef	unsigned	uint32_t;
 #if	!defined(NO_NEED_XMALLOC)
 #define	malloc(x)	xmalloc(x, NULL)
 #endif
-
-typedef	struct {
-	pthread_mutex_t	m;
-	int		rwlock;
-	pthread_cond_t	readers_ok;
-	unsigned int	waiting_writers;
-	pthread_cond_t	writer_ok;
-} rwl_t;
-
 
 struct	url {
     char	*proto;
@@ -333,6 +347,24 @@ struct	refresh_pattern	{
 };
 typedef	struct  refresh_pattern refresh_pattern_t;
 
+#define	IP_HASH_SIZE	(256)
+#define	IP_HASH_MASK	(RQ_HASH_SIZE-1)
+typedef	struct	ip_hash_entry	{
+	struct	ip_hash_entry	*prev, *next;	/* link			*/
+	struct	in_addr		addr;		/* ip address		*/
+	int			refcount;	/* also sessions counter*/
+	pthread_mutex_t		lock;		/* lock			*/
+	int			traffic0,	/* last sec traffic	*/
+				traffic1,	/* prev sec traffic	*/
+				traffic2;	/* pre-pref traffic	*/
+	time_t			access;		/* last_access		*/
+} ip_hash_entry_t;
+
+typedef	struct	ip_hash_head	{
+	ip_hash_entry_t		*link;		/* link to row		*/
+	pthread_mutex_t		lock;		/* lock for row		*/
+} ip_hash_head_t;
+
 #define	MAXACLNAMELEN		32
 
 struct	named_acl {
@@ -358,6 +390,11 @@ typedef struct	acl_chk_list_hdr_ {
 	char				*aclbody;
 } acl_chk_list_hdr_t;
 
+typedef	struct	acl_ct_data_ {
+	char	*ct;
+	int	len;
+} acl_ct_data_t;
+
 struct	bind_acl {
 	struct	bind_acl	*next;
 	char			*name;
@@ -366,7 +403,6 @@ struct	bind_acl {
 };
 
 typedef struct bind_acl bind_acl_t;
-
 #define	PROTO_HTTP	0
 #define	PROTO_FTP	1
 #define	PROTO_OTHER	2
@@ -411,7 +447,43 @@ struct	request {
 	int			range_from;
 	int			range_to;
 	char			*peer_auth;
+	int			sess_bw;	/* session bandwidth			*/
+	int			per_ip_bw;	/* per ip bw				*/
+	time_t			last_writing;	/* second of last_writing		*/
+	int			s0_sent;	/* data size sent during last second	*/
+	int			so;		/* socket				*/
+	struct	request		*next;		/* next in hash				*/
+	struct	request		*prev;		/* prev in hash				*/
+	int			doc_size;	/* corr. document size			*/
+	int			doc_received;
+	int			doc_sent;
+	ip_hash_entry_t		*ip_hash_ptr;
+	char			*decoding_buff;	/* for inflate or any other content decoding */
+	char			*decoded_beg, *decoded_end;
+#if	defined(HAVE_ZLIB)
+	z_streamp		strmp;
+	z_stream		strm;
+	char			inflate_started;
+#endif
 };
+
+#define	RQ_HASH_SIZE	(256)
+#define	RQ_HASH_MASK	(RQ_HASH_SIZE-1)
+struct	rq_hash_entry {
+	pthread_mutex_t	lock;
+	struct	request	*link;
+};
+
+#define	_MINUTE_	(60)
+#define	_HOUR_		(3600)
+#define	_DAY_		(24*_HOUR_)
+#define	_WEEK_		(7*_DAY_)
+#define	_MONTH_		(4*_WEEK_)
+
+typedef	struct	hg_entry_ {
+	int	from, to;
+	int	sum;
+} hg_entry;
 
 struct	av {
 	char		*attr;
@@ -445,7 +517,7 @@ struct	storage_st {
 	char			*path;		/* path to storage	*/
 	off_t			size;		/* size			*/
 	int			flags;		/* flags, like ready	*/
-	rwl_t			storage_lock;	/* locks for writings	*/
+	pthread_rwlock_t	storage_lock;	/* locks for writings	*/
 	struct	superb		super;		/* in-memory super	*/
 	fd_t			fd;		/* descriptor for access*/
 	char			*map;		/* busy map		*/
@@ -457,6 +529,8 @@ struct	disk_ref {
 	uint32_t	id;			/* id of the storage		*/
 	size_t		size;			/* stored size			*/
 	time_t		expires;		/* expiration date		*/
+	time_t		created;		/* creation date		*/
+	uint32_t	reserved0;
 };
 
 
@@ -505,7 +579,18 @@ struct	mem_obj {
 	time_t			last_access;	/* last time locate finished ot this object	*/
 	int			accessed;	/* # times when locate finished on this obj	*/
 	int			rate;		/* rate to swap out		*/
+	size_t			ungzipped_cont_len;
+						/* content length of ungzipped content	*/
 };
+
+#define	MAX_INTERNAL_NAME_LEN	24
+typedef struct internal_doc_tag {
+	char		internal_name[MAX_INTERNAL_NAME_LEN];
+	char		*content_type;
+	int		content_len;
+	int		expire_shift;
+	unsigned char	*body;
+} internal_doc_t;
 
 struct	output_object {
 	struct	av	*headers;
@@ -607,6 +692,9 @@ struct	group_ops_struct {
 #define	OP_SRCDOMAINS	10
 #define	OP_NETWORKS_ACL	11
 #define	OP_MAXREQRATE	12
+#define	OP_PER_SESS_BW	13
+#define	OP_PER_IP_BW	14
+#define	OP_PER_IP_CONN	15
 	int				op;
 	void				*val;
 	struct	group_ops_struct	*next;
@@ -655,6 +743,7 @@ struct	acl_ip_data {
 #define	ACL_SRCDOM		11
 #define	ACL_SRCDOMREGEX		12
 #define	ACL_TIME		13
+#define	ACL_CONTENT_TYPE	14
 
 
 struct	acl {
@@ -703,6 +792,9 @@ struct	group	{
 	hash_t			*dstdomain_cache;	/* cashe for dstdom checks */
 	acl_chk_list_hdr_t	*networks_acl;
 	int			maxreqrate;		/* max request rate	*/
+	int			per_sess_bw;		/* max bandw per session */
+	int			per_ip_bw;		/* bandw per ip address (or client)	*/
+	int			per_ip_conn;		/* max number of conns per ip		*/
 };
 
 struct	domain {
@@ -735,6 +827,7 @@ struct	dns_cache {
 #define	PEER_PARENT	1
 #define	PEER_SIBLING	2
 
+#define	PEER_UP		0
 #define	PEER_DOWN	1
 
 struct	peer	{
@@ -756,6 +849,8 @@ struct	peer	{
 	time_t			last_recv;	/* time when last rq recvd */
 	char			*my_auth;	/* we send to remote	*/
 	acl_chk_list_hdr_t	*peer_access;	/* acls to allow/deny requests	*/
+	time_t			down_time;	/* time when peer goes down from up */
+	int			down_timeout;	/* how long avoid this after down */
 };
 
 struct	icp_queue_elem {

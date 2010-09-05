@@ -12,6 +12,7 @@ OOPS_LIBDIR = @OOPS_LIBDIR@
 OOPS_SBINDIR = @OOPS_SBINDIR@
 OOPS_SYSCONFDIR = @OOPS_SYSCONFDIR@
 OOPS_LOCALSTATEDIR = @OOPS_LOCALSTATEDIR@
+LIBZ_NAME = @LIBZ_NAME@
 
 SRCS = oops.c lib.c run.c run_client.c common.c http_utils.c ftp_utils.c \
 	storage.c garbage_c.c  icp.c acl.c y.tab.c lex.yy.c \
@@ -35,7 +36,7 @@ modules::
 	cd modules; make
 
 oops:	${OBJS}
-	${CC} ${CFLAGS} ${OBJS} ${LDFLAGS} ${LIBS} -o oops
+	${CC} ${CFLAGS} ${OBJS} ${LDFLAGS} ${LIBS} ${LIBZ_NAME} -o oops
 
 mkinstalldirs:
 	../mkinstalldirs ${OOPSPATH} \
@@ -90,6 +91,11 @@ install: all mkinstalldirs
 		$(INSTALL_DATA) accel_maps ${OOPS_SYSCONFDIR}/accel_maps.sample ;\
 	   else\
 		$(INSTALL_DATA) accel_maps ${OOPS_SYSCONFDIR}/accel_maps ;\
+	fi
+	if [ -f ${OOPS_SYSCONFDIR}/select.sql ]; then\
+		$(INSTALL_DATA) select.sql ${OOPS_SYSCONFDIR}/select.sql.sample ;\
+	   else\
+		$(INSTALL_DATA) select.sql ${OOPS_SYSCONFDIR}/select.sql ;\
 	fi
 	if [ -f ${OOPS_SYSCONFDIR}/acl_local_networks ]; then\
 		$(INSTALL_DATA) acl_local_networks ${OOPS_SYSCONFDIR}/acl_local_networks.sample ;\
@@ -147,7 +153,7 @@ gnu_regex.o: gnu_regex.c
 	${CC} ${CFLAGS} -DREGEX -c gnu_regex.c
 
 clean:
-	rm -f *o lex.yy.c  y.tab.[ch] version.h oops
+	rm -f *o lex.yy.c  y.tab.[ch] version.h oops DEADJOE
 
 distclean:
 	rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln config.cache version.h config.h oops

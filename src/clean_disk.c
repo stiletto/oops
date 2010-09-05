@@ -33,6 +33,110 @@ void		check_expire(void);
 void		sync_storages(void);
 int		forced_cleanup = 0;
 
+hg_entry	hg[] = {
+	{0,		30*_MINUTE_,	0},
+	{30*_MINUTE_,	   _HOUR_,	0},
+	{   _HOUR_,	3* _HOUR_,	0},
+	{3* _HOUR_,	6* _HOUR_,	0},
+	{6* _HOUR_,	   _DAY_,	0},
+	{   _DAY_,	3* _DAY_,	0},
+	{3* _DAY_,	   _WEEK_,	0},
+	{   _WEEK_,	2* _WEEK_,	0},
+	{2* _WEEK_,	   _MONTH_,	0},
+	{-1,		-1,		0}	/* stop */
+};
+
+/* histogram handling routines */
+void
+decrement_hg(int created, int value)
+{
+hg_entry *res = &hg[0];
+
+    created = global_sec_timer - created;
+    while ( res->from != res->to ) {
+	if ( (res->from < created) && (created <= res->to) ) {
+	    res->sum -= value;
+	    return;
+	};
+	res++;
+    }
+}
+
+void
+hg_print()
+{
+hg_entry *res = &hg[0];
+char	*n[] = {
+	"<30min",
+	"<1hour",
+	"<3hour",
+	"<6hour",
+	"<1day",
+	"<3day",
+	"<1week",
+	"<2week",
+	"<month"
+};
+char	**np = &n[0];
+
+    while ( res->from != res->to ) {
+	my_xlog(LOG_STOR, "%8.8s - %d\n", *np, res->sum);
+	res++;
+	np++;
+    }
+}
+
+int
+ok_to_delete(int created)
+{
+    created = global_sec_timer - created;
+    if ( created > hg[8].from ) return(1);
+    if ( ( created < hg[8].from ) && (hg[8].sum>0) ) return(0);
+    if ( created > hg[7].from ) return(1);
+    if ( ( created < hg[7].from ) && (hg[7].sum>0) ) return(0);
+    if ( created > hg[6].from ) return(1);
+    if ( ( created < hg[6].from ) && (hg[6].sum>0) ) return(0);
+    if ( created > hg[5].from ) return(1);
+    if ( ( created < hg[5].from ) && (hg[5].sum>0) ) return(0);
+    if ( created > hg[4].from ) return(1);
+    if ( ( created < hg[4].from ) && (hg[4].sum>0) ) return(0);
+    if ( created > hg[3].from ) return(1);
+    if ( ( created < hg[3].from ) && (hg[3].sum>0) ) return(0);
+    if ( created > hg[2].from ) return(1);
+    if ( ( created < hg[2].from ) && (hg[2].sum>0) ) return(0);
+    if ( created > hg[1].from ) return(1);
+    if ( ( created < hg[1].from ) && (hg[1].sum>0) ) return(0);
+    return(1);
+}
+
+void
+increment_hg(hg_entry *table, int arg, int value)
+{
+hg_entry *res = table;
+
+    arg = global_sec_timer - arg;
+    if ( !table ) return;
+    while ( res->from != res->to ) {
+	if ( (res->from < arg) && (arg <= res->to) ) {
+	    res->sum += value;
+	    return;
+	}
+	res++;
+    }
+}
+
+void
+clear_hg(hg_entry *table)
+{
+hg_entry *res = table;
+
+    if ( !table ) return;
+    while ( res->from != res->to ) {
+	res->sum = 0;
+	res++;
+    }
+}
+
 long
 count_total_free(void)
 {
@@ -120,6 +224,7 @@ time_t			now;
 	    my_sleep(10);
 	    continue;
 	}
+	if (TEST(verbosity_level, LOG_STOR)) hg_print();
 	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
 	    my_xlog(LOG_STOR|LOG_DBG, "clean_disk(): Need disk clean up: free: %d/total: %d\n",
 		    total_free, total_blks);
@@ -132,6 +237,12 @@ time_t			now;
 		goto err;
 	    }
 	    while ( continue_cleanup(total_blks, total_free, disk_hi_free) ) {
+		if ( MUST_BREAK ) {
+		    forced_cleanup = TRUE ;
+		    db_mod_cursor_close(dbcp);
+		    UNLOCK_DB ;
+		    goto done;
+		}
 		bzero(&key, sizeof(key));
 		bzero(&data, sizeof(data));
 		rc = db_mod_cursor_get(dbcp, &key, &data);
@@ -150,23 +261,30 @@ time_t			now;
 		    goto done;
 	        }
 	        disk_ref = data.data;
-		storage = locate_storage_by_id(disk_ref->id);
-		db_mod_cursor_del(dbcp);
-		if ( storage ) {
-		    WRLOCK_STORAGE(storage);
-		    release_blks(disk_ref->blk, storage, disk_ref);
-		    UNLOCK_STORAGE(storage) ;
-		    total_free+=disk_ref->blk;
-		} else {
-		    my_xlog(LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk.\n");
+		if ( ok_to_delete(disk_ref->created) ) {
+		    storage = locate_storage_by_id(disk_ref->id);
+		    db_mod_cursor_del(dbcp);
+		    if ( storage ) {
+			WRLOCK_STORAGE(storage);
+			release_blks(disk_ref->blk, storage, disk_ref);
+			UNLOCK_STORAGE(storage) ;
+			total_free+=disk_ref->blk;
+		    } else {
+			my_xlog(LOG_SEVERE, "clean_disk(): WARNING: Failed to find storage in clean_disk.\n");
+		    }
+		    decrement_hg(disk_ref->created, disk_ref->blk);
 		}
 		free(key.data);
 		free(data.data);
-		if ( global_sec_timer - now >= KEEP_NO_LONGER_THAN || MUST_BREAK ) {
-		    forced_cleanup = TRUE ;
-		    db_mod_cursor_close(dbcp);
+		if ( global_sec_timer - now >= KEEP_NO_LONGER_THAN ) {
+		    db_mod_cursor_freeze(dbcp);
+		    db_mod_sync();
 		    UNLOCK_DB ;
-		    goto done;
+		    my_sleep(5);
+		    WRLOCK_DB ;
+		    now = global_sec_timer;
+		    db_mod_cursor_unfreeze(dbcp);
+		    continue;
 		}
 	    }
 	    if ( dbcp ) db_mod_cursor_close(dbcp);
@@ -208,6 +326,8 @@ struct	storage_st	*storage;
     last_expire = started = now ;
 
     /* otherwise start expire */
+
+    clear_hg(&hg[0]);
 
 run:
     WRLOCK_DB ;
@@ -253,6 +373,9 @@ run_locked:
 		/* lost storage - recodr must be erased */
 		    db_mod_cursor_del(dbcp);
 	    }
+	} else {
+	    /* not expired, update histogram */
+	    increment_hg(&hg[0], disk_ref->created, disk_ref->blk);
 	}
 	free(key.data);
 	free(data.data);

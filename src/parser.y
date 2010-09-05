@@ -17,14 +17,15 @@
 %token	NETWORKS_ACL_T STORAGE_OFFSET_T AUTO_T USERID_T CHROOT_T
 %token	BIND_ACL_T MAXREQRATE_T BLACKLIST_T START_RED_T REFUSE_AT_T
 %token	DONT_CACHE_WITHOUT_LAST_MODIFIED_T MY_AUTH_T PARENT_AUTH_T
-%token	PEER_ACCESS_T
+%token	PEER_ACCESS_T PER_SESS_BW_T PER_IP_BW_T PER_IP_CONN_T
+%token	ALWAYS_CHECK_FRESHNESS_ACL_T PEER_DOWN_TIMEOUT_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name
 %type	<STRING_LIST>	mod_op mod_ops string_list string_list_e
 %type	<GROUPOPS>	group_op group_ops
 %type	<GROUPOPS>	http icp badports bandwidth miss auth_mods redir_mods
-%type	<GROUPOPS>	denytime
+%type	<GROUPOPS>	denytime per_sess_bw per_ip_bw per_ip_conn
 %type	<STORAGEST>	st_op st_ops
 %type	<INT>		num
 %type	<OFFSET>	offset
@@ -54,7 +55,8 @@ struct	peer_c {
 	struct	acls		*acls;
 	char			*my_auth;
 	acl_chk_list_hdr_t	*peer_access;
-} peer_c = {PEER_SIBLING,NULL,NULL,NULL};
+	int			down_timeout;
+} peer_c = {PEER_SIBLING,NULL,NULL,NULL, 60};
 
 struct	domain_list	*load_domlist_from_file(char*);
 struct	domain_list	*load_domlist_from_list(struct string_list *);
@@ -106,6 +108,7 @@ statement	: logfile
 		| expire_interval
 		| last_modified_factor
 		| always_check_freshness
+		| always_check_freshness_acl
 		| force_http11
 		| force_completion
 		| disk_low_free
@@ -404,7 +407,7 @@ pidfile		: PIDFILE STRING L_EOS {
 
 nameserver	: NAMESERVER STRING L_EOS {
 			verb_printf("NAMESERVER:\t<<%s>>\n", yylval.STRPTR);
-			if ( ns_curr < MAXNS ) {
+			if ( ns_curr < OOPSMAXNS ) {
 			    bzero(&ns_sa[ns_curr], sizeof(ns_sa[ns_curr]));
 			    ns_sa[ns_curr].sin_family = AF_INET;
 #if	!defined(SOLARIS) && !defined(LINUX) && !defined(OSF) && !defined(_WIN32)
@@ -414,7 +417,7 @@ nameserver	: NAMESERVER STRING L_EOS {
 			    ns_sa[ns_curr].sin_port = htons(53);
 			    ns_curr++;
 			} else {
-			    verb_printf("You can configure maximum %d nameservers\n", MAXNS);
+			    verb_printf("You can configure maximum %d nameservers\n", OOPSMAXNS);
 			}
 			free(yylval.STRPTR);
 		}
@@ -477,6 +480,12 @@ always_check_freshness : ALWAYS_CHECK_FRESHNESS_T L_EOS {
 			verb_printf("ALWAYS CHECK FRESHNESS\n");
 			always_check_freshness = TRUE;
 		}
+always_check_freshness_acl : ALWAYS_CHECK_FRESHNESS_ACL_T STRING L_EOS {
+			verb_printf("ALWAYS CHECK FRESHNESS ACL\n");
+			parse_acl_access(&always_check_freshness_acl, yylval.STRPTR);
+			free(yylval.STRPTR);
+		}
+
 force_http11	: FORCE_HTTP11_T L_EOS {
 			verb_printf("FORCE_HTTP11\n");
 			force_http11 = TRUE;
@@ -698,6 +707,11 @@ peerconfig	: PEER_PARENT_T ';' {
 				peerc_ptr = &peer_c;
 			peerc_ptr->type = PEER_SIBLING;
 		  }
+		| PEER_DOWN_TIMEOUT_T num ';' {
+			if ( !peerc_ptr )
+				peerc_ptr = &peer_c;
+			peerc_ptr->down_timeout = $2 ;
+		  }
 		| MY_AUTH_T string ';' {
 			if ( !peerc_ptr )
 				peerc_ptr = &peer_c;
@@ -759,6 +773,7 @@ peer		: PEER_T string num num '{' peerops '}' L_EOS {
 			    peer->acls = peerc_ptr->acls;
 			    peer->my_auth = peerc_ptr->my_auth;
 			    peer->peer_access = peerc_ptr->peer_access;
+			    peer->down_timeout = peerc_ptr->down_timeout;
 			}
 			/* insert peer in the list */
 			if ( !peers ) {
@@ -814,6 +829,15 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 					break;
 				case OP_BANDWIDTH:
 					new_grp->bandwidth = (int)ops->val;
+					break;
+				case OP_PER_SESS_BW:
+					new_grp->per_sess_bw = (int)ops->val;
+					break;
+				case OP_PER_IP_BW:
+					new_grp->per_ip_bw = (int)ops->val;
+					break;
+				case OP_PER_IP_CONN:
+					new_grp->per_ip_conn = (int)ops->val;
 					break;
 				case OP_MISS:
 					new_grp->miss_deny = (int)ops->val;
@@ -918,6 +942,9 @@ group_op	: NETWORKS network_list ';' {
 			$$ = new;
 		}
 		| bandwidth	{ $$ = $1; }
+		| per_sess_bw	{ $$ = $1; }
+		| per_ip_bw	{ $$ = $1; }
+		| per_ip_conn	{ $$ = $1; }
 		| badports	{ $$ = $1; }
 		| http		{ $$ = $1; }
 		| icp		{ $$ = $1; }
@@ -1017,6 +1044,51 @@ bandwidth	: BANDWIDTH_T num ';' {
 			} else {
 			    new_op->op = OP_BANDWIDTH;
 			    verb_printf("Bandwidth %dbytes/sec\n", $2);
+			    new_op->val= (void*)$2;
+			    new_op->next=NULL;
+			    $$ = new_op;
+			}
+		}
+per_sess_bw	: PER_SESS_BW_T num ';' {
+		    struct	group_ops_struct	*new_op;
+
+			new_op = xmalloc(sizeof(*new_op), "parser: bandwidth");
+			if ( !new_op ) {
+				yyerror();
+				$$ = NULL;
+			} else {
+			    new_op->op = OP_PER_SESS_BW;
+			    verb_printf("Per session Bandwidth %dbytes/sec\n", $2);
+			    new_op->val= (void*)$2;
+			    new_op->next=NULL;
+			    $$ = new_op;
+			}
+		}
+per_ip_bw	: PER_IP_BW_T num ';' {
+		    struct	group_ops_struct	*new_op;
+
+			new_op = xmalloc(sizeof(*new_op), "parser: bandwidth/ip");
+			if ( !new_op ) {
+				yyerror();
+				$$ = NULL;
+			} else {
+			    new_op->op = OP_PER_IP_BW;
+			    verb_printf("Per IP Bandwidth %dbytes/sec\n", $2);
+			    new_op->val= (void*)$2;
+			    new_op->next=NULL;
+			    $$ = new_op;
+			}
+		}
+per_ip_conn	: PER_IP_CONN_T num ';' {
+		    struct	group_ops_struct	*new_op;
+
+			new_op = xmalloc(sizeof(*new_op), "parser: bandwidth/ip");
+			if ( !new_op ) {
+				yyerror();
+				$$ = NULL;
+			} else {
+			    new_op->op = OP_PER_IP_CONN;
+			    verb_printf("Per IP Connections limit: %d\n", $2);
 			    new_op->val= (void*)$2;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -1598,6 +1670,7 @@ int		code;
     ns_curr = 0;
     bzero(&peer_c, sizeof(peer_c));
     peer_c.type  = PEER_SIBLING;
+    peer_c.down_timeout = 60;
     peerc_ptr = NULL;
     bzero((void*)&badports, sizeof(badports));
     code = yyparse();

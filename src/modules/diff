@@ -1,0 +1,41 @@
+Index: Makefile.in
+===================================================================
+RCS file: /usr/local/cvs/oops/src/modules/Makefile.in,v
+retrieving revision 1.13
+retrieving revision 1.15
+diff -c -r1.13 -r1.15
+*** Makefile.in	2000/10/22 16:06:33	1.13
+--- Makefile.in	2000/11/11 15:03:40	1.15
+***************
+*** 20,34 ****
+  	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
+  
+  .c.so:
+! 	${CC} ${CFLAGS} ${SOFLAGS} ${CDEFS} -c $<
+  	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $(<:.c=.o) $(LIBS)
+  
+  .cpp.o:
+! 	${CXX} ${CFLAGS} ${SOFLAGS} ${CDEFS} $(CXXCOMPFLAGS) $< -o $*.a
+! 	mv $*.a $*.o
+  
+  .cpp.so:
+! 	${CXX} ${CFLAGS} ${CXXSOFLAGS} ${CDEFS} $< $(LDFLAGS) @LIBGB_PATH@ @LIBGB_NAME@ $(LIBS) -o $@
+  
+  all:	log_dummy.@MOD_EXT@ \
+  	err.@MOD_EXT@ \
+--- 20,34 ----
+  	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $< $(LIBS)
+  
+  .c.so:
+! 	${CC} ${CFLAGS} ${CDEFS} -c $<
+  	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $(<:.c=.o) $(LIBS)
+  
+  .cpp.o:
+! 	${CXX} ${CFLAGS} ${CDEFS} $(CXXCOMPFLAGS) $<
+  
+  .cpp.so:
+! 	${CXX} ${CFLAGS} ${CDEFS} $(CXXCOMPFLAGS) $<
+! 	${LD} $(SOFLAGS) $(LDFLAGS) -o $@ $(<:.cpp=.o)  @LIBGB_PATH@ @LIBGB_NAME@ $(LIBS)
+  
+  all:	log_dummy.@MOD_EXT@ \
+  	err.@MOD_EXT@ \

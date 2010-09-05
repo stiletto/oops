@@ -1,0 +1,369 @@
+<body>
+<ul>
+<li><b>nameserver</b><br>
+	There are functions of gethostbyname family that are commonly used to
+	translate host names into addresses (please note that OOPS tries to avoid to call
+	them, soon it will be clear why). These functions are useful for several
+	reasons. First gethostbyname() allows you to use not only DNS as information
+	source, but also NIS, file /etc/hosts, and so on. Unfortunately gethostbyname() and
+	its thread-safe variant gethostbyname_r() can be serious bottleneck if you
+	need to resolve several names in parallel: all names will be resolved
+	one by one in sequence. That is why OOPS uses its own internal simple
+	resolver. As for today it can perform only name-to-address translation 
+	and it needs nameserver, to which it sends requests.
+	<br>
+
+	You can have several lines with 'nameserver' keyword. All requests will be
+	sent to all of them in round-robin fashion starting from the first. After
+	sending request to first nameserver we make a small pause (hoping that the first
+	nameserver answers and we don't need to send further requests to the
+	nameservers). If we don't receive an answer, then we periodically (with
+	increased interval) send requests to all nameservers. Successful answers
+	are cached for half an hour, so the nameservers will not be highly loaded.
+	<br>
+
+	Lines 'nameserver' can be omitted from config. In that case we will use
+	gethostname().
+	<br>
+
+<li><b>bind</b><br>
+	This is an IP address where we can listen for HTTP proxy requests. If the host, where
+	OOPS runs has several interfaces (or aliases), then by default it will
+	accept connections to all of these addresses. Sometimes this is not what you
+	need. In this case you can place the address (or name), on which OOPS must accept
+	connection in the 'bind' instruction. Note, if for some reason binding to
+	this address fails (invalid address, no such interface), this option
+	will be ignored and OOPS will listen on all addresses.
+	<br>
+
+<li><b>http_port</b><br>
+	This is a port number where OOPS accepts HTTP requests. If this line is
+	omitted, then OOPS will listen on default port 3128. Port can have value 0
+	in which case it does not work as a HTTP proxy. Option 'bind' has relation with
+	this option - it defines on which address OOPS accepts connection.
+	<br>
+
+<li><b>icp_port</b><br>
+	This is the port number where OOPS accepts ICP requests.
+	<br>
+
+<li><b>connect-from</b><br>
+	If you omit this option then during connection to HTTP server OOPS doesn't
+	try to bind the local end of connection to any address. This may not be useful:
+	for example your proxy server has two addresses on ethernet interface and
+	first name resolves in some name NOT in the form proxy.yourdomain.tld. In
+	this case all outbound connections will probably be set up from improper
+	name. To correct this situation use option 'connect-from' - it will tie
+	local end of outbound connections to fixed address.
+	<br>
+
+<li><b>bind_acl</b><br>
+	This is the more flexible variant of the previous directive. It works as
+	the following:
+	if the request matches the ACL list then it binds it to specified address.
+	<br>
+
+	There can be several such directives, each request passes over all of them
+	until the first match. If no match is found, OOPS will use directive
+	'connect-from' (if present).
+	<br>
+
+	What can you use this for? For example you have several uplinks (I don't talk
+	about peers, just uplink provider) and you would like to balance a downstream
+	flow produced by your proxy. You can bind the local end of some outbound
+	requests to the IP address from one network, and the other - to another network. Then
+	the answers will go on different pathes.
+	<br>
+
+<li><b>lo_mark</b><br>
+	OOPS has a two-level cache: 1) in-memory cache and 2) on-disk cache. During request
+	processing we look up the document in memory first, then (in case of failure) -
+	on disk. Any new document is first placed in memory cache, from which at
+	some stage it can be swapped on the disk. After the start of the program, the total
+	volume of the cached documents starts to grow. 'lo_mark' puts limit on this growth.
+	When this limit is reached the documents starts to go to the disk and frees
+	the memory. This process continues untill the total volume of documents in the memory
+	returns below the in limit. By the way, if you run OOPS for 10 minutes and
+	it loads 10 documents, then most probably you will not see anything on the disk.
+	Note also that "total document volume" doesn't mean "program size in memory".
+	In stable state the program size in memory is always more then lo_mark, and
+	depends on the load, your malloc() behaviour and some other parameters.
+	<br>
+
+	Accounting for total volume occurs once per 10 seconds.
+	<br>
+
+	So, think about lo_mark only as a "hint" to the program size in memory.
+	<br>
+
+<li><b>mem_max</b><br>
+	This is also a limit. Under heavy load, the speed of the filling of memory cache may
+	become larger than the speed of the swap-out process, and this can lead to infinite
+	growth in memory. mem_max can stop this growth: if total document volume
+	becomes larger than mem_max documents will be destroyed instead of being swapped out.
+	This continues till the volume returns to mem_max. This is a rare case
+	if you have fast disks and too much load, so you can safely set
+	mem_max=2*lo_mark. So lo_mark MUST be less then mem_max.
+	<br>
+
+<li><b>userid</b><br>
+	Although security was taken very seriously into account, you can
+	believe in success of or not. Almost right after start, OOPS can switch to
+	unprivileged user id, so that breakthrough will not be dangerous. You can
+	omit this option, in which case OOPS will continue to run under UID from
+	which it was started.
+	<br>
+
+	Using this directive lead to some limits on reconfigure process: for example
+	you will not be able to open new privileged port (<1024).
+	<br>
+
+	If you use this option it is *very important* that user has all the needed access
+	privileges to files which OOPS uses.
+	<br>
+
+	It is also important that OOPS starts with root privileges. This allows the
+	automatic removal of some limits on resource usage: number of open files,
+	memory size, and etc. If you don't start OOPS with root privileges it
+	will not be able to remove the limits and this can quickly lead to problems.
+	<br>
+
+<li><b>stop_cache</b><br>
+	This is the easiest (and fastest) way to control document cache ability. If you place
+	this instruction in config, then all requests are subjects to following test:
+	is the string that is a parameter of this stop_cache directive the
+	substring of the request URL path? If yes, then this document will not be
+	cached. Example: 'stop_cache ?' will stop caching any document with URL
+	'http://hostname/path?request'. ATTENTION: only the path is subject to this
+	comparison.
+	<br>
+
+<li><b>local_domain</b><br>
+	In case you have any cache hierarchy, 'local_domain' states that some domains
+	are local for you, and in all cases requests to these domains must be served
+	directly.
+	<br>
+
+<li><b>local_networks</b><br>
+	This is almost the same as the local_domain but here networks are listed instead of
+	domains. If you use this directive then all requests (even if served
+	from parent) will lead to name resolving.
+	<br>
+
+<li><b>default_expire_value</b><br>
+	If the document doesn't contain Expire: header and we can't find any
+	other source of expiration time information, then OOPS sets the expiration date
+	using this option. Other options that take part in this process are:
+	refresh_pattern, max-expire-value and last-modified-factor.
+	<br>
+
+<li><b>refresh_pattern</b><br>
+	This option is used in case you want to force some documents to have some
+	expiration date that have higher preference then any other expiration date
+	information. This option has 4 parameters: ACLNAME, min, percent, max.
+	ACLNAME - name of ACL used to separate documents of our interest. min and
+	max - minimal and maximal expiration time correspondently (in seconds).
+	percent is an amount in which Last-Modification time is taken into consideration
+	(if the document changed recently, then probably it will change again soon).
+	We take 'percent' into account only in case the document doesn't have Expire:
+	header and works as the following: we calculate the time passed since last modification,
+	we take the percent of this value and expiration date to that number of
+	seconds in future.
+	<br>
+
+<li><b>disk_low_free, disk_ok_free</b><br>
+	These parameters control the "storage cleanup" process. Once per 10 seconds
+	we check for total free space on storages. If this volume becomes lower then
+	disk_low_free percents, then cleanup begins. It continues till the free space
+	returns to disk_ok_free, or some event interrupt cleanup (reconfigure
+	or shutdown).
+
+<li><b>force_http11</b><br>
+	This option turns version conversion from HTTP/1.0 to HTTP/1.1 during the request
+	to server.
+
+<li><b>always_check_freshness  and always_check_freshness_acl</b><br>
+	This option forces the checking of freshness of documents in cache before sending
+	answer to client. always_check_freshness forces to check each document,
+	always_check_freshness_acl forces to check only the documents that fall into
+	the mentioned ACLs. If none of this options are present in config, OOPS will
+	check document freshness only if the user requests or the document expires.
+
+<li><b>force_completion</b><br>
+	If the user, requested some documents, and  decided to stop the download, and no other client
+	downloads this document at the same time, OOPS can break the loading of this
+	document from the server. On the hand this can save inbound capacity because OOPS will not
+	receive that are not needed. On the other hand, this document can be useful
+	later and some parts of your incoming bandwidth can already be used to download parts
+	of the document. In this case you can decide if it is better to continue
+	the document loading. force_completion defines the threshold; which path of the document
+	must be downloaded before, so that even if the user refuses to continue the download,
+	the document will be loaded completely.
+
+<li><b>insert_x_forwarded_for, insert_via</b><br>
+	HTTP headers X-Forwarded-For and "Via:" will be/won't be inserted in answers
+	if you choose use options "yes" or "no".
+
+<li><b>acl</b><br>
+	It defines the named ACL. Descriptions are intuitive in most cases. See oops.cfg
+	for examples.
+
+<li><b>acl_deny</b><br>
+	It denies requests that satisfy ACL's, listed here.
+
+<li><b>parent</b><br>
+	Using this instruction you can almost completely stop direct connections to
+	the servers. All requests will be routed to this parent. Some requests are still
+	routed directly to http server: requests which satisfy local_domain or
+	local-networks statements. You can use this instruction if you have a single
+	uplink or a single, stable, fast neighbour. For all other options for neighbour
+	interactions, see section <b>peer</b>.
+
+<li><b>parent_auth</b><br>
+	If the parent, described in the previous section requires a login/password,
+	it can be set here.
+
+<li><b>peer</b><br>
+	This section describes your neighbours in cache hierarchy. OOPS can interact
+	with peers using (and not using) ICP. The parameters of this instruction are:
+	name or IP address of neighbour, his http-port, and his icp-port, followed by
+	other parameters and properties of the peer. The HTTP-port is a port where the peers
+	listen for http requests, the ICP-port is a port where the peers listen for ICP
+	requests. The ICP port can be 0. This will slightly change the algorithm of the
+	peer interaction (see below).
+
+    <ul>
+    <li>sibling|parent<br>
+	This option defines who is this neighbour for. "parent" allows you to fetch
+	documents even if they are not in his cache - so that he will receive
+	documents from the network for you. "sibling" will not allow you to fetch
+	documents from it if it doesn't have it in cache. So, this is more an
+	administrative solution, then technical. It is better to ask the peer
+	administrator how you should describe it.
+
+    <li>my_auth<br>
+	This option must be used if your peer require authentication.
+
+    <li>allow|deny<br>
+	With these options you can control the requests to be routed through
+	this peer. Here you can list domains. You can also use a more flexible option
+	peer_access.
+
+    <li>peer_access<br>
+	This option can be used for fine tuning of the requests to be served
+	through this peer. There can be several such lines, and you can use any ACL's
+	here (with or without '!').
+
+    <li>down_timeout<br>
+	This option has a meaning only in case of non-ICP peer (icp-port is equal
+	to 0). In this case we interact with the peer in the following way: we don't send ICP
+	requests, instead, we assume that the peer always replies 'MISS'. This means that
+	if any peers (we already sent requests to) answer HIT, then we will
+	route the request to that ('HIT'-ed peer). For a non-icp peer we can only check
+	peer status by sending him HTTP-request, the algorithm of UP/DOWN
+	transition is the following: if any HTTP connection to peer fails,
+	this peer goes to DOWN state and it will be excluded from any
+	considerations for down_timeout seconds. After that time it will go to UP
+	state again.
+     </ul>
+<li><b>group</b><br>
+
+	All users or their requests will fall into some groups. Almost all aspects
+	of services for requests are described in the 'group' section. The decision of
+	which group this request belongs to, is made as the following:<br>
+
+	If in the group's description you placed 'networks_acl' option, then
+	first try to detect the proper group by applying all networks ACLs (in the
+	order to be seen in config) to the request. At the first match we stop the lookup. If
+	you have no networks_acl in oops.cfg, or the lookup failed, then try
+	'networks'. All network addresses, listed in 'networks' directives are
+	sorted so that most specific (mask length is longer) addresses are looked
+	first. If the client address falls in any network, then the request falls into the group
+	where this network was described.
+
+    <ul>
+	<li>networks<br>
+	This is a list of all hosts and networks which belong to this group. Networks
+	are presented in form aaa.bbb.ccc/length. For hosts mask length equals to 32.
+	    
+	<li>networks_acl<br>
+	If the request matches this ACL, then it belongs to this group.
+
+	<li>badports<br>
+	A list of ports which are denied for the given group.
+	Use ports from example and expand it.
+
+
+	<li>miss allow|deny<br>
+	This option controls the access to your cache from the neighbours. If you
+	set 'deny', then all requests to the document that aren't in cache will be failed.
+	You can set up groups for all your neighbours.
+
+	<li>denytime<br>
+	Time intervals when requests from this group will be denied.
+	THE Parameter has the following forms:<br>
+
+	days-list time_from:time_to<br>
+
+	days-list - comma-separated days or day intervals (for example Thu:Fri). Pay
+	attention: interval must be ascending (days order: Sun,Mon,Tue,Wed,Thu,Fri,Sat)
+
+	<li>auth_mods<br>
+	The module which will authorize the users in this group (if needed).
+
+	<li>redir_mods<br>
+	Modules-redirectors, which handle the requests from this group. 
+	If some of them are listed, they will be called in the selected order.
+
+	<li>bandwidth<br>
+	Bandwidth (in bytes per second) for this group. 
+	This parameter limits the amount of data per second transmitted to all
+	users in this group. Traffic evaluation takes place once in a second,
+	that can lead to inaccuracy. High quality shaping can only be achieved
+	at high rate sampling, but this can lead to large overhead.
+
+	<li>per_ip_bw<br>
+	This is analogous to the previous limit, but the limit is
+	placed on the flow to each host in group. Both limits can be
+	applied.
+
+	<li>per_ip_conn<br>
+	The maximum number of connections which can be opened
+	from every single host in the group.
+
+	<li>maxreqrate<br>
+	The maximum total request rate acceptable for this group.
+
+	<li>http<br>
+	This is the oldest form of domain access restrictions. In the 'allow' section
+	list all domains that are allowed (you can use * in place of domain name),
+	in 'deny' section list all domains that must be denied.
+
+	<li>icp<br>
+	Do nothing.
+
+</ul>
+
+	<li><b>storage</b><br>
+	This section describes storages. Storage is a single file, which stores
+	documents. File can be "regular" or disk "character" device. Storage must be
+	formatted (oops -z) before use. OOPS can work without storages.<br>
+
+	Parameters of the storages are:
+
+	<ul>
+	<li>path - name of the file.
+
+	<li>size<br>
+	Size of the storage. Used only during the format process. size can accept
+	any values (not less then several KB). Usage of large storages (larger then
+	2G) require option --enable-large-files during configure process. In case of
+	disk slice or pre-created file you can use the word 'auto' for size.
+	In this case OOPS determines the size ot the file (or the slice) and format it
+	using this size.
+
+	<li>offset<br>
+	Value of offset will be used as offset for all on-the
+	disk structures. This option is required for using slices under
+	Solaris/sparc or AIX. Under these sytems, the first sector of the slice
+	keeps the volume label which must be preserved.

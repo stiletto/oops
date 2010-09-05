@@ -61,14 +61,14 @@ struct	output_module lang = {
 	compare_u_agents
 };
 
-static	rwl_t		lang_config_lock;
-static	char		default_charset[64];
+static	pthread_rwlock_t	lang_config_lock;
+static	char			default_charset[64];
 
 static	void		recode_buff(struct buff*, struct charset*);
 
-#define	WRLOCK_LANG_CONFIG	rwl_wrlock(&lang_config_lock)
-#define	RDLOCK_LANG_CONFIG	rwl_rdlock(&lang_config_lock)
-#define	UNLOCK_LANG_CONFIG	rwl_unlock(&lang_config_lock)
+#define	WRLOCK_LANG_CONFIG	pthread_rwlock_wrlock(&lang_config_lock)
+#define	RDLOCK_LANG_CONFIG	pthread_rwlock_rdlock(&lang_config_lock)
+#define	UNLOCK_LANG_CONFIG	pthread_rwlock_unlock(&lang_config_lock)
 
 int
 mod_run()
@@ -85,7 +85,7 @@ mod_load()
 	charsets = NULL;
     }
     default_charset[0] = 0;
-    rwl_init(&lang_config_lock);
+    pthread_rwlock_init(&lang_config_lock, NULL);
     return(MOD_CODE_OK);
 }
 int

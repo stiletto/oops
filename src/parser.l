@@ -2,7 +2,7 @@
 %o 16000
 %p 7000
 %n 1000
-%e 2000
+%e 3000
 %{
 #include "oops.h"
 
@@ -213,6 +213,10 @@ line		[^\n]+
 <INITIAL>[Aa][Ll][Ww][Aa][Yy][Ss]_[Cc][Hh][Ee][Cc][Kk]_[Ff][Rr][Ee][Ss][Hh][Nn][Ee][Ss][Ss] {
 		return(ALWAYS_CHECK_FRESHNESS_T);
 		}
+<INITIAL>[Aa][Ll][Ww][Aa][Yy][Ss]_[Cc][Hh][Ee][Cc][Kk]_[Ff][Rr][Ee][Ss][Hh][Nn][Ee][Ss][Ss][_-][Aa][Cc][Ll] {
+		BEGIN(aclst);
+		return(ALWAYS_CHECK_FRESHNESS_ACL_T);
+		}
 <INITIAL>[Rr][Ee][Ff][Rr][Ee][Ss][Hh][_-][Pp][Aa][Tt][Tt][Ee][Rr][Nn] {
 		return(REFRESH_PATTERN_T);
 		}
@@ -225,6 +229,9 @@ line		[^\n]+
 <peerst>[Pp][Ee][Ee][Rr][-_][Aa][Cc][Cc][Ee][Ss][Ss] {
 		BEGIN(peeraclst);
 		return(PEER_ACCESS_T);
+		}
+<peerst>[Dd][Oo][Ww][Nn][-_][Tt][Ii][Mm][Ee][Oo][Uu][Tt] {
+		return(PEER_DOWN_TIMEOUT_T);
 		}
 <peerst>[Mm][Yy]_[Aa][Uu][Tt][Hh] {
 		return(MY_AUTH_T);
@@ -382,6 +389,15 @@ line		[^\n]+
 		}
 <groupst>[Dd][Ee][Nn][Yy][Tt][Ii][Mm][Ee] {
 		return(DENYTIME_T);
+		}
+<groupst>[Pp][Ee][Rr][_-][Ss][Ee][Ss][Ss][_-][Bb][Ww] {
+		return(PER_SESS_BW_T);
+		}
+<groupst>[Pp][Ee][Rr][_-][Ii][Pp][_-][Bb][Ww] {
+		return(PER_IP_BW_T);
+		}
+<groupst>[Pp][Ee][Rr][_-][Ii][Pp][_-][Cc][Oo][Nn][Nn] {
+		return(PER_IP_CONN_T);
 		}
 <groupst>{icp}	{
 		BEGIN(icpst);

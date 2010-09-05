@@ -21,8 +21,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #if		!defined(OOPS_MAIN)
 extern time_t		start_time;
 extern struct		mem_obj	*youngest_obj, *oldest_obj;
-extern rwl_t		config_lock;
-extern rwl_t		db_lock;
+extern pthread_rwlock_t	config_lock;
+extern pthread_rwlock_t	db_lock;
 extern char		logfile[MAXPATHLEN], pidfile[MAXPATHLEN],
 			base[MAXPATHLEN];
 extern char		accesslog[MAXPATHLEN];
@@ -57,7 +57,7 @@ extern struct	cidr_net	*local_networks;
 extern struct	cidr_net	**local_networks_sorted;
 extern int			local_networks_sorted_counter;
 extern struct	sockaddr_in	connect_from_sa, *connect_from_sa_p;
-extern struct	sockaddr_in	ns_sa[MAXNS];
+extern struct	sockaddr_in	ns_sa[OOPSMAXNS];
 extern int			ns_configured;
 extern u_short 	http_port;
 extern u_short		icp_port;
@@ -71,7 +71,7 @@ extern int		default_expire_interval;
 extern int		last_modified_factor;
 extern int		disk_low_free, disk_hi_free;
 extern int		kill_request, reconfig_request;
-extern time_t		global_sec_timer;
+extern volatile	time_t	global_sec_timer;
 extern int		dns_ttl;
 extern int		icp_timeout;
 extern int		accesslog_buffered;
@@ -106,7 +106,9 @@ extern int			sorted_networks_cnt;
 extern int		mem_max_val, lo_mark_val, hi_mark_val;
 extern u_short		internal_http_port;
 extern struct	obj_hash_entry	hash_table[HASH_SIZE];
-extern struct	dns_hash_head		dns_hash[DNS_HASH_SIZE];
+extern struct	rq_hash_entry	rq_hash[RQ_HASH_SIZE];
+extern struct	ip_hash_head	ip_hash[IP_HASH_SIZE];
+extern struct	dns_hash_head	dns_hash[DNS_HASH_SIZE];
 extern list_t		icp_requests_list;
 extern list_t		blacklist;
 extern char		domain_name[MAXHOSTNAMELEN+1];
@@ -121,6 +123,7 @@ extern acl_chk_list_hdr_t	*acl_allow;
 extern acl_chk_list_hdr_t	*acl_deny;
 extern acl_chk_list_hdr_t	*stop_cache_acl;
 extern bind_acl_t		*bind_acl_list;
+extern acl_chk_list_hdr_t	*always_check_freshness_acl;
 extern int	blacklist_len;
 extern unsigned int	start_red;
 extern unsigned int	refuse_at;
@@ -192,6 +195,8 @@ extern	void		increase_hash_size(struct obj_hash_entry*, int);
 extern	void		decrease_hash_size(struct obj_hash_entry*, int);
 extern	struct	group*	rq_to_group(struct request*);
 extern	int		deny_http_access(int, struct request *, struct group *);
+extern	void		update_sess_transfer_rate(struct request *rq, int size);
+extern	int		sess_traffic_load(struct request *rq);
 #if	defined(__cplusplus)
 extern "C" {
 #endif
@@ -201,11 +206,6 @@ extern	void		*xmalloc(size_t, char*);
 #endif /* NO_NEED_XMALLOC */
 
 extern	void 		my_xlog(int lvl, char *form, ...);
-extern	void		rwl_init(rwl_t*);
-extern	void		rwl_destroy(rwl_t*);
-extern	void		rwl_rdlock(rwl_t*);
-extern	void		rwl_wrlock(rwl_t*);
-extern	void		rwl_unlock(rwl_t*);
 #if	defined(__cplusplus)
 }
 #endif
@@ -272,9 +272,9 @@ extern	int		poll_descriptors_S(int, struct pollarg*, int);
 extern	int		add_socket_to_listen_list(int, u_short, struct in_addr*, void* (*f)(void*));
 extern	char		daybit(char*);
 extern	int		denytime_check(struct denytime*);
-extern	int             send_data_from_buff_no_wait(int, struct buff **, int *, unsigned int *, int*, int, struct mem_obj*, char*);
+extern	int             send_data_from_buff_no_wait(int, struct buff **, int *, unsigned int *, int*, int, struct mem_obj*, char*, struct request *);
 extern	void		update_transfer_rate(struct request*, int size);
-extern	int		group_traffic_load(struct group *group);
+extern	int		traffic_load(struct request *rq);
 extern	char		*format_av_pair(char*, char*);
 extern	int		tcp_port_in_use(u_short, struct in_addr *);
 extern	void		flush_mem_cache(int);
@@ -311,7 +311,9 @@ extern	int		attach_av_pair_to_buff(char*, char *, struct buff *);
 extern	int		insert_header(char *, char *, struct mem_obj *);
 extern	int             peer_connect(int, struct sockaddr_in*, struct request *);
 extern	int		check_acl_access(acl_chk_list_hdr_t *, struct request *);
+extern	int		obj_check_acl_access(acl_chk_list_hdr_t *, struct mem_obj*, struct request *);
 extern	int		check_acl_list(acl_chk_list_t *, struct request *);
+extern	int		obj_check_acl_list(acl_chk_list_t *, struct mem_obj *, struct request *);
 extern	void		free_dom_list(struct domain_list *);
 extern	void		free_denytimes(struct denytime *);
 extern	void		print_networks(struct cidr_net **, int, int);
@@ -332,6 +334,9 @@ extern	void		put_str_in_filebuff(char *, filebuff_t *);
 extern	void		sort_networks();
 extern	void		free_groups(struct group *);
 extern	int		use_peer(struct request *, struct peer*);
+extern	internal_doc_t	*find_internal(char* name, internal_doc_t *ia);
+extern	int		peer_connect_silent(int client_so, struct sockaddr_in *peer_sa, struct request *rq);
+extern	int		rq_match_named_acl(struct request *rq, named_acl_t *acl);
 
 #if	defined(WITH_LARGE_FILES) && !defined(HAVE_ATOLL) && !defined(HAVE_STRTOLL)
 extern	long long	atoll(const char *);

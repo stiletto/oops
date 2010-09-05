@@ -49,27 +49,68 @@ int		cbytes, bw;
 void
 update_transfer_rate(struct request *rq, int size)
 {
-struct group	*group ;
+struct group	*group = NULL;
+ip_hash_entry_t	*he = NULL;
 
     /* LOCK_CONFIG must be done, but this slow things down */
-    group = rq_to_group(rq);
+    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) group = rq_to_group(rq);
     if ( group ) {
 	pthread_mutex_lock(&group->group_mutex);
 	group->cs0.bytes += size;
 	pthread_mutex_unlock(&group->group_mutex);
     }
+    if ( TEST(rq->flags, RQ_HAVE_PER_IP_BW) ) he = rq->ip_hash_ptr;
+    if ( he ) {
+	pthread_mutex_lock(&he->lock);
+	he->traffic0 += size;
+	he->access = global_sec_timer;
+	pthread_mutex_unlock(&he->lock);
+    }
 }
 
 int
-group_traffic_load(struct group *group)
+traffic_load(struct request *rq)
+{
+int		bytes, bw;
+int		gload = 0, iload = 0 ;
+struct group 	*group = NULL;
+ip_hash_entry_t	*he = NULL;
+
+    if ( !rq ) return(0);
+    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) group = rq_to_group(rq);
+    if ( group && (bw = group->bandwidth) ) {
+	bytes = MID(bytes);
+	gload = (bytes*100)/bw;
+    }
+    if ( TEST(rq->flags, RQ_HAVE_PER_IP_BW) ) he = rq->ip_hash_ptr;
+    if ( he && (bw = rq->per_ip_bw) ) {
+	bytes = MID_IP(he);
+	iload = (bytes*100)/bw;
+    }
+    return(MAX(gload,iload));
+}
+
+int
+sess_traffic_load(struct request *rq)
 {
 int	cbytes, bw;
 
-     if ( !group ) /* this can happens during reconfigure */
-	return(0);
-     if ( !(bw = group->bandwidth) ) return(0);
-     cbytes = MID(bytes);
-     return((cbytes*100)/bw);
+    if ( !rq || !(bw = rq->sess_bw) ) return(0);
+    cbytes = rq->s0_sent;
+    my_xlog(LOG_SEVERE, "Session bw: %d\n", (cbytes*100)/bw);
+    return((cbytes*100)/bw);
+}
+
+void
+update_sess_transfer_rate(struct request *rq, int size)
+{
+    if ( !rq || ! size ) return;
+    if ( rq->last_writing == global_sec_timer )
+		rq->s0_sent += size;
+        else {
+		rq->last_writing = global_sec_timer;
+		rq->s0_sent = size;
+    }
 }
 
 void *
@@ -78,9 +119,10 @@ statistics(void *arg)
 struct group 	 *group;
 struct peer	 *peer;
 struct oops_stat temp_stat;
-int		 counter = 0;
+int		 counter = 0, i;
 int		 hits = 0, reqs = 0;
 int		 purge = PURGE_INTERVAL;
+ip_hash_entry_t	*he, *next_he;
 
     if ( arg ) return (void *)0;
     bzero(&oops_stat, sizeof(oops_stat));
@@ -130,6 +172,11 @@ int		 purge = PURGE_INTERVAL;
 	RDLOCK_CONFIG;
 	peer = peers;
 	while ( peer ) {
+	    if ( !peer->icp_port ) {
+		/* this is not icp peer - different up/down ideology */
+		peer = peer->next;
+		continue;
+	    }
 	    if ( ABS(peer->last_recv - peer->last_sent) > peer_down_interval ) {
 		peer->state |=  PEER_DOWN ;
 	    } else {
@@ -166,6 +213,33 @@ int		 purge = PURGE_INTERVAL;
 		}
 		group = group->next;
 	    }
+	}
+	for (i=0;i<IP_HASH_SIZE;i++) {
+	    pthread_mutex_lock(&ip_hash[i].lock);
+	    he = ip_hash[i].link;
+	    while ( he ) {
+		pthread_mutex_lock(&he->lock);
+		next_he = he->next;
+		he->traffic2 = he->traffic1;
+		he->traffic1 = he->traffic0;
+		he->traffic0 = 0;
+		pthread_mutex_unlock(&he->lock);
+		if ( !he->refcount )  {
+		    if ( global_sec_timer - he->access >= 10 ) {
+			/* unlink and free */
+			if ( !he->prev ) {
+			    ip_hash[i].link = he->next;
+			} else {
+			    he->prev->next = he->next;
+			}
+			if ( he->next ) he->next->prev = he->prev;
+			pthread_mutex_destroy(&he->lock);
+			free(he);
+		    }
+		}
+		he = next_he;
+	    }
+	    pthread_mutex_unlock(&ip_hash[i].lock);
 	}
 	if ( !counter && statisticslog[0] ) {
 	  FILE *statl = fopen(statisticslog, "w");

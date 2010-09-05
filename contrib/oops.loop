@@ -41,8 +41,6 @@ cd $OOPS_HOME
 i=0
 while [ $i -eq 0 ]; do
 	[ -f $OOPS_HOME/core ] && mv $OOPS_HOME/core $OOPS_HOME/core.`date +"%Y.%m.%d-%H:%M:%S"`
-#	Next string may be needed if you use Oops with db-3.x.x
-#	rm -f $OOPS_DB/__db.00[147]
 	echo `date`: Starting Oops >> $OOPS_LOG
 	echo `date`: ulimit -a - started >> $OOPS_LOG
 	ulimit -a >> $OOPS_LOG

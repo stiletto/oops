@@ -128,3 +128,10 @@ A6. I develop and use OOPS under Solaris, and think this is best platform
     under Linux for limited number of simultaneous connections. This is
     because Linux use model 'one thread-one process', and OOPS use model one
     'connection-one thread'
+
+Q7. Storages was formatted, no error messaages at startup, but disk cache
+    seems to be empty even after some time.
+A7. OOPS have two-level cache: in-memory and on-disc. Documents are swapped to
+    disc only whn total volume of in-memory cache become larger then lo_mark.
+    So, if uptime of oops is small, or your traffic is small, or you have lo_mark
+    too high you can see no documents in on-disc cache.

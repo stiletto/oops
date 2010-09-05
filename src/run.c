@@ -546,11 +546,11 @@ put_in_blacklist(int so, void *(f)(void*), int accepted_so)
 void
 set_stack_size(pthread_attr_t *attr)
 {
+#if	defined(SOLARIS)
 size_t	best_size, min_size;
 int	rc;
 ERRBUF ;
 
-#if	defined(SOLARIS)
 /* if we will use default 1M stack under solaris we can quickly fill
    address space, so set it to some real amount
 */
@@ -571,11 +571,11 @@ ERRBUF ;
 void
 set_large_stack_size(pthread_attr_t *attr)
 {
+#if	defined(FREEBSD)
 size_t	best_size, min_size;
 int	rc;
 ERRBUF ;
 
-#if	defined(FREEBSD)
 /* 
     If we use GigaBASE, then we need stack larger then 128K for threads which
     will write to base. FreeBSD by default give obly 64K

@@ -51,8 +51,8 @@ pthread_t		stat_thread = (pthread_t)NULL;
 
 time_t			start_time;
 struct			mem_obj	*youngest_obj, *oldest_obj;
-rwl_t			config_lock;
-rwl_t			db_lock;
+pthread_rwlock_t	config_lock;
+pthread_rwlock_t	db_lock;
 char    		logfile[MAXPATHLEN], pidfile[MAXPATHLEN], base[MAXPATHLEN];
 char    		accesslog[MAXPATHLEN];
 char    		statisticslog[MAXPATHLEN];
@@ -88,7 +88,7 @@ struct	cidr_net	*local_networks;
 struct	cidr_net	**local_networks_sorted;
 int			local_networks_sorted_counter;
 struct	sockaddr_in	connect_from_sa, *connect_from_sa_p;
-struct	sockaddr_in	ns_sa[MAXNS];
+struct	sockaddr_in	ns_sa[OOPSMAXNS];
 int			ns_configured;
 u_short 		http_port;
 u_short			icp_port;
@@ -102,7 +102,7 @@ int			default_expire_interval;
 int			last_modified_factor;
 int			disk_low_free, disk_hi_free;
 int			kill_request, reconfig_request;
-time_t			global_sec_timer;
+volatile	time_t	global_sec_timer;
 int			dns_ttl;
 int			icp_timeout;
 int			accesslog_buffered;
@@ -154,12 +154,16 @@ struct charset	*charsets;
 acl_chk_list_hdr_t	*acl_allow;
 acl_chk_list_hdr_t	*acl_deny;
 acl_chk_list_hdr_t	*stop_cache_acl;
+acl_chk_list_hdr_t	*always_check_freshness_acl;
 bind_acl_t		*bind_acl_list;
 int		blacklist_len;
 unsigned int	start_red;
 unsigned int	refuse_at;
 filebuff_t	logbuff;
 filebuff_t	accesslogbuff;
+
+struct	rq_hash_entry	rq_hash[RQ_HASH_SIZE];
+struct	ip_hash_head	ip_hash[IP_HASH_SIZE];
 
 struct cidr_net**
 sort_n(struct cidr_net *nets, int *counter)
@@ -549,6 +553,14 @@ int	format_storages = 0;
 	pthread_mutex_init(&hash_table[i].lock, NULL);
 	pthread_mutex_init(&hash_table[i].size_lock, NULL);
     }
+    for(i=0;i<RQ_HASH_SIZE;i++) {
+	bzero(&rq_hash[i], sizeof(rq_hash[i]));
+	pthread_mutex_init(&rq_hash[i].lock, NULL);
+    }
+    for(i=0;i<IP_HASH_SIZE;i++) {
+	bzero(&ip_hash[i], sizeof(ip_hash[i]));
+	pthread_mutex_init(&ip_hash[i].lock, NULL);
+    }
     for(i=0;i<DNS_HASH_SIZE;i++)
 	dns_hash[i].last = dns_hash[i].first = NULL;
 
@@ -587,8 +599,8 @@ int	format_storages = 0;
     pthread_mutex_init(&dns_cache_lock, NULL);
     pthread_mutex_init(&st_check_in_progr_lock, NULL);
     pthread_mutex_init(&mktime_lock, NULL);
-    rwl_init(&config_lock);
-    rwl_init(&db_lock);
+    pthread_rwlock_init(&config_lock, NULL);
+    pthread_rwlock_init(&db_lock, NULL);
     list_init(&icp_requests_list);
     list_init(&blacklist);
     skip_check = 0;
@@ -600,6 +612,7 @@ int	format_storages = 0;
     global_refresh_pattern = NULL;
     charsets = NULL;
     acl_allow = acl_deny = NULL;
+    always_check_freshness_acl = NULL;
     stop_cache_acl = NULL;
     oops_user = NULL;
     oops_chroot = NULL;
@@ -736,6 +749,11 @@ run:
 	stop_cache_acl = NULL;
     }
 
+    if ( always_check_freshness_acl ) {
+	free_acl_access(always_check_freshness_acl);
+	always_check_freshness_acl = NULL;
+    }
+
     if ( bind_acl_list ) {
 	free_bind_acl_list(bind_acl_list);
 	bind_acl_list = NULL;
@@ -769,6 +787,7 @@ run:
 
 	pid_d = open(pidfile, O_RDWR|O_CREAT|O_NONBLOCK, S_IRUSR|S_IWUSR|S_IRGRP);
 	if ( pid_d == -1 ) {
+	    fprintf(stderr, "main(): Fatal: Can't create pid file.\n");
 	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't create pid file: %m\n");
 	    do_exit(1);
 	}
@@ -777,6 +796,7 @@ run:
 	fl.l_type = F_WRLCK;
 	fl.l_whence = 0; fl.l_len = 0;
 	if ( fcntl(pid_d, F_SETLK, &fl) < 0 ) {
+	    fprintf(stderr, "main(): Fatal: Can't lock pid file.\n");
 	    my_xlog(LOG_SEVERE, "main(): Fatal: Can't lock pid file: %m\n");
 	    do_exit(1);
 	}

@@ -134,6 +134,8 @@ extern	struct	output_module	lang;
 extern	struct	err_module	err_mod;
 
 extern	struct	auth_module	passwd_file;
+extern	struct	auth_module	passwd_mysql;
+extern	struct	auth_module	passwd_pgsql;
 
 extern	struct	headers_module	vary_header;
 

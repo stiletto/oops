@@ -1,3 +1,40 @@
+version 1.5.4
+	18.12.00 - more sprintf/strncpy fixes
+		   memory leaks in accel.c, bug in custom_log.c
+		   bug in parse_named_acl_data for SRC_IP acl.
+version 1.5.0
+	11.12.00 - fixed memory/security bug if ftp_utils (allocated less
+		   memory in heap thaen required for htmlized_something)
+	23.11.00 - check for directio()
+	17.11.00 - redir.c can rewrite url or send Location:
+		   (otion mode in redir config)
+		   fixed very OLD bug in buid_destination:redir.c, which
+		   caused SIGSEGV when you use long destinations in redir rules
+	15.11.00 - fail-safe support for non-icp peers.
+	14.11.00 - always_check_freshness on object acl basis
+		   acl type "content_type"
+	11.11.00 - migrate to pthread_rwlock_*. (ai)
+		   fixed build problem for AIX. (ai)
+	08.11.00 - ungzip gzipped content when send to non-gzip capable useragent
+		   original_host and original_path in redir's
+	30.10.00 - performance bug in storage.c
+		   updated passwd_pgsql, passwd_mysql modules
+		   IMPORTANT: Changed magic in storages!
+	22.10.00 - passwd_pgsql, passwd_mysql modules
+		   by "Ivan B. Yelnikov" <bahek@khspu.ru>
+		   redir.c can send internal gifs (currently only nospam1x1)
+		   instead of redirects.
+	20.10.00 - fix old bug in transparent.c
+		   by "Alexander Savelyev" <fano@fano.com.ua>
+	16.10.00 - per_ip_bw and per_ip_conn limits - limit
+		   bandwidth and connections nubmer for any host.
+	13.10.00 - fixed bug in bind_acl (vova@mics.msu.su)
+		   per_ip_bw - per ip address bandwidth contol
+	08.10.00 - fixed bug int icp (if peer name can't be resolved, send icp
+		   rq to 0.0.0.0)
+		   fixed bug: traffic load was not counted in continue_load
+		   fixed in oopsctl_mod htmlstat descriptions for DB modules.
+version 1.4.22
 	02.10.00 - manpages (contributed by Tamas SZERB <toma@rulez.org>)
 	27.09.00 - Fixed bug in clean_disc.c (core during expire with GigaBASE)
 		   Fixed bug with oops.pid reopen (oopsctl reconfigure effectively

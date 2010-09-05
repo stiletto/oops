@@ -103,11 +103,11 @@ static	size_t			db_cache_mem_val;
 
 static  int     my_bt_compare(const DBT*, const DBT*);
 
-static	rwl_t	bdb_config_lock;
+static	pthread_rwlock_t	bdb_config_lock;
 
-#define	RDLOCK_BDB_CONFIG	rwl_rdlock(&bdb_config_lock)
-#define WRLOCK_BDB_CONFIG	rwl_wrlock(&bdb_config_lock)
-#define UNLOCK_BDB_CONFIG	rwl_unlock(&bdb_config_lock)
+#define	RDLOCK_BDB_CONFIG	pthread_rwlock_rdlock(&bdb_config_lock)
+#define WRLOCK_BDB_CONFIG	pthread_rwlock_wrlock(&bdb_config_lock)
+#define UNLOCK_BDB_CONFIG	pthread_rwlock_unlock(&bdb_config_lock)
 
 
 int
@@ -125,7 +125,7 @@ mod_load()
     dbhome[0]	= 0;
     dbname[0]	= 0;
     db_cache_mem_val = 4 * 1024 * 1024;
-    rwl_init(&bdb_config_lock);
+    pthread_rwlock_init(&bdb_config_lock, NULL);
     return(MOD_CODE_OK);
 }
 

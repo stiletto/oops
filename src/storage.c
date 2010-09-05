@@ -26,7 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define		ROUNDPG(x)		(((x)/STORAGE_PAGE_SIZE + ((x)%STORAGE_PAGE_SIZE?1:0))*STORAGE_PAGE_SIZE)
 #define		BLKSIZE			STORAGE_PAGE_SIZE
-#define		MAGIC			(0x0bdcdada)
+#define		MAGIC			(0xdeadfeed)
 
 int		buff_to_blks(struct buff *b, struct storage_st * storage, uint32_t *n, uint32_t needed);
 
@@ -214,7 +214,7 @@ uint32_t	blk_num;
 char		*map_ptr=NULL;
 
 
-    rwl_init(&storage->storage_lock);
+    pthread_rwlock_init(&storage->storage_lock, NULL);
     if (!(storage->flags & ST_CHECKED) )
 	return;
     WRLOCK_STORAGE(storage);
@@ -227,6 +227,9 @@ char		*map_ptr=NULL;
 	my_xlog(LOG_SEVERE, "init_storage(): Can't open storage: %m\n");
 	goto error;
     }
+#if	defined(HAVE_DIRECTIO)
+    directio(fd, DIRECTIO_ON);
+#endif
     storage->fd = fd;
     /* read super */
 #if	defined(HAVE_PREAD) && defined(HAVE_PWRITE)
@@ -292,7 +295,7 @@ free_storage(struct storage_st *storage)
     }
     if ( storage->path ) xfree(storage->path) ;
     if ( storage->map) xfree(storage->map);
-    rwl_destroy(&storage->storage_lock);
+    pthread_rwlock_destroy(&storage->storage_lock);
     free(storage);
 }
 
@@ -483,17 +486,28 @@ buff_to_blks(struct buff *b, struct storage_st * storage, uint32_t *n, uint32_t 
 {
 char		*c;
 int		to_move, rc, space;
+uint32_t	*nn, *nnn, tneeded;
 #if	defined(HAVE_PWRITE)
 off_t		next_position;
 #endif
 
+    space = BLKSIZE;
 #if	defined(HAVE_PWRITE)
     next_position = *n*BLKSIZE;
 #else
     ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif	/* HAVE_PWRITE */
-
-    space = BLKSIZE;
+    nn = n; nnn = n+1; tneeded = needed;
+    while(tneeded > 1) {
+	if ( (*nn + 1) == (*nnn) ) {
+	    space += BLKSIZE;
+	    nn = nnn;
+	    nnn = nnn+1;
+	    tneeded--;
+	} else
+	    break;
+    };
+    n = nn;
     while ( b && needed ) {
 	c = b->data;
 	to_move = b->used;
@@ -516,6 +530,17 @@ off_t		next_position;
 #else
 		ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif	/* HAVE_PWRITE */
+		nn = n; nnn = n+1; tneeded = needed;
+		while(tneeded > 1) {
+		    if ( (*nn + 1) == (*nnn) ) {
+			space += BLKSIZE;
+			nn = nnn;
+			nnn = nnn+1;
+			tneeded--;
+		    } else
+			break;
+		    };
+		n = nn;
 	    }
 	    to_move = 0;
 	} else {
@@ -534,6 +559,17 @@ off_t		next_position;
 #else
 	    ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif	/* HAVE_PWRITE */
+	    nn = n; nnn = n+1; tneeded = needed;
+	    while(tneeded > 1) {
+		if ( (*nn + 1) == (*nnn) ) {
+		    space += BLKSIZE;
+		    nn = nnn;
+		    nnn = nnn+1;
+		    tneeded--;
+		} else
+		    break;
+	    };
+	    n = nn;
 	    goto cwb;
 	}
 
@@ -803,6 +839,9 @@ int			gets_counter = 0;
     tstorage.fd = open_storage(tstorage.path, O_RDWR|O_SUPPL);
     if ( tstorage.fd == (fd_t)-1 )
 	return;
+#if	defined(HAVE_DIRECTIO)
+    directio(fd, DIRECTIO_ON);
+#endif
     fd = tstorage.fd;
 #if	defined(HAVE_PREAD) && defined(HAVE_PWRITE)
     if ( ST_PREAD(fd, &tstorage.super, sizeof(tstorage.super), 0) != 

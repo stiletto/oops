@@ -125,6 +125,7 @@ ERRBUF ;
     else if ( rq->meth == METH_UNLOCK ) meth="UNLOCK";
     else
 	return;
+    IF_STRDUP(rq->tag, "TCP_MISS");
     obj = locate_in_mem(&rq->url, AND_PUT|AND_USE|PUT_NEW_ANYWAY|NO_DISK_LOOKUP, NULL, NULL);
     if ( !obj ) {
 	my_xlog(LOG_SEVERE, "send_not_cached(): Can't create new_obj.\n");
@@ -234,6 +235,7 @@ ERRBUF ;
         if ( r == 0 ) /*done*/
 	    goto done;
 	received += r;
+	rq->doc_received += r;
 	if ( !have_code ) {
 	    /* try to find it */
 	    int http_maj, http_min,code ;
@@ -292,6 +294,7 @@ ERRBUF ;
 				s = strdup(header->val);
 			    } else {
 				strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+				ct_buf[sizeof(ct_buf)-1] = 0;
 				s = ct_buf;
 			    }
 			    if ( s
@@ -320,8 +323,9 @@ ERRBUF ;
 			table, TRUE);
 		  else
 		    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
-		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 		    update_transfer_rate(rq, hdrs_to_send->used);
+		rq->doc_sent += hdrs_to_send->used;
 		free_container(hdrs_to_send);
 		if ( obj->container && obj->container->next ) {
 		    if ( recode_answer )
@@ -329,23 +333,31 @@ ERRBUF ;
 				table, FALSE);
 		      else
 			writet(so, obj->container->next->data, obj->container->next->used, READ_ANSW_TIMEOUT);
-		    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+		    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 			update_transfer_rate(rq, obj->container->next->used);
+		    if ( rq->sess_bw )
+			update_sess_transfer_rate(rq, obj->container->next->used);
+		    rq->doc_sent += obj->container->next->used;
 		}
 		if ( obj->content_length
 		    && (sent >= obj->container->used + obj->content_length) )
 		    goto done;
+		rq->doc_size = obj->content_length;
 	    }
 	    continue ;
 	}
 	to_write = r;
 	p = answer;
 	while( to_write ) {
-	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
-		if ( (++pass)%2 ) SLOWDOWN ;
+	    r = MIN(to_write, 2048);
+	    pass++;
+	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) ) {
+		if ( pass%2 ) SLOWDOWN ;
 		r = MIN(to_write, 512);
-	    } else {
-		r = MIN(to_write, 2048);
+	    }
+	    if ( rq->sess_bw ) {
+		if ( pass%2 ) SLOWDOWN_SESS ;
+		r = MIN(to_write, 512);
 	    }
 	    /* if client close connection we'll note here */
 	    if ( recode_answer )
@@ -355,9 +367,11 @@ ERRBUF ;
 	    if ( r < 0 )
 		goto done;
 	    sent += r;
+	    rq->doc_sent += r;
 	    to_write -= r;
 	    p += r;
-	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) update_transfer_rate(rq, r);
+	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) ) update_transfer_rate(rq, r);
+	    if ( rq->sess_bw ) update_sess_transfer_rate(rq, r);
 	    if ( TEST(obj->flags,ANSW_KEEP_ALIVE) && header_size && obj->content_length ) {
 		if ( sent >= header_size+obj->content_length )
 		    goto done;
@@ -379,7 +393,6 @@ done:
     if ( parent_port ) origin = parent_host;
 	else	       origin = url->host;
 
-    IF_STRDUP(rq->tag, "TCP_MISS");
     IF_STRDUP(rq->hierarchy, source);
     IF_STRDUP(rq->source, origin);
     rq->code = have_code;
@@ -403,8 +416,9 @@ char			*tcp_tag = "TCP_HIT", *meth;
 #define			ROLE_READER	1
 #define			ROLE_WRITER	2
 #define			ROLE_VALIDATOR	3
-int			role, no_more_logs = FALSE;
+int			role, no_more_logs = FALSE, source_type;
 char			*origin;
+struct	sockaddr_in	peer_sa;
 
     if ( rq->meth == METH_GET ) meth="GET";
     else if ( rq->meth == METH_PUT ) meth="PUT";
@@ -429,6 +443,7 @@ char			*origin;
 prepare_send_mem:
     role = ROLE_READER;
     INCR_READERS(obj);
+    IF_STRDUP(rq->tag, tcp_tag);
     send_data_from_obj(rq, so, obj, flags);
     DECR_READERS(obj);
     goto done;
@@ -441,6 +456,7 @@ revalidate:
 	role = ROLE_VALIDATOR;
 	tcp_tag = "TCP_REFRESH_HIT";
 	lock_decision(obj);
+	IF_STRDUP(rq->tag, tcp_tag);
 	while(!obj->decision_done )
 	    pthread_cond_wait(&obj->decision_cond, &obj->decision_lock);
 	unlock_decision(obj);
@@ -474,9 +490,75 @@ revalidate:
         if ( obj->child_obj )
 		DECREMENT_REFS(obj->child_obj);
 	obj->child_obj = NULL;
+
+	if ( !TEST(rq->flags, RQ_NO_ICP) && !parent_port && peers && (icp_so != -1)
+	 && (rq->meth == METH_GET)
+	 && !is_local_dom(rq->url.host) ) {
+	    struct icp_queue_elem *new_qe;
+	    struct timeval tv = start_tv;
+	    bzero((void*)&peer_sa, sizeof(peer_sa));
+	    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Sending icp requests.\n");
+	    new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"fill_mem_obj(): new_qe");
+	    if ( !new_qe ) goto icp_failed;
+	    bzero(new_qe, sizeof(*new_qe));
+	    pthread_cond_init(&new_qe->icpr_cond, NULL);
+	    pthread_mutex_init(&new_qe->icpr_mutex, NULL);
+	    new_qe->waitors = 1;
+	    /* XXX make rq_n generation more random */
+	    new_qe->rq_n    = tv.tv_sec+tv.tv_usec;
+	    pthread_mutex_lock(&new_qe->icpr_mutex);
+	    if ( !send_icp_requests(rq, new_qe) ) {
+		/* was placed in queue	*/
+		struct timespec  ts;
+		tv.tv_sec  += icp_timeout/1000000;
+		tv.tv_usec += icp_timeout%1000000;
+		if ( tv.tv_usec > 1000000 ) {
+		    tv.tv_sec++;
+		    tv.tv_usec-=1000000;
+		}
+		ts.tv_sec  = tv.tv_sec;
+		ts.tv_nsec = tv.tv_usec*1000;
+		/* wait for answers */
+		if ( !new_qe->status && pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
+		    /* failed */
+		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp timed out.\n");
+		} else {
+		    /* success */
+		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp success.\n");
+		}
+		new_qe->rq_n = 0;
+		pthread_mutex_unlock(&new_qe->icpr_mutex);
+		if ( new_qe->status ) {
+		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Fetch from neighbour.\n");
+		    peer_sa = new_qe->peer_sa;
+		    source_type = new_qe->type;
+		    server_so = peer_connect_silent(so, &new_qe->peer_sa, rq);
+		    icp_request_destroy(new_qe);
+		    xfree(new_qe);
+		    goto server_connect_done;
+		} else {
+		    if ( no_direct_connections ) {
+		   /* what now ? */
+		    }
+		    my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): Direct.\n");
+		}
+		icp_request_destroy(new_qe);
+		xfree(new_qe);
+		goto icp_failed;
+	    } else {
+		pthread_mutex_unlock(&new_qe->icpr_mutex);
+		pthread_mutex_destroy(&new_qe->icpr_mutex);
+		pthread_cond_destroy(&new_qe->icpr_cond);
+		xfree(new_qe);
+	    }
+
+    icp_failed:;
+	} /* all icp things */
 	/* now make decision - object is valid or not		*/
 	server_so = parent_port?parent_connect_silent(so, parent_host, parent_port, rq):
 				srv_connect_silent(so, &obj->url, rq);
+
+    server_connect_done:;
 	if ( server_so == -1 ) {
 	    /* send old content, but mark obj dead		*/
 	    SET(obj->flags, FLAG_DEAD);
@@ -499,6 +581,8 @@ revalidate:
 	    INCREMENT_REFS(new_obj);
 	    /* old object is invalid anymore 			*/
 	    SET(obj->flags, FLAG_DEAD);
+	    tcp_tag = "TCP_REFRESH_MISS";
+	    IF_STRDUP(rq->tag, tcp_tag);
 	    /* continue load to new_obj */
 	    if ( rq->proto == PROTO_FTP ) {
 		ftp_fill_mem_obj(so, rq, headers, new_obj);
@@ -507,7 +591,6 @@ revalidate:
 		continue_load(rq, so, server_so, new_obj);
 	    DECR_WRITERS(new_obj);
 	    new_obj->response_time	= time(NULL);
-	    tcp_tag = "TCP_REFRESH_MISS";
 	    goto done;
 	} else {
 	    /*--------------------------------------------------*/
@@ -515,10 +598,11 @@ revalidate:
 	    /* switch to READER role, because we will use	*/
 	    /* old content					*/
 	    /*--------------------------------------------------*/
+	    tcp_tag = "TCP_REFRESH_HIT";
+	    IF_STRDUP(rq->tag, tcp_tag);
 	    SWITCH_TO_READER_ON(obj);
 	    send_data_from_obj(rq, so, obj, flags);
 	    DECR_READERS(obj);
-	    tcp_tag = "TCP_REFRESH_HIT";
 	    goto done;
 	}
     }
@@ -540,7 +624,6 @@ done:
 		origin = obj->url.host;
 
     if ( !no_more_logs ) {
-	IF_STRDUP(rq->tag, tcp_tag);
 	IF_STRDUP(rq->hierarchy, "NONE");
 	IF_STRDUP(rq->source, origin);
 	rq->code = have_code;
@@ -561,6 +644,7 @@ int 		r, received, send_hot_pos, pass = 0, sf = 0;
 unsigned int	sended, ssended, state;
 struct	buff	*send_hot_buff;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
+char		ungzip = FALSE;
 int		convert_charset = FALSE;
 int		partial_content = FALSE;
 int		rest_in_chunk = 0, content_length_sent = 0, downgrade_flags;
@@ -575,6 +659,8 @@ struct pollarg	pollarg;
 	downgrade_minor = TRUE;
     if ( TEST(downgrade_flags, UNCHUNK_ANSWER) )
 	convert_from_chunked = TRUE;
+    if ( TEST(downgrade_flags, UNGZIP_ANSWER) )
+	ungzip = TRUE;
 
     if ( fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK) )
 	my_xlog(LOG_SEVERE, "send_data_from_obj(): fcntl(): %m\n");
@@ -623,7 +709,7 @@ send_ready:
 	     &&  ((rq->range_from >= 0) && (rq->range_to == -1))) {
 
 		struct buff *tb = NULL;
-		char	buff[40];
+		char	buff[80];
 
 		partial_content = TRUE;
 		my_xlog(LOG_HTTP|LOG_DBG,"We will send partial content\n");
@@ -666,7 +752,9 @@ send_ready:
 			 * from chunked							*/
 
 		   !(convert_from_chunked && is_attr(header, "Transfer-Encoding")) &&
-	    	   !((convert_from_chunked||partial_content) && is_attr(header, "Content-Length")) ){
+			/* we alvays ungzip gzipped content	*/
+		   !(ungzip && is_attr(header, "Content-Encoding"))&&
+	    	   !((convert_from_chunked||partial_content||ungzip) && is_attr(header, "Content-Length")) ){
 
 		if ( !content_length_sent )
 		    content_length_sent = is_attr(header, "Content-Length");
@@ -678,6 +766,7 @@ send_ready:
 			s = strdup(header->val);
 		    } else {
 			strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+			ct_buf[sizeof(ct_buf)-1] = 0;
 			s = ct_buf;
 		    }
 		    if ( s
@@ -709,9 +798,19 @@ send_ready:
 	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 113 oops Heuristic expiration used.\n");
 	    attach_av_pair_to_buff("Warning:", "113 oops Heuristic expiration used", hdrs_to_send);
 	}
+	if ( ungzip ) {
+	    my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): Send Warning: 14 oops Converted from gzip.\n");
+	    attach_av_pair_to_buff("Warning:", "14 oops Transformation from gzip applied", hdrs_to_send);
+	}
 	if ( !content_length_sent && partial_content ) {
 	    char clbuf[32];
 	    sprintf(clbuf, "%d", osize-rq->range_from);
+	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
+	    content_length_sent = TRUE;
+	}
+	if ( !content_length_sent && ungzip && obj->ungzipped_cont_len) {
+	    char clbuf[32];
+	    sprintf(clbuf, "%d", obj->ungzipped_cont_len);
 	    attach_av_pair_to_buff("Content-Length:", clbuf, hdrs_to_send);
 	    content_length_sent = TRUE;
 	}
@@ -726,6 +825,7 @@ send_ready:
 	    sprintf(agebuf, "%d", (int)current_obj_age(obj));
 	    attach_av_pair_to_buff("Age:", agebuf, hdrs_to_send);
 	}
+	rq->doc_size = obj->content_length;
 	/* end of headers */
 	attach_av_pair_to_buff("","", hdrs_to_send);
 	if ( convert_charset && rq->cs_to_client_table
@@ -735,6 +835,7 @@ send_ready:
 		rq->cs_to_client_table->list->string, TRUE);
 	  else
 	    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+        my_xlog(LOG_HTTP, "send_data_from_obj(): Headers sent: %d bytes\n", hdrs_to_send->used);
 	free_container(hdrs_to_send);
 	if ( !obj->container ) goto done;
 	if ( partial_content ) {
@@ -767,28 +868,41 @@ send_ready:
 	    sended = obj->container->used;
 	} /* partial content */
 	if ( !partial_content) pre_body(so, obj, rq, NULL);
+#if	defined(HAVE_ZLIB)
+	if ( ungzip ) {
+	    memset(&rq->strm, sizeof(rq->strm), 0);
+	    rq->decoding_buff = xmalloc(DECODING_BUF_SZ, "decoding");
+	    rq->strmp = &rq->strm;
+	    if ( Z_OK != inflateInit2(rq->strmp, -MAX_WBITS) ) {
+		rq->strmp = NULL;
+	    } else
+		rq->flags |= RQ_CONVERT_FROM_GZIPPED;
+	}
+#endif
     }
     if ( (state == OBJ_READY) && (sended >= obj->size) ) {
-	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): obj is ready.\n");
+	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): obj is ready: sended(%d) >= obj->size(%d).\n", sended, obj->size);
 	goto done;
     }
-    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
+    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 	SLOWDOWN ;
+    if ( rq->sess_bw && pass%2 ) SLOWDOWN_SESS;
     pollarg.fd = so;
     pollarg.request = FD_POLL_WR;
     r = poll_descriptors(1, &pollarg, READ_ANSW_TIMEOUT*1000);
     if ( r <= 0 ) goto done;
     ssended = sended;
-    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 	sf |= RQ_HAS_BANDWIDTH;
     if ( convert_from_chunked )
 	sf |= RQ_CONVERT_FROM_CHUNKED;
     if ( IS_HUPED(&pollarg) )
 	goto done;
-    if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, NULL, table)) != 0 ) {
+    if ( (r = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
 	my_xlog(LOG_HTTP|LOG_DBG, "send_data_from_obj(): send_data_from_buff_no_wait(): Send error: %m\n");
 	goto done;
     }
+    my_xlog(LOG_HTTP, "send_data_from_obj(): sended=%d, ssended=%d\n", sended, ssended);
     if ( rest_in_chunk == -1 )
 	goto done;
     if ( (state == OBJ_READY) && (sended == ssended) )
@@ -813,10 +927,15 @@ send_ready:
 	my_sleep(1);
 	goto go_again;
     }
-    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, sended-ssended);
+    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) update_transfer_rate(rq, sended-ssended);
+    if ( rq->sess_bw ) update_sess_transfer_rate(rq, sended-ssended);
+    rq->doc_sent += sended-ssended;
     goto go_again;
 
 done:
+#if	defined(HAVE_ZLIB)
+    if (rq->strmp) inflateEnd(rq->strmp);
+#endif
     return;
 }
 
@@ -1039,7 +1158,8 @@ ERRBUF ;
 	DECR_WRITERS(obj);
 	return;
     }
-    sf |= (rq->flags & RQ_HAS_BANDWIDTH);
+    IF_STRDUP(rq->tag, "TCP_MISS");
+    sf |= (rq->flags & (RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW));
     gettimeofday(&start_tv, NULL);
     if ( sso > 0) {
 	source_type = type;
@@ -1077,7 +1197,7 @@ ERRBUF ;
 	    ts.tv_sec  = tv.tv_sec;
 	    ts.tv_nsec = tv.tv_usec*1000;
 	    /* wait for answers */
-	    if ( pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
+	    if ( !new_qe->status && pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
 		/* failed */
 		my_xlog(LOG_HTTP|LOG_DBG, "fill_mem_obj(): icp timed out.\n");
 	    } else {
@@ -1131,13 +1251,15 @@ ERRBUF ;
 
     case SOURCE_DIRECT:
 	source="DIRECT";
-	strncpy(origin, obj->url.host, sizeof(origin));
+	strncpy(origin, obj->url.host, sizeof(origin)-1);
+	origin[sizeof(origin)-1] = 0;
 	break;
     case PEER_PARENT:
 	source="PARENT";
 	if ( parent_port ) {
 	    RDLOCK_CONFIG ;
-	    strncpy(origin, parent_host, sizeof(origin));
+	    strncpy(origin, parent_host, sizeof(origin)-1);
+	    origin[sizeof(origin)-1] = 0;
 	    IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
 	    if ( parent_auth ) rq->peer_auth = strdup(parent_auth);
 	    UNLOCK_CONFIG ;
@@ -1148,9 +1270,10 @@ ERRBUF ;
 		IF_FREE(rq->peer_auth); rq->peer_auth = NULL;
 		if ( peer->my_auth ) rq->peer_auth = strdup(peer->my_auth);
 		if ( peer->name )
-		    strncpy(origin, peer->name, sizeof(origin));
+		    strncpy(origin, peer->name, sizeof(origin)-1);
 		else
-		    strncpy(origin, "unknown_peer", sizeof(origin));
+		    strncpy(origin, "unknown_peer", sizeof(origin)-1);
+		origin[sizeof(origin)-1] = 0;
 	    }
 	    UNLOCK_CONFIG ;
 	}
@@ -1163,9 +1286,10 @@ ERRBUF ;
 	    IF_FREE(rq->peer_auth);  rq->peer_auth = NULL;
 	    if ( peer->my_auth ) rq->peer_auth = strdup(peer->my_auth);
 	    if ( peer->name )
-		strncpy(origin, peer->name, sizeof(origin));
+		strncpy(origin, peer->name, sizeof(origin)-1);
 	    else
-		strncpy(origin, "unknown_peer", sizeof(origin));
+		strncpy(origin, "unknown_peer", sizeof(origin)-1);
+	    origin[sizeof(origin)-1] = 0;
 	}
 	UNLOCK_CONFIG ;
 	break;
@@ -1249,11 +1373,11 @@ ERRBUF ;
 	if ( server_so > so ) maxfd = server_so;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
-	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
-		r = group_traffic_load(rq_to_group(rq));
+	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) ) {
+		r = traffic_load(rq);
 		tv.tv_sec = 0;tv.tv_usec = 0;
 		if ( r < 75 ) /* low load */
-		    goto ignore_bw_overload;
+		    goto ignore_gr_bw_overload;
 		else if ( r < 95 ) /* start to slow down */
 		    tv.tv_usec = 250000;
 		else if ( r < 100 )
@@ -1271,6 +1395,28 @@ ERRBUF ;
 		goto read_s;
 	    }
 
+	ignore_gr_bw_overload:
+	    if ( rq->sess_bw ) {
+		r = sess_traffic_load(rq);
+		tv.tv_sec = 0;tv.tv_usec = 0;
+		if ( r < 75 ) /* low load */
+		    goto ignore_bw_overload;
+		else if ( r < 95 ) /* start to slow down */
+		    tv.tv_usec = 250000;
+		else if ( r < 100 )
+		    tv.tv_usec = 500000;
+		else
+		    tv.tv_sec = MIN(3,r/100);
+		r = poll_descriptors(1, &pollarg[0],
+			tv.tv_sec*1000+tv.tv_usec/1000);
+		if ( r < 0 ) {
+		    obj->flags |= FLAG_DEAD;
+		    change_state(obj, OBJ_READY);
+		    goto error;
+		}
+		if ( r== 0 ) continue;
+		goto read_s;
+	    }
 	ignore_bw_overload:
 	    pollarg[1].fd = so;
 	    pollarg[1].request = FD_POLL_WR;
@@ -1296,7 +1442,7 @@ ERRBUF ;
 		so = -1;
 		goto client_so_closed;
 	    }
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 )
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
 		so = -1;
 	    if ( rest_in_chunk == -1 ) { /* was last chunk */
 		obj->state = OBJ_READY;
@@ -1305,6 +1451,7 @@ ERRBUF ;
 		goto done;
 	    }
 
+	    rq->doc_sent += sended-ssended;
 	    if ( !rc && (sended == ssended) ) {
 		if ( IS_READABLE(&pollarg[0]) || IS_HUPED(&pollarg[0]) )
 		    goto read_s;
@@ -1338,8 +1485,8 @@ ERRBUF ;
 		/* and wait again */
 		continue;
 	    }
-
-	    if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
+	    if ( rq->flags & (RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) update_transfer_rate(rq, sended-ssended);
+	    if ( rq->sess_bw) update_sess_transfer_rate(rq, sended-ssended);
 	    if ((obj->flags & ANSW_KEEP_ALIVE) && obj->content_length) {
 		/* e.g. www.securityfocus.com answer with Connection: Keep-Alive
 		 * even if requested "Close"
@@ -1417,8 +1564,10 @@ ERRBUF ;
 		struct pollarg pollarg;
 		int	rc;
 
-		if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+		if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 		    SLOWDOWN ;
+		if ( pass%2 && rq->sess_bw )
+		    SLOWDOWN_SESS ;
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 		pollarg.fd = so;
 		pollarg.request = FD_POLL_WR;
@@ -1427,11 +1576,13 @@ ERRBUF ;
 		if ( IS_HUPED(&pollarg) )
 		    goto done;
 		ssended = sended;
-		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 )
+		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
 		    so = -1;
 		if ( ssended == sended )
 			goto done;
-		if ( rq->flags & RQ_HAS_BANDWIDTH) update_transfer_rate(rq, sended-ssended);
+		rq->doc_sent += sended-ssended;
+		if ( rq->flags & (RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) update_transfer_rate(rq, sended-ssended);
+		if ( rq->sess_bw ) update_sess_transfer_rate(rq, sended-ssended);
 	    }
 	    goto done;
 	}
@@ -1562,6 +1713,7 @@ ERRBUF ;
 				s = strdup(header->val);
 			    } else {
 				strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+				ct_buf[sizeof(ct_buf)-1] = 0;
 				s = ct_buf;
 			    }
 			    if ( s
@@ -1599,6 +1751,7 @@ ERRBUF ;
 		sended = obj->container->used;
 		send_hot_buff = obj->container;
 		send_hot_pos  = obj->container->used;
+		rq->doc_size = obj->content_length;
 
 		if ( TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
 		    sf |= RQ_CONVERT_FROM_CHUNKED;
@@ -1617,6 +1770,7 @@ ERRBUF ;
 			    writet(so, obj->container->next->data, 
 				   obj->container->next->used,
 				   READ_ANSW_TIMEOUT);
+			rq->doc_sent += obj->container->next->used;
 		    }
 		    pump_data(obj, rq, so, server_so);
 		    received = rq->received;
@@ -1634,6 +1788,7 @@ ERRBUF ;
 	    }
 	    received += r;
 	    obj->size += r;
+	    rq->doc_received += r;
 	    change_state_notify(obj);
 	}
     }
@@ -1682,7 +1837,6 @@ done1:
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
     if ( obj->status_code ) have_code = obj->status_code;
 	else		    have_code = 555;
-    IF_STRDUP(rq->tag, "TCP_MISS");
     IF_STRDUP(rq->hierarchy, source);
     IF_STRDUP(rq->source, origin);
     rq->code = have_code;
@@ -1738,6 +1892,7 @@ time_t			last_read = global_sec_timer;
 		    s = strdup(header->val);
 		} else {
 		    strncpy(ct_buf, header->val, sizeof(ct_buf)-1);
+		    ct_buf[sizeof(ct_buf)-1] = 0;
 		    s = ct_buf;
 		}
 		if ( s
@@ -1770,6 +1925,7 @@ time_t			last_read = global_sec_timer;
 	writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
 		free_container(hdrs_to_send);
 
+    rq->doc_size = obj->content_length;
     sended = obj->container->used;
     send_hot_buff = obj->container;
     send_hot_pos  = obj->container->used;
@@ -1777,7 +1933,7 @@ time_t			last_read = global_sec_timer;
     if ( TEST(downgrade_flags, UNCHUNK_ANSWER) ) {
 	sf |= RQ_CONVERT_FROM_CHUNKED;
     }
-    if (TEST(rq->flags, RQ_HAS_BANDWIDTH)) sf |= RQ_HAS_BANDWIDTH;
+    if (TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) sf |= RQ_HAS_BANDWIDTH;
     if ( !(obj->flags & ANSW_NO_STORE) )
 	obj->flags &= ~ANSW_NO_CACHE;
     answer = xmalloc(ANSW_SIZE+1, "continue_load(): 1");
@@ -1797,8 +1953,30 @@ time_t			last_read = global_sec_timer;
 	if ( server_so > so ) maxfd = server_so;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
-	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
-		r = group_traffic_load(rq_to_group(rq));
+	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) ) {
+		r = traffic_load(rq);
+		tv.tv_sec = 0;tv.tv_usec = 0;
+		if ( r < 75 ) /* low load */
+		    goto ignore_gr_bw_overload;
+		else if ( r < 95 ) /* start to slow down */
+		    tv.tv_usec = 250000;
+		else if ( r < 100 )
+		    tv.tv_usec = 500000;
+		else
+		    tv.tv_sec = MIN(2, r/100);
+		r = poll_descriptors(1, &pollarg[0], tv.tv_sec*1000+tv.tv_usec/1000);
+		if ( r < 0 ) {
+		    obj->flags |= FLAG_DEAD;
+		    change_state(obj, OBJ_READY);
+		    goto error;
+		}
+		if ( r== 0 ) continue;
+		goto read_s;
+	    }
+
+	ignore_gr_bw_overload:
+	    if ( rq->sess_bw ) {
+		r = sess_traffic_load(rq);
 		tv.tv_sec = 0;tv.tv_usec = 0;
 		if ( r < 75 ) /* low load */
 		    goto ignore_bw_overload;
@@ -1807,7 +1985,7 @@ time_t			last_read = global_sec_timer;
 		else if ( r < 100 )
 		    tv.tv_usec = 500000;
 		else
-		    tv.tv_sec = MIN(2, r/100);
+		    tv.tv_sec = MIN(3,r/100);
 		r = poll_descriptors(1, &pollarg[0], tv.tv_sec*1000+tv.tv_usec/1000);
 		if ( r < 0 ) {
 		    obj->flags |= FLAG_DEAD;
@@ -1843,7 +2021,7 @@ time_t			last_read = global_sec_timer;
 		goto are_we_alone;
 	    }
 	    ssended = sended;
-	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 ) {
+	    if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 ) {
 		so = -1;
 		goto are_we_alone;
 	    }
@@ -1867,6 +2045,10 @@ time_t			last_read = global_sec_timer;
 		change_state(obj, OBJ_READY);
 		goto done;
 	    }
+	    rq->doc_sent += sended-ssended;
+	    if ( rq->flags & (RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW))
+		update_transfer_rate(rq, sended-ssended);
+	    if ( rq->sess_bw) update_sess_transfer_rate(rq, sended-ssended);
 	    if ( TEST(obj->flags, ANSW_KEEP_ALIVE) && obj->content_length) {
 		if ( sended >= obj->container->used + obj->content_length ) {
 		    change_state(obj, OBJ_READY);
@@ -1926,8 +2108,10 @@ time_t			last_read = global_sec_timer;
 		struct pollarg  pollarg;
 		int		rc;
 
-		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
+		if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 		    SLOWDOWN ;
+		if ( rq->sess_bw && pass%2 )
+		    SLOWDOWN_SESS ;
 		pollarg.fd = so;
 		pollarg.request = FD_POLL_WR;
 		tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
@@ -1936,11 +2120,13 @@ time_t			last_read = global_sec_timer;
 		if ( IS_HUPED(&pollarg) )
 		    goto done;
 		ssended = sended;
-		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table)) != 0 )
+		if ( (rc = send_data_from_buff_no_wait(so, &send_hot_buff, &send_hot_pos, &sended, &rest_in_chunk, sf, obj, table, rq)) != 0 )
 		    so = -1;
 		if ( ssended == sended )
 		    goto done;
-		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH)) update_transfer_rate(rq, sended-ssended);
+		rq->doc_sent += sended-ssended;
+		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW)) update_transfer_rate(rq, sended-ssended);
+		if ( rq->sess_bw ) update_sess_transfer_rate(rq, sended-ssended);
 	    }
 	    goto done;
 	}
@@ -1952,6 +2138,7 @@ time_t			last_read = global_sec_timer;
 	    change_state(obj, OBJ_READY);
 	    goto error;
 	}
+	rq->doc_received += r;
 	received += r;
 	obj->size += r;
 	obj->state = OBJ_INPROGR;
@@ -2019,7 +2206,7 @@ do_it:
    recode	 - recode table if we do charset conversion on the fly
 */
 int
-send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, unsigned int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
+send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, unsigned int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table, struct request *rq)
 {
 int		r, to_send, cz_here, faked_sent, chunk_size, ss, sp;
 struct	buff	*b = *hot;
@@ -2027,6 +2214,20 @@ char		*cb, *ce, *cd;
 char		ch_sz[32];	/* buffer to collect chunk size	*/
 u_char		recode_buff[2048];
 char		*source;
+
+    /* first, send decoded content if present */
+send_decoded:
+    if ( rq && rq->decoding_buff && (rq->decoded_beg < rq->decoded_end ) ) {
+	r = send(so, rq->decoded_beg, rq->decoded_end-rq->decoded_beg, 0);
+	if ( r == -1 ) {
+	    if ( errno == EWOULDBLOCK ) return(0);
+	    return(-1);
+	}
+	rq->decoded_beg += r;
+	if ( rq->decoded_end < rq->decoded_beg )
+	    return(0);
+	/* if all decoding_buff sent, fill it again */
+    }
 
     if ( !*hot )
 	return(-1);
@@ -2038,6 +2239,109 @@ char		*source;
 	goto send_chunked;
 
 do_it:
+#if	defined(HAVE_ZLIB)
+    if ( rq && obj
+	    && TEST(rq->flags, RQ_CONVERT_FROM_GZIPPED)
+	    && !rq->inflate_started
+	    && rq->decoding_buff ) {
+	/* we must process gzip header here */
+	unsigned char	gzheader[512];
+	struct	buff	*gzb = obj->container, *tgzb = obj->container;
+	int		gzhlen = 0, left_to_copy, rc;
+	unsigned char	gzflags;
+
+	if ( gzb && gzb->next ) gzb = gzb->next;
+	while ( gzb && (gzhlen <= sizeof(gzheader) ) ) {
+	    left_to_copy = MIN(gzb->curr_size, sizeof(gzheader) - gzhlen);
+	    memcpy(gzheader+gzhlen, gzb->data, left_to_copy);
+	    gzhlen += left_to_copy;
+	    gzb = gzb->next;
+	}
+	if ( gzhlen >= 10 ) {
+	    /* we can analyze it, as 10 is minimal gzip header len */
+	    if ( !(gzheader[0] == 0x1f && gzheader[1] == 0x8b)
+	    	|| gzheader[2] != Z_DEFLATED ) {
+		/* wrong magic or method*/
+		CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
+		goto do_it;
+	    }
+	    gzflags = gzheader[3];
+	    if ( gzflags ) {
+		/* I don't want to have deal with			*/
+		/* must be fixed if any server will send any flags	*/
+		/* with gzipped content					*/
+		CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
+		goto do_it;
+	    }
+	} else
+	    return(0); /* we need more data */
+	/* gzheader contain begin of the gzipped content, we can start	*/
+	rq->strm.next_in = gzheader + 10 ;
+	rq->strm.avail_in = gzhlen  - 10 ;
+	rq->strm.next_out = (unsigned char*)rq->decoding_buff;
+	rq->strm.avail_out = DECODING_BUF_SZ;
+	rq->strm.total_out = 0;
+	rc = inflate(rq->strmp, Z_SYNC_FLUSH);
+	if ( rc == Z_OK || rc ==  Z_STREAM_END) {
+	    int		moved_far, count; /* how much inflated	*/
+
+	    if ( rc == Z_OK )
+		moved_far = rq->strm.total_in + 10;
+	      else
+		moved_far = rq->strm.avail_in + 10;
+	    /* find hotbuf and offset again		*/
+	    if ( tgzb && tgzb->next )
+		    tgzb = tgzb->next;
+		else {
+		    /* something wrong						*/
+		    my_xlog(LOG_SEVERE, "Something vrong in ungzip\n");
+		    CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
+		    goto do_it;
+		}
+	    count = 0;
+	    while ( tgzb ) {
+		if ( count + tgzb->curr_size > moved_far )
+		    break;
+		tgzb = tgzb->next;
+	    }
+	    if ( !tgzb ) {
+		/* something wrong						*/
+		my_xlog(LOG_SEVERE, "Something vrong in ungzip\n");
+		CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
+		goto do_it;
+	    }
+	    *sended += moved_far ;
+	    *pos = moved_far - count ;
+	    *hot = tgzb;
+	    if (rq->decoding_buff) {
+		rq->decoded_beg=rq->decoding_buff;
+		rq->decoded_end=rq->decoding_buff + rq->strm.total_out;
+		if ( table ) {
+		    u_char	*s, *d;
+		    int		i;
+	
+		    s = (u_char*)rq->decoding_buff;
+		    d = (u_char*)rq->decoding_buff;
+		    i = 0;
+		    while ( i < rq->strmp->total_out ) {
+			if ( *s >= 128 )
+			    *d = table[*s-128];
+			else
+			    *d = *s;
+			s++;d++;
+			i++;
+		    }
+		}
+	    }
+	    rq->inflate_started = TRUE;
+	    goto send_decoded;
+	} else {
+	    /* something wrong						*/
+	    CLR(rq->flags, RQ_CONVERT_FROM_GZIPPED);
+	    goto do_it;
+	}
+    }
+#endif
     to_send = b->used - *pos;
     if ( !to_send ) {
 	if ( !b->next ) return(0);
@@ -2055,8 +2359,53 @@ do_it:
      *	 chunks
      *  send no more than 2048 bytes anyway. large writes apply high load on system
      **/
-    if ( TEST(flags, RQ_HAS_BANDWIDTH) ) to_send = MIN(to_send, 512);
-	else				 to_send = MIN(to_send, 2048);
+    if ( TEST(flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
+		to_send = MIN(to_send, 512);
+	else	to_send = MIN(to_send, 2048);
+
+#if	defined(HAVE_ZLIB)
+    if ( rq && TEST(rq->flags, RQ_CONVERT_FROM_GZIPPED) && rq->strmp ) {
+	int	rc;
+	source = (b->data+*pos);
+	rq->strmp->next_in  = (unsigned char*)source;
+	rq->strmp->avail_in = to_send;
+	rq->strmp->total_in = 0;
+	rq->strmp->next_out = (unsigned char*)rq->decoding_buff;
+	rq->strmp->avail_out= DECODING_BUF_SZ;
+	rq->strmp->total_out = 0;
+	rc = inflate(rq->strmp, Z_SYNC_FLUSH);
+	if ( (rc != Z_OK) && (rc != Z_STREAM_END) ) {
+	    my_xlog(LOG_SEVERE, "inflate: %d\n", rc);
+	    return(-1);
+	}
+	if ( rc == Z_OK ) {
+	    *pos += rq->strmp->total_in;
+	    *sended += rq->strmp->total_in;
+	} else { /* rc == Z_STREAM_END */
+	    *pos += rq->strmp->avail_in;
+	    *sended += rq->strmp->avail_in;
+	}
+	rq->decoded_beg = rq->decoding_buff;
+	rq->decoded_end = rq->decoding_buff + rq->strmp->total_out;
+	if ( table ) {
+	    u_char	*s, *d;
+	    int		i;
+
+	    s = (u_char*)rq->decoding_buff;
+	    d = (u_char*)rq->decoding_buff;
+	    i = 0;
+	    while ( i < rq->strmp->total_out ) {
+		if ( *s >= 128 )
+		    *d = table[*s-128];
+		else
+		    *d = *s;
+		s++;d++;
+		i++;
+	    }
+	}
+	goto send_decoded;
+    }
+#endif
 
     if ( table ) {
 	u_char *s, *d;
@@ -2078,16 +2427,20 @@ do_it:
 	source = b->data+*pos;
 
     r = send(so, source, to_send, 0);
-    if ( (r < 0) && (ERRNO == EWOULDBLOCK) ) return(0);
-    if ( TEST(flags, RQ_HAS_BANDWIDTH) && (r>0) ) {
+    if ( (r < 0) && (ERRNO == EWOULDBLOCK) ) {
+	my_xlog(LOG_HTTP,"send_data_from_buff_no_wait(): EWOULDBLOCK.\n");
+	return(0);
+    }
+    if ( TEST(flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) && (r>0) ) {
 	*pos += r; *sended += r;
 	return(0);
     }
     if ( r < 0 )
 	return(r);
     *pos += r; *sended += r;
-    if ( r < to_send ) /* it can't accept more data now */
+    if ( r < to_send ) {/* it can't accept more data now */
 	return(0);
+    }
     goto do_it;
 
 send_chunked:
@@ -2194,7 +2547,7 @@ do_it_chunked:
 	    my_xlog(LOG_NOTICE|LOG_DBG|LOG_INFORM, "send_data_from_buff_no_wait(): What the fuck2? to_send = %d\n", to_send);
 	    return(-1);
 	}
-	if ( TEST(flags, RQ_HAS_BANDWIDTH) ) to_send = MIN(to_send, 512);
+	if ( TEST(flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) ) to_send = MIN(to_send, 512);
 	   else				     to_send = MIN(to_send, 2048);
 	if ( table ) {
 	    u_char *s, *d;
@@ -2224,7 +2577,7 @@ do_it_chunked:
 	    return(r);
 	}
 	*pos += r; *sended += r; *rest_in_chunk -= r;
-	if ( TEST(flags, RQ_HAS_BANDWIDTH) && *rest_in_chunk )
+	if ( TEST(flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) && *rest_in_chunk )
 	    /* we will return (to recalculate traffic load) only when we
 	       have something to send
 	    */
@@ -2576,6 +2929,7 @@ int
 peer_connect(int client_so, struct sockaddr_in *peer_sa, struct request *rq)
 {
 int 			server_so = -1, r;
+struct	peer		*peer;
 ERRBUF ;
 
     my_xlog(LOG_HTTP|LOG_DBG, "Connecting to peer\n");
@@ -2591,6 +2945,46 @@ ERRBUF ;
 	say_bad_request(client_so, "Can't connect to parent", STRERROR_R(ERRNO, ERRBUFS),
 			ERR_TRANSFER, rq);
 	CLOSE(server_so);
+	RDLOCK_CONFIG ;
+	peer = peer_by_http_addr(peer_sa);
+	if ( peer ) {
+	    if ( peer->state == PEER_UP ) {
+		peer->down_time = global_sec_timer;
+		peer->state = PEER_DOWN;
+		/* we will avoid connect to this server some time */
+	    }
+	}
+	UNLOCK_CONFIG ;
+	return(-1);
+    }
+    return(server_so);
+}
+
+int
+peer_connect_silent(int client_so, struct sockaddr_in *peer_sa, struct request *rq)
+{
+int 			server_so = -1, r;
+struct	peer		*peer;
+
+    my_xlog(LOG_HTTP|LOG_DBG, "Connecting to peer\n");
+    server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if ( server_so == -1 ) {
+	return(-1);
+    }
+    bind_server_so(server_so, rq);
+    r = connect(server_so, (struct sockaddr*)peer_sa, sizeof(*peer_sa));
+    if ( r == -1 ) {
+	CLOSE(server_so);
+	RDLOCK_CONFIG ;
+	peer = peer_by_http_addr(peer_sa);
+	if ( peer ) {
+	    if ( peer->state == PEER_UP ) {
+		peer->down_time = global_sec_timer;
+		peer->state = PEER_DOWN;
+		/* we will avoid connect to this server some time */
+	    }
+	}
+	UNLOCK_CONFIG ;
 	return(-1);
     }
     return(server_so);
@@ -2681,12 +3075,14 @@ int	via_inserted = FALSE;
 	char	log_pass[1024], *b64e;
 	strncpy(log_pass, rq->url.login, sizeof(log_pass)-1);
 	strncat(log_pass, ":", sizeof(log_pass) - strlen(log_pass) - 1);
+	log_pass[sizeof(log_pass)-1] = 0;
 	if ( rq->url.password )
 	    strncat(log_pass, rq->url.password, sizeof(log_pass) - strlen(log_pass) - 1);
 	b64e = base64_encode(log_pass);
 	if ( b64e ) {
-	    strncpy(log_pass, "Basic ", sizeof(log_pass));
+	    strncpy(log_pass, "Basic ", sizeof(log_pass)-1);
 	    strncat(log_pass, b64e, sizeof(log_pass) - strlen(log_pass) -1 );
+	    log_pass[sizeof(log_pass)-1] = 0;
 	    xfree(b64e);
 	    fav = format_av_pair("Authorization:", log_pass);
 	    if ( fav ) {
@@ -2918,7 +3314,9 @@ downgrade(struct request *rq, struct mem_obj *obj)
 {
 int	res = 0;
 char	*transfer_encoding = NULL;
-
+#if	defined(HAVE_ZLIB)
+char	*content_encoding = NULL;
+#endif	/* HAVE_ZLIB */
     if ( (rq->http_major  < obj->httpv_major) ||
 	 (rq->http_minor  < obj->httpv_minor) ) {
 
@@ -2930,6 +3328,16 @@ char	*transfer_encoding = NULL;
 	    res |= UNCHUNK_ANSWER;
 	}
     }
+#if	defined(HAVE_ZLIB)
+    content_encoding = attr_value(obj->headers, "Content-Encoding");
+    if ( content_encoding && !strncasecmp(content_encoding, "gzip", 4) ) {
+	/* we ungzip if useragent won't accept gzip	*/
+	char	*ua_accept = attr_value(rq->av_pairs, "accept-encoding");
+
+	if ( !ua_accept || !(strstr(ua_accept, "gzip")) )
+	    res |= UNGZIP_ANSWER;
+    }
+#endif
     return(res);
 }
 
@@ -3124,6 +3532,7 @@ struct	pollarg pollarg[2];
 	    if ( r <= 0 )
 		goto done;
 	    if ( rq ) rq->received += r;
+	    if ( rq ) rq->doc_received += r;
 	    if ( rq->cs_to_client_table
 			&& rq->cs_to_client_table->list
 			&& rq->cs_to_client_table->list->string)
@@ -3132,9 +3541,12 @@ struct	pollarg pollarg[2];
 	    else
 		r = writet(so, b, r, READ_ANSW_TIMEOUT);
 	    if ( r < 0 ) goto done;
-	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+	    if ( rq ) rq->doc_sent += r;
+	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH|RQ_HAVE_PER_IP_BW) )
 		update_transfer_rate(rq, r);
-	    if ( (++pass)%2 ) SLOWDOWN ;
+	    if ( rq->sess_bw )
+		update_sess_transfer_rate(rq, r);
+	    if ( (++pass)%2 ) {SLOWDOWN;SLOWDOWN_SESS} ;
 	}
 	if ( IS_READABLE(&pollarg[1]) ) {
 	    char b[1024];

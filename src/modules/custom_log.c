@@ -20,9 +20,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "../oops.h"
 #include "../modules.h"
 
-#define	RDLOCK_CL	rwl_rdlock(&cloglock)
-#define	WRLOCK_CL	rwl_wrlock(&cloglock)
-#define	UNLOCK_CL	rwl_unlock(&cloglock)
+#define	RDLOCK_CL	pthread_rwlock_rdlock(&cloglock)
+#define	WRLOCK_CL	pthread_rwlock_wrlock(&cloglock)
+#define	UNLOCK_CL	pthread_rwlock_unlock(&cloglock)
 
 #define	LOGBUFSZ	64000
 #define	FLAG_BUFF	1
@@ -40,7 +40,7 @@ typedef	struct	logfile_ {
 } logfile_t;
 
 static	logfile_t	*logfiles, *current_config = NULL;
-static	rwl_t		cloglock;
+static	pthread_rwlock_t	cloglock;
 static	void		close_logfiles(void);
 static	void		process_log_record(logfile_t*, int, struct request*, struct mem_obj*);
 
@@ -140,16 +140,6 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 		    s = ++ss;
 	        }
 		switch ( *s ) {
-		case 'B':
-		case 'b':
-		    /* bytes sent (actualy received)	*/
-		    {
-		    char w[20];
-		    sprintf(w,"%u", rq->received);
-		    strncat(d, w, sizeof(res)-(d-res)-2);
-		    d+= MIN(strlen(w), sizeof(res)-(d-res)-2) - 1;
-		    }
-		    break;
 		case 'A':
 		    /* local host (ip)			*/
 		    w = my_inet_ntoa(&rq->my_sa);
@@ -169,6 +159,32 @@ process_log_record(logfile_t *curr, int elapsed, struct request *rq,
 			strncat(d, w, sizeof(res)-(d-res)-2);
 			d+= MIN(strlen(w), sizeof(res)-(d-res)-2) - 1;
 			free(w);
+		    }
+		    break;
+		case 'B':
+		case 'b':
+		    /* bytes sent (actualy received)	*/
+		    {
+		    char w[20];
+		    sprintf(w,"%u", rq->received);
+		    strncat(d, w, sizeof(res)-(d-res)-2);
+		    d+= MIN(strlen(w), sizeof(res)-(d-res)-2) - 1;
+		    }
+		    break;
+		case 'd':
+		    {
+			struct sockaddr_in	da;
+			if ( rq->source && !str_to_sa(rq->source, (struct sockaddr*)&da) ) {
+			    w = my_inet_ntoa(&da);
+			    if ( w ) {
+				strncat(d, w, sizeof(res)-(d-res)-2);
+				d+= MIN(strlen(w), sizeof(res)-(d-res)-2) - 1;
+				free(w);
+			    }
+			} else {
+			    strncat(d, "-", sizeof(res)-(d-res)-2);
+			    d+= MIN(1, sizeof(res)-(d-res)-2) - 1;
+			}
 		    }
 		    break;
 		case 'i':
@@ -435,7 +451,7 @@ mod_load()
 {
     printf("CustomLog started\n");
     logfiles = NULL;
-    rwl_init(&cloglock);
+    pthread_rwlock_init(&cloglock, NULL);
     return(MOD_CODE_OK);
 }
 

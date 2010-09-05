@@ -58,24 +58,48 @@ struct	listener_module	oopsctl_mod = {
 	process_call
 };
 
-static	rwl_t		oopsctl_config_lock;
+static	pthread_rwlock_t	oopsctl_config_lock;
 
 static	char		socket_path[MAXPATHLEN];
 static	int		html_refresh;
 
 int	oopsctl_so	= -1;
 
-#define	WRLOCK_OOPSCTL_CONFIG	rwl_wrlock(&oopsctl_config_lock)
-#define	RDLOCK_OOPSCTL_CONFIG	rwl_rdlock(&oopsctl_config_lock)
-#define	UNLOCK_OOPSCTL_CONFIG	rwl_unlock(&oopsctl_config_lock)
+#define	WRLOCK_OOPSCTL_CONFIG	pthread_rwlock_wrlock(&oopsctl_config_lock)
+#define	RDLOCK_OOPSCTL_CONFIG	pthread_rwlock_rdlock(&oopsctl_config_lock)
+#define	UNLOCK_OOPSCTL_CONFIG	pthread_rwlock_unlock(&oopsctl_config_lock)
 
 static	void	open_oopsctl_so(void);
+
+typedef struct	rq_l_ {
+	char			*conn;
+	char			*url;
+	char			*info;
+	char			*tag;
+	int			age;
+	struct  rq_l_		*next;
+} rq_list_t;
+
+#define	RQ_OP_AGE_GT	1
+#define	RQ_OP_AGE_LT	2
+#define	RQ_OP_DST	3
+#define	RQ_OP_SRC	4
+#define	RQ_OP_GRP	5
+typedef	struct	rq_op_ {
+	char	op;
+	union	{
+		int		   INT;
+		char		   *CHAR;
+		struct sockaddr_in ADR;
+	} data;
+	struct  rq_op_ *next;
+} rq_op_t;
 
 int
 mod_load()
 {
     printf("Oopsctl started\n");
-    rwl_init(&oopsctl_config_lock);
+    pthread_rwlock_init(&oopsctl_config_lock, NULL);
     socket_path[0] = 0;
     html_refresh = 0;
     return(MOD_CODE_OK);
@@ -222,7 +246,7 @@ char			ctime_buf[30] = "";
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
 			(uptime%3600)/60);
     write(so, buf, strlen(buf));
-    CTIME_R(&global_sec_timer, ctime_buf, sizeof(ctime_buf)-1);
+    CTIME_R((time_t*)&global_sec_timer, ctime_buf, sizeof(ctime_buf)-1);
     sprintf(buf,  "Last update  : %s", ctime_buf);
     write(so, buf, strlen(buf));
     sprintf(buf, "Clients      : %d (max: %d)\n", (int)clients_number, (int)oops_stat.clients_max);
@@ -471,7 +495,7 @@ char			ctime_buf[30];
 			uptime, uptime/(24*3600), (uptime%(24*3600))/3600,
 			(uptime%3600)/60);
     write(so, buf, strlen(buf));
-    CTIME_R(&global_sec_timer, ctime_buf, sizeof(ctime_buf)-1);
+    CTIME_R((time_t*)&global_sec_timer, ctime_buf, sizeof(ctime_buf)-1);
     sprintf(buf,  "<tr><td>Last update<td>%s", ctime_buf);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Clients<td>%d (max: %d)\n", (int)clients_number, (int)oops_stat.clients_max);
@@ -604,6 +628,9 @@ char			ctime_buf[30];
 	    break;
 	case(MODULE_PRE_BODY):
 	    type = "Document body begins";
+	    break;
+	case(MODULE_DB_API):
+	    type = "DB Interface";
 	    break;
 	default:
 	    type = "Unknown";
@@ -763,6 +790,203 @@ char	vbuf[80], *v = vbuf;
 }
 
 int
+rq_match_ops(struct request *rq, rq_op_t *ops)
+{
+    if ( !rq ) return(FALSE);
+    while(ops) {
+	switch ( ops->op) {
+	case RQ_OP_AGE_LT:
+		if ( (global_sec_timer - rq->request_time) >= ops->data.INT )
+			return(FALSE);
+		break;
+	case RQ_OP_AGE_GT:
+		if ( (global_sec_timer - rq->request_time) <= ops->data.INT )
+			return(FALSE);
+		break;
+	case RQ_OP_SRC:
+		/* compare with client addr */
+		if ( memcmp(&ops->data.ADR.sin_addr,
+			     &rq->client_sa.sin_addr,
+			     sizeof(ops->data.ADR.sin_addr)) )
+			return(FALSE);
+		break;
+	case RQ_OP_DST:
+		/* compare with request host */
+		if (    ( rq->url.host == NULL )
+		     || ( ops->data.CHAR == NULL) )
+			return(FALSE);
+		if ( strcasecmp(rq->url.host, ops->data.CHAR) ) return(FALSE);
+		break;
+	}
+	ops = ops->next;
+    }
+    return(TRUE);
+}
+
+int
+process_requests(int so, char *command)
+{
+int		i;
+struct  request *rq;
+rq_list_t	*rq_list = NULL, *last_rq = NULL, *new;
+char		buf[512];
+rq_op_t		*ops = NULL, *last_op = NULL, *new_op;
+char		*t, *tok, *lasts;
+
+    /* parse command */
+    t = command+9 /*strlen("requests=") */;
+    while ( (tok = strtok_r(t, " ", &lasts)) ) {
+	t = NULL;
+	if ( !strncasecmp(tok, "age>", 4) ) {
+	    new_op = calloc(sizeof(*new_op),1);
+	    new_op->op       = RQ_OP_AGE_GT;
+	    new_op->data.INT = atoi(tok+4);
+	    if ( last_op ) {
+		last_op->next = new_op;
+		last_op = new_op;
+	    } else {
+		last_op = ops = new_op;
+	    }
+	}
+	if ( !strncasecmp(tok, "age<", 4) ) {
+	    new_op = calloc(sizeof(*new_op),1);
+	    new_op->op       = RQ_OP_AGE_LT;
+	    new_op->data.INT = atoi(tok+4);
+	    if ( last_op ) {
+		last_op->next = new_op;
+		last_op = new_op;
+	    } else {
+		last_op = ops = new_op;
+	    }
+	}
+	if ( !strncasecmp(tok, "dst=", 4) ) {
+	    new_op = calloc(sizeof(*new_op),1);
+	    new_op->op       = RQ_OP_DST;
+	    new_op->data.CHAR = strdup(tok+4);
+	    if ( last_op ) {
+		last_op->next = new_op;
+		last_op = new_op;
+	    } else {
+		last_op = ops = new_op;
+	    }
+	}
+	if ( !strncasecmp(tok, "src=", 4) ) {
+	    new_op = calloc(sizeof(*new_op),1);
+	    new_op->op       = RQ_OP_SRC;
+	    if ( str_to_sa(tok+4, (struct sockaddr *)&new_op->data.ADR) ) {
+		my_xlog(LOG_SEVERE, "Failed to resolve %s\n", tok+4);
+	    }
+	    if ( last_op ) {
+		last_op->next = new_op;
+		last_op = new_op;
+	    } else {
+		last_op = ops = new_op;
+	    }
+	}
+    }
+    /* collect all current requests in list */
+    for(i=0;i<RQ_HASH_SIZE;i++) {
+	pthread_mutex_lock(&rq_hash[i].lock);
+	rq = rq_hash[i].link;
+	while ( rq ) {
+	    char	*cliaddr = NULL;
+	    char	*myaddr = NULL;
+	    int		rq_time;
+
+	    if ( rq_match_ops(rq, ops) == FALSE ) {
+		rq = rq->next;
+		continue;
+	    }
+	    new = calloc(sizeof(*new),1);
+	    if ( !new ) goto done;
+	    if ( !last_rq ) {
+		last_rq = rq_list = new;
+	    } else {
+		last_rq->next = new;
+		last_rq = new;
+	    }
+	    cliaddr = my_inet_ntoa(&rq->client_sa);
+	    myaddr = my_inet_ntoa(&rq->my_sa);
+	    if ( cliaddr && myaddr ) {
+		sprintf(buf, " %s:%d->%s:%d\n",
+			cliaddr, ntohs((rq->client_sa).sin_port),
+			myaddr, ntohs((rq->my_sa).sin_port));
+	    }
+	    new->conn = strdup(buf);
+	    IF_FREE(cliaddr);
+	    IF_FREE(myaddr);
+	    if ( rq->tag ) {
+		sprintf(buf, " Tag: %s\n", rq->tag);
+		new->tag = strdup(buf);
+	    }
+	    buf[0] = 0;
+	    if ( rq->method ) {
+		strncat(buf, rq->method, sizeof(buf) - strlen(buf) - 2);
+		strncat(buf, " ", sizeof(buf) - strlen(buf) - 2);
+	    }
+	    if ( rq->url.proto ) {
+		strncat(buf, rq->url.proto, sizeof(buf) - strlen(buf) - 2);
+		strncat(buf, "://", sizeof(buf) - strlen(buf) - 2);
+	    }
+	    if ( rq->url.host ) {
+		strncat(buf, rq->url.host, sizeof(buf) - strlen(buf) - 2);
+	    }
+	    if ( rq->url.path ) {
+		strncat(buf, rq->url.path, sizeof(buf) - strlen(buf) - 2);
+	    }
+	    new->url = strdup(buf);
+	    rq_time = new->age = global_sec_timer - rq->request_time;
+	    if ( rq_time < 0 ) rq_time = 0;
+	    sprintf(buf, " Doc size: %d,\n received: %d Bytes (%.2f B/s)\n sent:     %d Bytes (%.2f B/s)\n",
+		rq->doc_size, rq->doc_received,
+				rq_time?(1e0*rq->doc_received/rq_time):0,
+			      rq->doc_sent,
+			        rq_time?(1e0*rq->doc_sent/rq_time):0);
+	    new->info = strdup(buf);
+	    rq = rq->next;
+	}
+	pthread_mutex_unlock(&rq_hash[i].lock);
+    }
+done:
+    last_rq = rq_list;
+    while (last_rq) {
+	new = last_rq->next;
+	if ( last_rq->url ) write(so, last_rq->url, strlen(last_rq->url));
+	write(so, "\n", 1);
+	if ( last_rq->conn ) write(so, last_rq->conn, strlen(last_rq->conn));
+	if ( last_rq->tag ) write(so, last_rq->tag, strlen(last_rq->tag));
+	if ( last_rq->info ) write(so, last_rq->info, strlen(last_rq->info));
+	sprintf(buf, " Rq. age: %d\n", last_rq->age>0?last_rq->age:0);
+	write(so, buf, strlen(buf));
+	write(so, "---\n",4);
+	last_rq = new;
+    }
+    while(ops) {
+	new_op = ops->next;
+	switch ( ops->op ) {
+	case RQ_OP_DST:
+	case RQ_OP_GRP:
+		free(ops->data.CHAR);
+		break;
+	default:
+		break;
+	}
+	free(ops);
+	ops = new_op;
+    }
+    while ( rq_list ) {
+	new = rq_list->next;
+	IF_FREE(rq_list->url);
+	IF_FREE(rq_list->tag);
+	IF_FREE(rq_list->conn);
+	IF_FREE(rq_list->info);
+	free(rq_list);
+	rq_list = new;
+    }
+    return(0);
+}
+
+int
 process_command(int so, char *command)
 {
     if ( !strcasecmp(command, "reconfigure") ) {
@@ -785,6 +1009,9 @@ process_command(int so, char *command)
     }
     if ( !strncasecmp(command, "verbosity=", 10) ) {
 	set_verbosity(so, command);
+    }
+    if ( !strncasecmp(command, "requests", 8) ) {
+	process_requests(so, command);
     }
     if ( !strcasecmp(command, "quit") ) {
 	return(0);

@@ -1,4 +1,4 @@
-char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.7 2000/07/14 07:51:11 igor Exp $";
+char *gnu_regex_rcs = "$Id: gnu_regex.c,v 1.1 2000/11/11 13:00:01 ai Exp $";
 #ifdef REGEX
 
 #define REGEX_MALLOC

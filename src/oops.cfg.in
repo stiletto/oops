@@ -66,7 +66,7 @@ statistics	@OOPS_LOCALSTATEDIR@/oops_statfile
 #  that cachable data from network came faster then we can save on disk)
 #  drop objects (without attempt to save on disk).
 ##
-mem_max		16m
+mem_max		64m
 
 ##
 #  Hint, how much cached objects keep in memory.
@@ -192,6 +192,7 @@ insert_via		yes
 #acl	LOCAL_NETWORKS	src_ip		include:@OOPS_SYSCONFDIR@/acl_local_networks
 #acl	BADNETWORKS	src_ip		192.168.10/24
 #acl	WORKTIME	time		Mon,Tue:Fri 0900:1800
+#acl	HTMLS		content_type	text/html
 acl	ADMINS		src_ip		127.0.0.1
 acl	PURGE		method		PURGE
 
@@ -232,6 +233,12 @@ stop_cache	cgi-bin
 #bind_acl	outname2 UKR
 
 ##
+#  Always check document freshness, but now on acl basis.
+# You can have several such lines.
+## This example will force to check freshness only for html documents.
+#always_check_freshness_acl	HTMLS
+
+##
 # line 'parent ....' will force all connections (except to destinations
 # in local-domain or local-networks) go through parent host
 ##
@@ -244,14 +251,26 @@ stop_cache	cgi-bin
 #parent_auth	login:password
 
 # ICP peer's
-#peer		proxy.paco.net	3128 3130 {
+#peer		proxy.paco.net	3128         3130 {
+##              ^^^ peer name   ^http port   ^icp port
+##		icp port can be 0, in which case we assume this is non-icp
+##		proxy. We assume that non-icp peer act like parent which
+##		answer MISS all th etime. If this peer refused connection
+##		then it goes down for 60 seconds - it doesn't take part in
+##		any peer-related decisions.
 #		sibling ;
 ## if this peer require login/password from your proxy
 #		my_auth	my_login:my_password;
 ## we will send requests for these domains
 #		allow	dstdomain * ;
 ## we will NOT send requests for these domains
-##		deny	dstdomain * ;
+#		deny	dstdomain * ;
+## we will send only requests matched to this acl
+#		peer_access	[!]ACL1 [!]ACL2
+## if (and only if) peer is not icp-capable, then , in case of fail we
+## leave failed peer alone for the down_timeout interval (in seconds).
+## Then we will try again
+#		down_timeout	60 ;
 #}
 
 #peer		proxy.gu.net	80 3130 {
@@ -307,6 +326,16 @@ group	paco	{
 # limit whole group to 8Kbytes per sec
 ##
 #	bandwidth	8k;
+
+##
+# limit each host 8Kbytes per sec
+##
+#	per_ip_bw	8k;
+
+##
+# limit connections number from each host
+#
+#	per_ip_conn	8;
 
 ##
 # limit request rate from this group (requests per second). This is crude,
@@ -420,6 +449,42 @@ module passwd_file {
 	template	@OOPS_SYSCONFDIR@/auth_template.html
 }
 
+module passwd_pgsql {
+	# proxy authentication using postgresql
+	# "Ivan B. Yelnikov" <bahek@khspu.ru>
+	#
+	# host - host where database live,
+	# user,password - login and password for database access
+	# database - database name
+	# select - file with request body
+	# template - file with html doc which user will receive
+	#	     during authentication
+        scheme          Basic
+        realm           oops
+        host            <host address/name>
+        user            <database_user>
+        password        <user_password>
+        database        <database_name>
+        select          @OOPS_SYSCONFDIR@/select.sql
+        template        @OOPS_SYSCONFDIR@/auth_template.html
+}
+
+module passwd_mysql {
+	# proxy authentication usin mysql
+	# "Ivan B. Yelnikov" <bahek@khspu.ru>
+	#
+	# look passwd_pgsql description
+	#
+        scheme          Basic
+        realm           oops
+        host            <host address/name>
+        user            <database_user>
+        password        <user_password>
+        database        <database_name>
+        select          @OOPS_SYSCONFDIR@/select.sql
+        template        @OOPS_SYSCONFDIR@/auth_template.html
+}
+
 module redir {
 	# file - regex rules.
 	# each line consist of one or two fields (separated with white space)
@@ -436,6 +501,9 @@ module redir {
 
 	file		@OOPS_SYSCONFDIR@/redir_rules
 	template	@OOPS_SYSCONFDIR@/redir_template.html
+##	mode control will redir rewrite url or send Location: header
+##	with new location. Values are 'rewrite' or 'bounce'
+#	mode		rewrite
 
 	# This module can process requests which come on http_port
 	# and/or on different port. For example, you wish oops
@@ -503,6 +571,7 @@ module	vary {
 ##
 ## %h -			remote ip address
 ## %A -			local ip address
+## %d -			ip address of source (peer or document server)
 ## %l -			remote logname from identd (not suported now)
 ## %U -			remote user (from 'Authorization' header)
 ## %u -			remote user (from proxy-auth)

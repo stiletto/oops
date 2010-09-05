@@ -46,11 +46,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	"getopt.h"
 #endif
 
+#if	defined(HAVE_ZLIB)
+  #include	<zlib.h>
+#endif
+
 #if	defined(SOLARIS)
 extern		int	getdomainname(char *, int);
 #include	<thread.h>
 #endif
 #include	<pthread.h>
+#if	!defined(HAVE_PTHREAD_RWLOCK_INIT)
+#include	"rwlock.h"
+#endif
 
 #include	<sys/types.h>
 #include	<sys/stat.h>
@@ -74,8 +81,12 @@ extern		int	seteuid(uid_t);
 #define		O_SUPPL		O_LARGEFILE
 #endif	/* _LARGE_FILE_API && WITH_LARGE_FILES */
 #else
+#if	!defined(TRUE)
 #define		TRUE		(1)
+#endif
+#if	!defined(FALSE)
 #define		FALSE		(0)
+#endif
 #define		O_SUPPL		 0
 #endif	/* _AIX */
 
@@ -93,8 +104,8 @@ extern		int	seteuid(uid_t);
 #undef		WUNTRACED
 #endif
 #include	<sys/ioctl.h>
-#include	<linux/fs.h>
-#endif         
+#include	<sys/mount.h>
+#endif
 
 #if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
 #include	<sys/poll.h>

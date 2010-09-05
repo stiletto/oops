@@ -1,4 +1,5 @@
-http://.*/.*banner.*
-http://.*xxx.*/			http://www.cnn.com/
+http://.*/.*banner.*		internal:nospam1x1
+http://.*/.*reklama.*		internal:nospam468x60
+xxx			http://www.northernlight.com/
 127.0.0.1/aaa			http://127.0.0.1/bbb
 127.0.0.1/bbb
