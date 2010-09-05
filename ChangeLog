@@ -1,0 +1,69 @@
+24.05.99 version 1.0c
+	24.05.99
+		module lang - handle all language things for
+		err.so and passwd_file.so
+	20.05.99
+		Authentication module passwd_file - proxy-authentication
+		using file with passwords.
+	10.05.99
+		Several memory leaks in reconfig procedure fixed.
+	29.04.99
+		Some code cleanup (too many warnings) - Ilia.
+		Added 'total hits' and storages_free to statistics
+	26.04.99
+	other: file statistics
+		some prob. with local-networks fixed.
+		For FreeBSD 2.2.7+ setsockopt(TCP_NODELAY) was excluded
+14.04.99 version 1.0b
+	http:
+		drop objects when memory usage become larger then mem_max -
+		this must stop unlimited memory growth under very heavy load
+	ftp:
+		workaround for servers which not send "226 connection closed"
+	config:
+		make install now works
+		some changes for slackware(gmtoff)-Ilia Zadorozhko <ilia@kyivstar.net>
+	modules:
+		first complete module err.c: customizable error messages with
+		national languages support.
+
+03.04.99 first public release 1.0a
+	config:
+		icp_timeout - configurable
+01.04.99
+	other:
+		resolving names like aaa.bbb.ccc. (dot at the end)
+30.04.99
+	http:
+		Added supp. for URLs like http://login:password@host/path
+	other:
+		goup->networks statement was broken when define more
+		then two networks... fixed.
+		fixed some prob. in configure
+24.03.99
+	other:
+	     db_cachesize to 1Meg
+	     correct access.log records for SIBLING/PARENT/DIRECT
+20.03.99
+	icp: Base functionality completed (process requests, send requests and
+	     process answers and timeouts). To add: process all other
+	     types of ICP messages.
+
+	http:fixed performance problem with POST when large data volume 
+	     attached to request (file uploads using POST) were first slowly
+	     read to memory and then sent. Fixed possible bof when reading
+	     chunk size, always send HTTP/1.0 to 1.0 clients when sending
+	     doc, received by request of 1.1 client.
+	other: minor decorations (version file, DB_VERSION_STRING...)
+
+12.03.99
+	http:
+	     сделана корректная отправка transfer-Encoding: chunked
+	     клиентам HTTP/1.0 (конвертация в не-chunked).
+	     в send_from_buff_no_wait максимальный размер для write
+	     установлен 2048. Раньше бывали write неограниченной длины, что
+	     грузило систему.
+	ftp:
+	     correct mime types. mime type определяется по расширению.
+	     Нужно что-то типа файла mimetypes b читать расширения/типы
+	     из него, а не использовать вкомпилированное.

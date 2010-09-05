@@ -1,0 +1,3 @@
+dbxenv suppress_startup_message 4.0
+ignore SIGLWP
+ignore SIGHUP

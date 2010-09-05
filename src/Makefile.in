@@ -1,0 +1,91 @@
+CC = @CC@
+LIBS = @LIBS@
+LDFLAGS = @LDFLAGS@
+INSTALL = @INSTALL@
+INSTALL_DATA = @INSTALL@ -m 644
+
+SRCS = oops.c lib.c run.c run_client.c common.c http_utils.c ftp_utils.c \
+	storage.c garbage_c.c  icp.c acl.c y.tab.c lex.yy.c \
+	rotate_logs.c clean_disk.c ssl.c list.c modules.c
+OBJS = oops.o lib.o run.o run_client.o common.o http_utils.o ftp_utils.o \
+	storage.o garbage_c.o  icp.o acl.o statistics.o list.o \
+	rotate_logs.o clean_disk.o ssl.o y.tab.o lex.yy.o modules.o
+
+SRCS+=@STRTOKSRC@
+OBJS+=@STRTOKOBJ@
+
+#CFLAGS = -Wall -ggdb -D_REENTRANT -D_POSIX_PTHREADS_SEMANTICS
+
+CFLAGS = @CFLAGS@
+
+.c.o:
+	${CC} -c ${CFLAGS} ${CDEFS} $<
+
+all:	oops
+	cd modules; make
+
+oops:	${OBJS}
+	${CC} ${CFLAGS} ${OBJS} ${LIBS} ${LDFLAGS} -o oops
+
+mkinstalldirs:
+	../mkinstalldirs @prefix@/oops @prefix@/oops/logs @prefix@/oops/DB @prefix@/oops/storages @prefix@/oops/tables @prefix@/oops/modules
+
+install: all mkinstalldirs
+	$(INSTALL) oops @prefix@/oops
+	$(INSTALL_DATA) oops.cfg @prefix@/oops
+	$(INSTALL_DATA) err_template.html @prefix@/oops
+	$(INSTALL_DATA) auth_template.html @prefix@/oops
+	$(INSTALL_DATA) passwd @prefix@/oops
+	if test "X@SOFLAGS@" != "X"; then \
+	for m in modules/*so ; do \
+		$(INSTALL) $$m @prefix@/oops/modules ; \
+	done; \
+	fi
+	for t in tables/* ; do \
+		$(INSTALL_DATA) $$t @prefix@/oops/tables ; \
+	done
+
+oops.o:		oops.c oops.h version.h
+lib.o:		lib.c oops.h
+run.o:		run.c oops.h
+run_client.o:	run_client.c oops.h modules.h
+http_utils.o:	http_utils.c oops.h
+ftp_utils.o:	ftp_utils.c oops.h
+garbage_c.o:	garbage_c.c oops.h
+acl.o:		acl.c oops.h
+malloc.o:	malloc.c
+storage.o:	storage.c oops.h
+icp.o:		icp.c oops.h
+rotate_logs.o:	rotate_logs.c oops.h
+clean_disk.o:	clean_disk.c oops.h
+ssl.o:		ssl.c oops.h
+statistics.o:	statistics.c oops.h
+list.o:		list.c llt.h oops.h
+modules.o:	modules.c modules.h
+version.h:	version
+		echo "#define VERSION \"" `cat version` "\""> version.h
+
+lex.yy.o: lex.yy.c y.tab.h oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c lex.yy.c
+
+lex.yy.c: parser.l
+	@LEX@ parser.l
+
+y.tab.c: parser.y
+	@YACC@ -d parser.y
+
+y.tab.o: y.tab.c oops.h
+	${CC} ${CFLAGS} ${CDEFS} -c y.tab.c
+
+malloc.o: malloc.c
+	${CC} ${CFLAGS} ${CDEFS} -DEBUG -c malloc.c
+
+
+clean:
+	rm -f *o lex.yy.c  y.tab.[ch] version.h oops
+
+cleandist:
+	rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln config.cache version.h oops
+
+lint:
+	lint -Ncheck=%all -Nlevel=4 ${CFLAGS} ${SRCS}

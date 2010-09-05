@@ -1,0 +1,22 @@
+CC = @CC@
+LIBS = @LIBS@
+CFLAGS = @CFLAGS@
+SOFLAGS = @SOFLAGS@
+
+all:	log_dummy.so err.so passwd_file.so lang.so
+
+log_dummy.so:	log_dummy.c ../modules.h
+	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) log_dummy.c -o log_dummy.so
+
+err.so:	err.c ../modules.h
+	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) err.c -o err.so
+
+lang.so:	lang.c ../modules.h
+	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) lang.c -o lang.so
+
+passwd_file.so:	passwd_file.c ../modules.h
+	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) passwd_file.c -o passwd_file.so
+
+clean:
+	rm -f *\.so
+

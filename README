@@ -1,0 +1,23 @@
+oops - http caching proxy server written with performance as primary goal
+
+It's main fetures
+
+1) fast start. It is ready to serve requests immediately after start,
+   check on-disk storages in background, while serving requests directly from
+   network.
+
+2) stable operation. I didn't see it core dumped over last few monthes.
+
+3) clean reconfiguration on SIGHUP - no broken sessions, new settings
+   applyed to new connections.
+
+4) easy-to-read/understand config file and acl's
+
+5) modular structure. Several module types exist: logging, access, output,
+   error reporting.
+
+6) objects are stored in large files: no file per object scheme.
+   these large files can be raw devices.
+
+You can contact author at address igor@paco.net
+

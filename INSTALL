@@ -1,0 +1,21 @@
+General procedure:
+
+1) ./configure
+
+2) make install
+
+3) cd /usr/local/oops (or whatever you choose with --prefix= during configure)
+
+4) vi oops.cfg - change settings (nameservers, path to storages, acl, peers,...)
+
+5) ./oops -z -c oops.cfg - format storages.
+
+6) ./oops -c oops.cfg    - run proxy
+
+
+Known problems:
+1) linux - Don't use MIT_PTHREADS. Use LinuxThreads and glibc later
+   than 2.0.7-19. Wrong thread library manifest itself in broken
+   connections.
+   Latest RedHat comes with right libraries. If you
+   have any info re other Linux distributions, please, send me info.

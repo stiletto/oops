@@ -1,0 +1,206 @@
+AC_INIT(src/oops.c)
+AC_CANONICAL_SYSTEM
+AC_PROG_CC
+AC_PROG_INSTALL
+AC_PROG_LEX
+AC_PROG_YACC
+
+AC_CHECK_HEADER(unistd.h)
+AC_CHECK_HEADER(pthread.h)
+AC_CHECK_HEADER(crypt.h, HAVE_CRYPT_H="-DHAVE_CRYPT_H", HAVE_CRYPT_H="")
+
+
+AC_MSG_CHECKING(for libdb.a)
+if test -r "/usr/local/BerkeleyDB/lib/libdb.a"; then
+    LIBDB_PATH="/usr/local/BerkeleyDB/lib"
+elif test -r "/usr/local/lib/libdb.a"; then
+    LIBDB_PATH="/usr/local/lib"
+elif test -r "/usr/lib/libdb.a"; then
+    LIBDB_PATH="/usr/lib"
+else
+    echo "You must have bsd DB package installed."
+    echo "Check it out at http://www.sleepycat.com"
+    exit
+fi
+AC_MSG_RESULT($LIBDB_PATH)
+
+if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
+    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
+fi
+if test "$LIBDB_PATH" = "/usr/local/lib"; then
+    CFLAGS="$CFLAGS -I/usr/local/include -L/usr/local/lib"
+fi
+
+AC_CHECK_LIB(pthread, pthread_create, pthread_in=pthread,pthread_in=no)
+if test "$pthread_in" = no; then
+AC_CHECK_LIB(pthreads, pthread_create, pthread_in=pthreads,pthread_in=no)
+fi
+
+AC_CHECK_LIB(dl, dlopen, dlopen_in=dl,dlopen_in=no)
+if test "$dlopen_in" = no; then
+AC_CHECK_LIB(c, dlopen, dlopen_in=c,dlopen=no)
+fi
+
+##
+## Check some typdefs
+##
+AC_MSG_CHECKING(for uint32_t)
+AC_TRY_COMPILE([
+#include	<stdio.h>
+#include	<stdlib.h>
+#ifdef	HAVE_UNISTD
+#include	<stdlib.h>
+#endif
+#include	<pthread.h>
+#include	<sys/types.h>
+#include	<netinet/in.h>
+],[
+uint32_t	test;],[
+HAVE_UINT32_T=-DHAVE_UINT32_T;AC_MSG_RESULT(yes)
+],[AC_MSG_RESULT(no)])
+
+CFLAGS="$CFLAGS $HAVE_UINT32_T"
+
+if test "$HAVE_CRYPT_H" != "" ; then
+	CFLAGS="$CFLAGS -DHAVE_CRYPT_H"
+fi
+
+AC_MSG_CHECKING(for __tm_gmtoff__)
+AC_TRY_COMPILE([
+#include	<stdio.h>
+#include	<stdlib.h>
+#ifdef	HAVE_UNISTD
+#include	<stdlib.h>
+#endif
+#include	<time.h>
+#include	<pthread.h>
+#include	<sys/types.h>
+#include	<netinet/in.h>
+],[
+struct	tm	tm;
+tm.__tm_gmtoff__ = tm.__tm_gmtoff__*2;
+],[
+HAVE__GMTOFF__=-DHAVE__GMTOFF__;AC_MSG_RESULT(yes)
+],[AC_MSG_RESULT(no)])
+
+CFLAGS="$CFLAGS $HAVE__GMTOFF__"
+
+##
+##
+##
+if   test "$dlopen_in" = "dl"; then
+	DLLIB="-ldl"
+	MODULES="-DMODULES"
+elif test "$dlopen_in" = "c"; then
+	MODULES="-DMODULES"
+else
+	echo "Can't locate dlopen() - no modules."
+	MODULES=""
+fi
+if test "$MODULES" = "-DMODULES"; then
+	AC_MSG_CHECKING(flags to link shared objects.)
+	SAVED_LDFLAGS=$LDFLAGS
+cat>conftest.c << EOF
+char test[[]]="test";
+EOF
+cat>confmain.c << EOF
+#include <stdio.h>
+#include <dlfcn.h>
+main()
+{
+void *h=dlopen("./conftest.so",RTLD_NOW);
+char *s;
+    if (h) {
+	s = dlsym(h, "test");
+	if ( s ) printf("%s", s);
+    }
+}
+EOF
+	$CC confmain.c -o confmain $LIBS $DLLIB 2>>config.log
+	$CC conftest.c -fpic -G -o conftest.so 2>> config.log
+	res=`./confmain`
+	if test "$res" = "test"; then
+	    SOFLAGS="-G"
+	fi
+	if test "$SOFLAGS" = ""; then
+	    $CC conftest.c -fpic -shared -o conftest.so 2>> config.log
+	    res=`./confmain`
+	    if test "$res" = "test"; then
+		SOFLAGS="-fpic -shared"
+	    fi
+	fi
+	rm -f conftest* confmain*
+	AC_MSG_RESULT($SOFLAGS)
+	if test "$SOFLAGS" != ""; then
+		CFLAGS="$CFLAGS $MODULES"
+		LIBS="$LIBS $DLLIB"
+	fi
+    AC_MSG_CHECKING(for -export-dynamic)
+cat>confmain.c << EOF
+#include <stdio.h>
+main()
+{
+	printf("yes");
+}
+EOF
+    $CC confmain.c -export-dynamic -o confmain 2>>config.log
+    res=""
+    if test -x confmain ; then
+	res=`./confmain`
+    fi
+    if test "$res" = "yes"; then
+	    LDFLAGS="$LDFLAGS -export-dynamic"
+	    AC_MSG_RESULT(yes)
+    else
+	    AC_MSG_RESULT(no)
+    fi
+fi
+rm -f confmain*
+
+AC_CHECK_FUNC(strtok_r, need_strtok_r=no,need_strtok_r=yes)
+if test "$need_strtok_r" = "yes"; then
+    STRTOKSRC=strtok_r.c
+    STRTOKOBJ=strtok_r.o
+fi
+
+AC_CHECK_FUNC(daemon, need_daemon=no,need_daemon=yes)
+if test "$need_daemon" = "yes"; then
+	CFLAGS="$CFLAGS -DNEED_DAEMON"
+fi
+
+case "$host_os" in
+irix*)    CFLAGS="-D_SGI_MP_SOURCE";;
+osf*)     CFLAGS="-D_REENTRANT";;
+freebsd*) CFLAGS="$CFLAGS -pthread -D_REENTRANT -DFREEBSD -D_THREAD_SAFE"
+	  LIBS="-lc_r $LEXLIB -ldb -lcrypt $LIBS"
+	  ;;
+linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
+	  if test "$pthread_in" = "pthreads" ; then
+		CFLAGS="$CFLAGS -D_MIT_POSIX_THREADS"
+		LIBS="-lpthreads $LEXLIB -ldb -lcrypt $LIBS"
+		echo Probably you have MIT-threads. If yes, swich to LinuxThreads.
+	  else
+		LIBS="-lpthread $LEXLIB -ldb -lcrypt $LIBS"
+	  fi
+	  ;;
+solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
+	  LIBS="-lm -ly -ll -ldb $LIBS -lsocket -lnsl"
+	  case "$CC" in
+		gcc*)	LIBS="-lthread -lpthread $LIBS"
+			;;
+		*)	CFLAGS="$CFLAGS -mt"
+			;;
+	  esac
+	  ;;
+esac
+
+echo $CC
+echo $CFLAGS
+echo $LIBS
+
+AC_SUBST(YACCLIB)
+AC_SUBST(STRTOKSRC)
+AC_SUBST(STRTOKOBJ)
+AC_SUBST(SOFLAGS)
+
+AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg)

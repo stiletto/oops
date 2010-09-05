@@ -1,0 +1,236 @@
+##
+#  nameservers. Use your own, not our.
+## 
+
+nameserver 195.114.128.50
+nameserver 194.93.190.123
+nameserver 193.219.193.130
+
+##
+#  Ports to use for HTTP and ICP
+##
+http_port	3128
+icp_port	3130
+
+##
+#  Logfile - just debug output
+#  When used in form 'filename {N S}'
+#  will be rotated automatically (up to N files up to S bytes in size)
+##
+logfile		/dev/tty
+#logfile	@prefix@/oops/logs/oops.log { 3 1m }
+
+##
+#  Accesslog - the same as for squid. Re rotating - see note for logfile
+##
+accesslog	/dev/tty
+#accesslog	@prefix@/oops/logs/access.log
+
+##
+#  Pidfile. for kill -1 `cat oops.pid` and for locking.
+##
+pidfile		@prefix@/oops/logs/oops.pid
+
+##
+# Statistics file - once per minute flush some statistics to this file
+##
+statistics	@prefix@/oops/logs/statfile
+
+##
+#  icons - where to find link.gif, dir.gif, binary.gif and so on (for 
+#  ftp lists). If omitted - name of running host will be used. But
+#  using explicit names is better way.
+##
+
+#icons-host	ss5.paco.net
+#icons-port	80
+#icons-path	icons
+
+##
+#  When total object volume in memory grow over this (this mean
+#  that cachable data from network came faster then we can save on disk)
+#  drop objects (without attempt to save on disk).
+##
+
+mem_max		16m
+
+##
+#  Hint, how much cached objects keep in memory.
+#  When total amount become larger then this limit - start
+#  swaping cachable objects to disk
+##
+
+lo_mark		8m
+
+##
+#  if document contain no Expires: then expire after (in days)
+##
+default-expire-value    7
+
+##
+#  run expire every ( in hours )
+##
+default-expire-interval 1
+
+##
+#  icp_timeout - how long to wait icp reply from peer (in ms, e.g 1000 = 1sec)
+##
+icp_timeout	1000
+
+##
+#  start disk cache cleanup when free space will be (in %%)
+##
+
+disk-low-free	3
+
+##
+#  stop disk cache cleanup when free space will be (in %%)
+##
+
+disk-ok-free	5
+
+##
+#  Never cache objects with URL, containing...
+##
+stop_cache	?
+stop_cache	cgi-bin
+
+##
+#  maximum size of the object we will cache
+##
+maxresident	1m
+
+##
+#  If host have several interfaces or aliases, use exactly
+#  this name when connecting to server:
+##
+#connect-from	proxy.paco.net
+
+
+#parent		proxy.paco.net 3128
+
+# ICP peer's
+#peer		proxy.paco.net	3128 3130 {
+#		sibling ;
+## we will send requests for these domains
+#		allow	dstdomain * ;
+## we will NOT send requests for these domains
+##		deny	dstdomain * ;
+#}
+
+#peer		proxy.gu.net	80 3130 {
+#		parent ;
+#		allow	dstdomain * ;
+#		deny	dstdomain paco.net odessa.ua ;
+#}
+
+##
+#  Never use "parent" when connecting to server in these domains
+##
+local-domain	odessa.ua od.ua
+local-domain	odessa.net paco.net netsy.net netsy.com te.net.ua
+
+local-networks	195.114.128/19 10/8 192.168/16
+
+#
+# Access lists
+#
+group	paco	{
+	networks	195.114.128/19 127/8 195.5.40.93/32;
+	badports	[0:79],110,138,139,513,[6000:6010];
+	miss		allow;
+##
+# Authentication modules for this group (seprated by space)
+##
+#	auth_mods	passwd_file;
+
+##
+# limit whole group to 8Kbytes per sec
+##
+#	bandwidth	8k;
+
+##
+# icp acl ...
+##
+#	icp {
+#		allow	dstdomain * ;
+#	}
+
+##
+# http acl
+##
+	http {
+		allow	dstdomain * ;
+	}
+}
+
+group	world	{
+	networks	0/0;
+	badports	[0:79],110,138,139,513,[6000:6010];
+	http {
+		deny	dstdomain * ;
+	}
+	icp {
+		deny	dstdomain * ;
+	}
+}
+
+##
+#  Storage section
+#  Change this for your own situation. Oops can work without
+#  storages (using only in-memory cache).
+##
+
+##
+#  dbhome - directory where all DB indexes reside. Use full path
+#	    this directory must exist.
+#  dbname - filename for index file. Use just filename (no full path)
+##
+
+dbhome	@prefix@/oops/DB
+dbname	dburl
+
+##
+#  Storage description (can be several)
+#  path - filename of storage. can be raw device (be carefull!)
+#  size - size (of storage file). Currently can't be large then 
+#  approximately 2.1G. Size used only durig format process (oops -z).
+##
+
+storage {
+	path @prefix@/oops/storages/oops_storage ;
+	size 20m ;
+}
+
+#storage {
+#	path @prefix@/oops/storages/oops_storage1 ;
+#	size 600m ;
+#}
+
+module lang {
+
+	default_charset	koi8-r
+
+	# Recode tables and other charset stuff
+	CharsetRecodeTable windows-1251 @prefix@/oops/tables/koi-win.tab
+	CharsetRecodeTable ISO-8859-5 @prefix@/oops/tables/koi-iso.tab
+	CharsetRecodeTable ibm866 @prefix@/oops/tables/koi-alt.tab
+	CharsetAgent windows-1251 AIR_Mosaic IWENG/1 MSIE WinMosaic (Windows (WinNT;
+	CharsetAgent windows-1251 (Win16; (Win95; (Win98; (16-bit) Opera/3.0
+	CharsetAgent ibm866 DosLynx Lynx2/OS/2
+}
+
+module err {
+	template @prefix@/oops/err_template.html
+
+	# Language to use when generate Error messages
+	lang ru
+}
+
+module passwd_file {
+	# default realm, scheme and passwd file
+	realm		oops
+	scheme		Basic
+	file		@prefix@/oops/passwd
+	template	@prefix@/oops/auth_template.html
+}
