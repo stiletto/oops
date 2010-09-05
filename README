@@ -19,6 +19,8 @@ It's main fetures
 6) objects are stored in large files: no file per object scheme.
    these large files can be raw devices.
 
+7) HTTP/1.1 (without persistent connections yet)
+
 You can contact author at address: igor@paco.net
 You can request commercial support for this programm - contact author, pls.
 
@@ -27,3 +29,5 @@ Special thanks:
 			testing on linux.
 	Andrew Vasilyev <andy@demos.su> for testing on "totally different"
 			hardware (IBM Netfinity with RAID)
+	Eugen Sobchenko <quaker@tty.dhs.org> for oops www-site developement
+			and support

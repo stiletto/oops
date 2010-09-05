@@ -83,6 +83,8 @@ usage(void)
     printf("-C|c filename	- path to config file\n");
     printf("-z|Z		- format storages\n");
     printf("-V		- show version info\n");
+    printf("-v		- verbose startup\n");
+    printf("-x[shfad]	- log level(s-storages,h-http,f-ftp,a-all,d-dns)\n");
     printf("-w number	- use thread pool. number define initial size of the pool.\n");
     printf("-W number	- limit thread pool size to number\n");
     return(0);
@@ -91,7 +93,7 @@ usage(void)
 int
 main(int argc, char **argv)
 {
-char	c;
+char	c,*vlvls;
 int	i, rc;
 int	format_storages = 0;
 
@@ -99,6 +101,8 @@ int	format_storages = 0;
     max_workers = 0;
     current_workers = 0;
     check_config_only = FALSE;
+    verbose_startup = FALSE;
+    verbosity_level = 0;
     my_pid = getpid();
     /* set stdout unbuffered					*/
     setbuf(stdout, NULL);
@@ -106,14 +110,41 @@ int	format_storages = 0;
     setbuf(stderr, NULL);
 
     if ( argc > 1)
-    while( (c=getopt(argc, argv, "W:w:Zzc:C:hDdsV")) != EOF ) {
+    while( (c=getopt(argc, argv, "W:w:Zzc:C:hx:DdsvV")) != EOF ) {
 	switch(c) {
+	case('v'):
+		/* verbose startup */
+		verbose_startup = TRUE;
+		break;
 	case('V'):
 		printf("oops version %s\n\n", VERSION);
 		printf("CC=%s\n\n", OOPS_CC);
 		printf("CFLAGS=%s\n\n", OOPS_CFLAGS);
 		printf("LIBS=%s\n\n", OOPS_LIBS);
 		exit(0);
+	case('x'):
+		vlvls = optarg;
+		while ( *vlvls ) {
+		    switch( *vlvls ) {
+			case 's':
+				verbosity_level |= LOG_STOR;
+				break;
+			case 'f':
+				verbosity_level |= LOG_FTP;
+				break;
+			case 'h':
+				verbosity_level |= LOG_HTTP;
+				break;
+			case 'd':
+				verbosity_level |= LOG_DNS;
+				break;
+			case 'a':
+				verbosity_level = -1;
+				break;
+		    }
+		    vlvls++;
+		}
+		break;
 	case('C'):
 	    check_config_only = TRUE;
 	case('c'):
@@ -188,11 +219,11 @@ int	format_storages = 0;
     {
     int np = sysconf(_SC_NPROCESSORS_ONLN);
 	if ( np > 1 ) {
-	    printf("Set concurrency to %d\n", np*2);
+	    verb_printf("Set concurrency to %d\n", np*2);
 	    if ( !thr_setconcurrency(np*2) )
-		printf("Done\n");
+		verb_printf("Done\n");
 	    else
-		printf("Failed\n");
+		verb_printf("Failed\n");
 	}
     }
 #endif
@@ -205,6 +236,7 @@ int	format_storages = 0;
     clients_number = 0;
     peers = NULL;
     peer_down_interval = 10 ;			/* default 10 sec. */
+    tcpports = NULL;
     local_domains = NULL;
     local_networks	= NULL;
     local_networks_sorted = NULL;
@@ -218,6 +250,7 @@ int	format_storages = 0;
     pthread_mutex_init(&icp_resolver_lock, NULL);
     pthread_mutex_init(&dns_cache_lock, NULL);
     pthread_mutex_init(&st_check_in_progr_lock, NULL);
+    pthread_mutex_init(&mktime_lock, NULL);
     rwl_init(&config_lock);
     rwl_init(&log_lock);
     rwl_init(&db_lock);
@@ -259,6 +292,7 @@ run:
     internal_http_port	= 3129;
     ns_configured	= 0;
     default_expire_interval = DEFAULT_EXPIRE_INTERVAL;
+    ftp_expire_value 	    = FTP_EXPIRE_VALUE;
     default_expire_value    = DEFAULT_EXPIRE_VALUE;
     disk_low_free	= DEFAULT_LOW_FREE;
     disk_hi_free	= DEFAULT_HI_FREE;
@@ -310,6 +344,8 @@ run:
 	listen_so_list = NULL;
     }
 
+    if ( tcpports ) free_tcp_ports_in_use();
+
     /* go read config */
     if ( readconfig(configfile) ) exit(1);
     if ( check_config_only ) exit(0);
@@ -323,7 +359,7 @@ run:
 	print_networks(local_networks_sorted, local_networks_sorted_counter, FALSE);
     }
     if ( local_domains ) {
-	printf("Local domains:\n");
+	verb_printf("Local domains:\n");
 	print_dom_list(local_domains );
     }
     if ( !mem_max_val ) {
@@ -336,7 +372,7 @@ run:
 	if ( logf )
 	    fclose(logf);
 	logf = fopen(logfile, "a");
-	if ( !logf ) printf("%s: %s\n", logfile, strerror(errno));
+	if ( !logf ) verb_printf("%s: %s\n", logfile, strerror(errno));
 	if ( logf && !logs_buffered )
 	    setbuf(logf, NULL);
 	rwl_unlock(&log_lock);
@@ -345,7 +381,7 @@ run:
 	if ( accesslogf )
 	    fclose(accesslogf);
 	accesslogf = fopen(accesslog, "a");
-	if ( !accesslogf ) printf("%s: %s\n", accesslog, strerror(errno));
+	if ( !accesslogf ) verb_printf("%s: %s\n", accesslog, strerror(errno));
 	if ( accesslogf && !logs_buffered )
 	    setbuf(accesslogf, NULL);
     }
@@ -501,7 +537,7 @@ struct	domain_list	*dom_list;
 			free_dom_list(dom_list);
 			break;
 		default:
-			printf("Unknown ACL type\n");
+			verb_printf("Unknown ACL type\n");
 			break;
 		}
 		free(acl);
@@ -516,7 +552,7 @@ struct	domain_list	*dom_list;
 			free_dom_list(dom_list);
 			break;
 		default:
-			printf("Unknown ACL type\n");
+			verb_printf("Unknown ACL type\n");
 			break;
 		}
 		free(acl);
@@ -535,10 +571,10 @@ struct	domain_list	*dom_list;
 
     while( group ){
 	if ( group->http ) {
-	    printf("Group %s\n", group->name);
+	    verb_printf("Group %s\n", group->name);
 	    acls = group->http;
 	    acl = acls->allow;
-	    if ( acl ) printf("Allow:\n");
+	    if ( acl ) verb_printf("Allow:\n");
 	    while( acl ) {
 		next_acl = acl->next;
 		switch( acl->type ) {
@@ -547,13 +583,13 @@ struct	domain_list	*dom_list;
 			print_dom_list(dom_list);
 			break;
 		default:
-			printf("Unknown ACL type\n");
+			verb_printf("Unknown ACL type\n");
 			break;
 		}
 		acl = next_acl;
 	    }
 	    acl = acls->deny;
-	    if ( acl ) printf("Deny:\n");
+	    if ( acl ) verb_printf("Deny:\n");
 	    while( acl ) {
 		next_acl = acl->next;
 		switch( acl->type ) {
@@ -562,7 +598,7 @@ struct	domain_list	*dom_list;
 			print_dom_list(dom_list);
 			break;
 		default:
-			printf("Unknown ACL type\n");
+			verb_printf("Unknown ACL type\n");
 			break;
 		}
 		acl = next_acl;
@@ -578,7 +614,7 @@ struct	domain_list	*next;
 
     while(list) {
 	next = list->next;
-	if ( list->domain ) printf("\tDomain: %s\n", list->domain);
+	if ( list->domain ) verb_printf("\tDomain: %s\n", list->domain);
 	list = next;
     }
 }
@@ -647,7 +683,7 @@ int			i;
 	g = g->next;
     }
     /* sort list */
-    printf("Sorting networks\n");
+    verb_printf("Sorting networks\n");
     qsort(sorted_networks_ptr, sorted_networks_cnt, sizeof(struct cidr_net*),
     	 cidr_net_cmp);
 }
@@ -700,7 +736,7 @@ print_networks(struct cidr_net **n, int i, int print_name)
 int k=0;
     if ( !n || !i ) return;
     while( k < i) {
-	printf("Net %08x/%-2d[%s]\n", (*n)->network, (*n)->masklen, print_name?(*n)->group->name:"");
+	verb_printf("Net %08x/%-2d[%s]\n", (*n)->network, (*n)->masklen, print_name?(*n)->group->name:"");
 	k++; n++;
     }
 }

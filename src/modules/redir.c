@@ -49,6 +49,10 @@ static	rwl_t	redir_lock;
 #define	WRLOCK_REDIR_CONFIG	rwl_wrlock(&redir_lock)
 #define	UNLOCK_REDIR_CONFIG	rwl_unlock(&redir_lock)
 
+#define	NMYPORTS	4
+static	u_short		myports[NMYPORTS];	/* my ports		*/
+int			nmyports;		/* actual number	*/
+
 static	char		redir_rules_file[MAXPATHLEN];
 static	char		redir_template[MAXPATHLEN];
 static	char		*template;
@@ -69,7 +73,7 @@ static	int	default_template_size;
 int
 mod_load()
 {
-    printf("redirector started\n");
+    verb_printf("redirector started\n");
     rwl_init(&redir_lock);
     redir_rules_file[0] = 0;
     redir_template[0] = 0;
@@ -78,13 +82,14 @@ mod_load()
     template_mtime = template_check_time =
     rules_mtime = rules_check_time = 0;
     redir_rules = NULL;
+    nmyports = 0;
     default_template_size = strlen(default_template);
     return(MOD_CODE_OK);
 }
 int
 mod_unload()
 {
-    printf("redir stopped\n");
+    verb_printf("redir stopped\n");
     return(MOD_CODE_OK);
 }
 int
@@ -101,6 +106,7 @@ mod_config_beg()
 	free_rules(redir_rules);
 	redir_rules = NULL;
     }
+    nmyports = 0;
     UNLOCK_REDIR_CONFIG ;
     return(MOD_CODE_OK);
 }
@@ -130,6 +136,12 @@ char	*p = config;
 	p += 8;
 	while (*p && isspace(*p) ) p++;
 	strncpy(redir_template, p, sizeof(redir_template) -1 );
+    } else
+    if ( !strncasecmp(p, "myport", 6) ) {
+	p += 6;
+	while (*p && isspace(*p) ) p++;
+	nmyports = parse_myports(p, &myports, NMYPORTS);
+	verb_printf("%s will use %d ports\n", module_name, nmyports);
     }
     UNLOCK_REDIR_CONFIG ;
     return(MOD_CODE_OK);
@@ -145,7 +157,16 @@ struct	buff		*body = NULL;
 
     my_log("redir called\n");
     if ( !rq ) return(MOD_CODE_OK);
- 
+    if ( nmyports > 0 ) {
+	int	n = nmyports;
+	u_short *mp = myports, port = ntohs(rq->my_sa.sin_port);
+	/* if this is not on my port */
+	while( n ) {
+	    if ( *mp == port ) break;
+	    n--;mp++;
+	}
+	if ( !n ) return(MOD_CODE_OK);	/* not my */
+    }
     /* 1. build URL: proto://host/path
           note: port is not included!!!
      */
@@ -289,7 +310,7 @@ struct	redir_rule	*new_rr, *last;
 	    return;
 	rf = fopen(redir_rules_file, "r");
 	if ( !rf ) {
-	    printf("Can't fopen(%s): %s\n", redir_rules_file, strerror(errno));
+	    verb_printf("Can't fopen(%s): %s\n", redir_rules_file, strerror(errno));
 	    return;
 	}
 	WRLOCK_REDIR_CONFIG ;
@@ -300,7 +321,7 @@ struct	redir_rule	*new_rr, *last;
 	while ( fgets(buf, sizeof(buf) - 1, rf) ) {
 	    char *p = buf;
 	    /* got line, parse it */
-	    printf("got line: %s", buf);
+	    verb_printf("got line: %s", buf);
 	    if ( buf[0] == '#' ) continue;
 	    /* line can contain regex part and redirection url			*/
 	    /* and line can contain only regex, in which case we will send 	*/
@@ -309,7 +330,7 @@ struct	redir_rule	*new_rr, *last;
 	    if ( (p = strchr(buf,'\n')) ) *p = 0;
 	    rc = sscanf(buf, "%s %s", &reg, &red);
 	    if ( rc == 2 ) {
-		printf("regex: %s, redirect to :%s\n", reg, red);
+		verb_printf("regex: %s, redirect to :%s\n", reg, red);
 		new_rr = malloc(sizeof(*new_rr));
 		bzero(new_rr, sizeof(*new_rr));
 		if ( new_rr ) {
@@ -343,12 +364,12 @@ struct	redir_rule	*new_rr, *last;
 			last->next = new_rr;
 		    }
 		}
-		printf("rule inserted\n");
+		verb_printf("rule inserted\n");
 		continue;
 	    }
 	    if ( rc == 1 ) {
 		char *rr_orig;
-		printf("regex: %s, use template\n", reg);
+		verb_printf("regex: %s, use template\n", reg);
 		new_rr = malloc(sizeof(*new_rr));
 		bzero(new_rr, sizeof(*new_rr));
 		if ( new_rr ) {
@@ -373,10 +394,10 @@ struct	redir_rule	*new_rr, *last;
 			last->next = new_rr;
 		    }
 		}
-		printf("rule inserted\n");
+		verb_printf("rule inserted\n");
 		continue;
 	    } else {
-		printf("unrecognized format: %s\n", buf);
+		verb_printf("unrecognized format: %s\n", buf);
 	    }
 	}
 	fclose(rf);
@@ -416,12 +437,12 @@ char	*in_mem;
 		    template[size]	= 0; /* so we can use str... functions */
     		    template_check_time = global_sec_timer;
 		} else {
-		    printf("Read failed: %s\n", strerror(errno));
+		    verb_printf("Read failed: %s\n", strerror(errno));
 		    xfree(in_mem);
 		}
 		close(fd);
 	    } /* fd != -1 */ else {
-		printf("Open(%s) failed: %s\n", redir_template,strerror(errno));
+		verb_printf("Open(%s) failed: %s\n", redir_template,strerror(errno));
 		xfree(in_mem);
 	    }
 	} /* if in_mem */

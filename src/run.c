@@ -36,7 +36,7 @@ pthread_t	stat_thread = (pthread_t)NULL;
 dataq_t		wq;
 
 int	wq_init = 0;
-int	killed, huped;
+int	killed, huped, logrotate;
 
 sigset_t	newset, oset;
 pthread_attr_t	p_attr;
@@ -60,6 +60,13 @@ huphandler(int arg)
 }
 
 void
+winch_handler(int arg)
+{
+    logrotate = 1;
+    signal(SIGWINCH, &winch_handler);
+}
+
+void
 killhandler(int arg)
 {
     killed = 1;
@@ -77,7 +84,7 @@ int			icp_sa_len;
 struct	sockaddr_in	cli_addr, icp_sa;
 struct	pollarg		*pollarg;
 
-    huped = killed = 0;
+    huped = killed = logrotate = 0;
     if ( server_so != -1 )
     	close(server_so);
     server_so = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -131,6 +138,7 @@ struct	pollarg		*pollarg;
 
     sigemptyset(&newset);
     sigaddset(&newset, SIGHUP);
+    sigaddset(&newset, SIGWINCH);
     sigaddset(&newset, SIGINT);
     sigaddset(&newset, SIGTERM);
     pthread_sigmask(SIG_BLOCK, &newset, &oset);
@@ -173,6 +181,7 @@ struct	pollarg		*pollarg;
 	}
     }
     signal(SIGHUP, &huphandler);
+    signal(SIGWINCH, &winch_handler);
     signal(SIGINT, &killhandler);
     signal(SIGTERM, &killhandler);
     pthread_sigmask(SIG_UNBLOCK, &newset, &oset);
@@ -221,6 +230,12 @@ wait_clients:
 	if ( killed ) {
 	    (void)cleanup();
 	    exit(1);
+	}
+	if ( logrotate ) {
+	    my_log("Rotate\n");
+	    rotate_log_file();
+	    rotate_accesslog_file();
+	    logrotate = 0;
 	}
 	my_log("failed to select: %s\n", strerror(errno));
 	goto wait_clients;
@@ -277,15 +292,7 @@ wait_clients:
 		if ( list->process_call ) {
 		    run_module(rc, list->process_call);
 		} else {
-		    pthread_t 	cli_thread;
-		    pthread_sigmask(SIG_BLOCK, &newset, &oset);
-		    /* well, process with this client */
-		    res = pthread_create(&cli_thread, &p_attr, run_client, (void*)r);
-		    if ( res ) {
-			my_log("Can't pthread_create\n");
-			close(rc);
-		    }
-		    pthread_sigmask(SIG_UNBLOCK, &newset, NULL);
+		    run_module(rc, run_client);
 		}
 	    }
 	acc_f:
@@ -302,7 +309,6 @@ run_module(int so, void *(f)(void*))
 pthread_t 		cli_thread;
 int			res;
 
-    my_log("Runnig module\n");
     if ( use_workers ) {
 	work_t  *work = xmalloc(sizeof(*work),"");
 	if ( work ) {

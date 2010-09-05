@@ -29,6 +29,27 @@ FILE	*logf, *accesslogf;
 
 void	rotate_file(char * name, FILE **f, int num);
 
+void
+rotate_log_file()
+{
+    my_log("Rotate File %s\n", logfile);
+    rwl_wrlock(&log_lock);
+    rotate_file(logfile,&logf,log_num);
+    if ( logf && !logs_buffered )
+	    setbuf(logf, NULL);
+    rwl_unlock(&log_lock);
+}
+
+void
+rotate_accesslog_file()
+{
+    my_log("Rotate File %s\n", accesslog);
+    pthread_mutex_lock(&accesslog_lock);
+    rotate_file(accesslog,&accesslogf,accesslog_num);
+    if ( accesslogf && !logs_buffered )
+	setbuf(accesslogf, NULL);
+    pthread_mutex_unlock(&accesslog_lock);
+}
 void*
 rotate_logs(void *arg)
 {
@@ -44,26 +65,16 @@ int		r;
 	    my_log("r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
 	    	r, statb.st_mode, log_size, ftell(logf));
 	    if ( !r && (statb.st_mode & S_IFREG) && log_size && (ftell(logf) > log_size) ) {
-		my_log("Rotate File %s\n", logfile);
-		rwl_wrlock(&log_lock);
-		rotate_file(logfile,&logf,log_num);
-		if ( logf && !logs_buffered )
-		    setbuf(logf, NULL);
-		rwl_unlock(&log_lock);
+		rotate_log_file();
 	    } else
-	    	my_log("No need to rotate %s\n", logfile);
+		my_log("No need to rotate %s\n", logfile);
 	}
 	if ( accesslogf && accesslog_num ) {
 	    r = fstat(fileno(accesslogf), &statb) ;
 	    my_log("r: %d, statb.st_mode: %x, log_size: %d, ftell: %d\n",
 	    	r, statb.st_mode, accesslog_size, ftell(accesslogf));
 	    if ( !r && (statb.st_mode & S_IFREG) && accesslog_size && (ftell(accesslogf) > accesslog_size) ) {
-		my_log("Rotate File %s\n", accesslog);
-		pthread_mutex_lock(&accesslog_lock);
-		rotate_file(accesslog,&accesslogf,accesslog_num);
-		if ( accesslogf && !logs_buffered )
-		    setbuf(accesslogf, NULL);
-		pthread_mutex_unlock(&accesslog_lock);
+		rotate_accesslog_file();
 	    } else
 		my_log("No need to rotate %s\n", accesslog);
 	}

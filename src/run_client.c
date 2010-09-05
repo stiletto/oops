@@ -72,11 +72,13 @@ struct	mem_obj		*stored_url;
 size_t			current_size;
 int			status, checked_len=0, mod_flags;
 int			mem_send_flags = 0, clsalen = sizeof(request.client_sa);
+int			mysalen = sizeof(request.my_sa);
 struct	group		*group;
 int			miss_denied = TRUE;
 int			so, new_object;
 
    so = (int)arg;
+   fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK);
 
    increment_clients();
    set_socket_options(so);
@@ -84,6 +86,7 @@ int			so, new_object;
 re: /* here we go if client want persistent connection */
    bzero(&request, sizeof(request));
    getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen);
+   getsockname(so, (struct sockaddr*)&request.my_sa, &mysalen);
    request.request_time = started = time(NULL);
    RDLOCK_CONFIG ;
    group = inet_to_group(&request.client_sa.sin_addr);
@@ -120,19 +123,19 @@ re: /* here we go if client want persistent connection */
    while(1) {
 	got = readt(so, (char*)cp, current_size-(cp-ip), 100);
 	if ( got == 0 ) {
-	    my_log("Client closed connection\n");
+	    my_xlog(LOG_FTP|LOG_HTTP, "Client closed connection\n");
 	    goto done;
 	}
 	if ( got == -2 ) {
-	    my_log("Read client input timeout\n");
+	    my_xlog(LOG_HTTP|LOG_FTP, "Read client input timeout\n");
 	    if ( time(NULL) - started > READ_REQ_TIMEOUT ) {
-		my_log("Client send too slow\n");
+		my_xlog(LOG_HTTP|LOG_FTP, "Client send too slow\n");
 		goto done;
 	    }
 	    continue;
 	}
 	if ( got <  0 ) {
-	    my_log("Failed to read from client\n");
+	    my_xlog(LOG_HTTP|LOG_FTP, "Failed to read from client\n");
 	    goto done;
 	}
 	cp+=got;
@@ -153,7 +156,7 @@ re: /* here we go if client want persistent connection */
 	    *cp=0;
 	status = check_headers(&request, (char*)ip, (char*)cp, &checked_len, so);
 	if ( status ) {
-	    my_log("Failed to check headers\n");
+	    my_xlog(LOG_HTTP|LOG_FTP, "Failed to check headers\n");
 	    goto done;
 	}
 	if ( request.state == REQUEST_READY )
@@ -166,7 +169,7 @@ re: /* here we go if client want persistent connection */
     headers = (char*)buf + request.headers_off;
     RDLOCK_CONFIG ;
     if ((rc = deny_http_access(so, &request)) ) {
-	my_log("Access banned\n");
+	my_xlog(LOG_HTTP|LOG_FTP, "Access banned\n");
 	switch ( rc ) {
 	case ACCESS_PORT:
 		say_bad_request(so, "<font color=red>Access denied for requestsd port.\n</font>", "",
@@ -214,6 +217,14 @@ re: /* here we go if client want persistent connection */
     /* now:
 	buf  - contain complete client request
     */
+
+    if ( request.url.proto && !strcasecmp(request.url.proto, "http") )
+	request.proto = PROTO_HTTP;
+      else
+    if ( request.url.proto && !strcasecmp(request.url.proto, "ftp") )
+	request.proto = PROTO_FTP;
+      else
+	request.proto = PROTO_OTHER;
     /* if request state to send not cached info - send directly from origin */
     if ( request.meth == METH_CONNECT ) {
 	if ( miss_denied ) {
@@ -343,7 +354,7 @@ re: /* here we go if client want persistent connection */
 
     if ( new_object ) {
 read_net:
-	my_log("read <%s><%s><%d><%s> from Net\n", request.url.proto,
+	my_xlog(LOG_HTTP|LOG_FTP, "read <%s><%s><%d><%s> from Net\n", request.url.proto,
 					     request.url.host,
 					     request.url.port,
 					     request.url.path);
@@ -372,7 +383,7 @@ read_net:
 		mem_send_flags |= MEM_OBJ_MUST_REVALIDATE;
 	    }
 	}
-	my_log("read <%s:%s:%s> from mem\n", request.url.proto,
+	my_xlog(LOG_HTTP|LOG_FTP, "read <%s:%s:%s> from mem\n", request.url.proto,
 					     request.url.host,
 					     request.url.path);
 	send_from_mem(so, &request, headers, stored_url, mem_send_flags);
@@ -578,7 +589,7 @@ int		found=0;
 			    /* it is on disk */
 			    storage = locate_storage_by_id(disk_ref->id);
 			    if ( storage && (storage->flags&ST_READY) ) {
-				my_log("Found on disk: %s\n", storage->path);
+				my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR, "Found on disk: %s\n", storage->path);
 				/* order important. flags must be changed
 				   when all done
 				*/
@@ -595,12 +606,13 @@ int		found=0;
 				resident_size = calculate_resident_size(obj);
         			obj->resident_size = resident_size;
                 		increase_hash_size(obj->hash_back, obj->resident_size);
+				if ( !strcasecmp(url->proto,"ftp") ) obj->doc_type = FTP_DOC;
 				SET(obj->flags, FLAG_FROM_DISK);
 				CLR(obj->flags, ANSW_NO_CACHE);
 				pthread_cond_broadcast(&obj->decision_cond);
 			    }
 			} else {
-			    my_log("Not found\n");
+			    my_xlog(LOG_HTTP|LOG_FTP, "Not found\n");
 			}
 		nf:	UNLOCK_DB;
 			UNLOCK_CONFIG;
@@ -1113,13 +1125,16 @@ struct	url		*url;
     if ( (obj->flags & (FLAG_DEAD|ANSW_NO_CACHE)) && !obj->refs ) {
 	child = obj->child_obj;
 	if ( obj->flags & FLAG_FROM_DISK ) {
-	    my_log("Must be erased from storage\n");
+	    my_xlog(LOG_HTTP|LOG_FTP|LOG_STOR, "Must be erased from storage\n");
 	    must_be_erased = TRUE;
 	    url = &obj->url;
 	    urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
 	    urll+= 3 + 1; /* :// + \0 */
 	    url_str = xmalloc(urll, "url_str");
-	    sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
+	    if ( obj->doc_type == HTTP_DOC )
+		sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
+	      else
+		sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
 	    disk_ref = obj->disk_ref;
 	    obj->disk_ref = NULL;
 	}

@@ -505,7 +505,7 @@ struct	disk_ref	*disk_ref;
 	return 0;
 
     needed_blocks = ROUND(obj_size, BLKSIZE)/BLKSIZE;
-    my_log("Allocate %u disk blocks for object\n", needed_blocks);
+    my_xlog(LOG_STOR, "Allocate %u disk blocks for object\n", needed_blocks);
 
     storage = ostorage = next_alloc_storage;
     if ( !ostorage ) storage = storages;
@@ -614,6 +614,7 @@ char			*url_str;
 int			urll, rc;
 DBT			key, data;
 struct storage_st	*storage;
+char			http_p;
 
     *disk_ref = NULL;
     if ( !dbp )
@@ -623,7 +624,11 @@ struct storage_st	*storage;
     url_str = xmalloc(ROUND(urll, CHUNK_SIZE), "url_str");
     if ( !url_str )
 	return(-1);
-    sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
+    http_p = !strcmp(url->proto, "http");
+    if ( http_p )
+	sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
+    else
+	sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
     bzero(&key,  sizeof(key));
     bzero(&data, sizeof(data));
     key.data = url_str;
@@ -702,6 +707,8 @@ r:  next_read = MIN(BLKSIZE, to_load);
 	    goto err;
         if ( a.state & GOT_HDR ) {
 	    obj->times 		= a.times;
+	    obj->response_time  = a.response_time;
+	    obj->request_time  = a.request_time;
 	    obj->status_code 	= a.status_code;
 	    obj->flags	       |= a.flags;
 	}
@@ -742,7 +749,7 @@ struct storage_st	*storage;
     storage = locate_storage_by_id(disk_ref->id);
     if ( !storage ) goto done;
 
-    my_log("cleaning %s from storage %s\n", url_str, storage->path);
+    my_xlog(LOG_STOR, "cleaning %s from storage %s\n", url_str, storage->path);
     /* remove it from db */
     bzero(&key,  sizeof(key));
     key.data = url_str;

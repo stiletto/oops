@@ -76,7 +76,7 @@ time_t			now;
 	}
 	pthread_mutex_unlock(&dns_cache_lock);
 
-	my_log("%d dns hash entries\n", k);
+	my_xlog(LOG_DNS, "%d dns hash entries\n", k);
 	last_non_zero = 0;
 
     resort:
@@ -103,7 +103,7 @@ time_t			now;
 */
 	/* select hash entry to free */
 	if ( total_size <  lo_mark_val ) {
-		my_log("Total size %dk - too small\n", total_size/1024);
+		my_xlog(LOG_STOR, "Total size %dk - too small\n", total_size/1024);
 #if	defined(MALLOCDEBUG)
 		list_all_mallocs();
 #endif
@@ -139,22 +139,35 @@ time_t			now;
 		    }
 		    goto set_on_oldest;
 		}
-		my_log("Destroy oldest object <%s/%s>\n",
+		my_xlog(LOG_STOR, "Destroy oldest object <%s/%s>\n",
 			obj->url.host, obj->url.path);
 		chain = NULL;
 		/* XXX */
 		RDLOCK_CONFIG ;
 		WRLOCK_DB ;
 		if ( !(obj->flags&FLAG_FROM_DISK) &&
-		     dbp &&
-		     (blk = move_obj_to_storage(obj, &storage, &chain)) ) {
+		     dbp ) {
 		    DBT			key, data;
 		    struct disk_ref	*disk_ref;
 		    int			rc, urll;
 		    struct	url	*url = &obj->url;
-		    char		*url_str;
+		    char		*url_str, time_buf[16];
 
-		    my_log("Stored in %u of storage %u\n", blk, storage->super.id);
+		    /* add my own headers */
+		    /* add obj->X-oops-times...*/
+		    if ( obj->request_time ) {
+			sprintf(time_buf, "%d", obj->request_time);
+			insert_header("X-oops-internal-request-time:",
+					time_buf, obj);
+		    }
+		    if ( obj->response_time ) {
+			sprintf(time_buf, "%d", obj->response_time);
+			insert_header("X-oops-internal-response-time:",
+					time_buf, obj);
+		    }
+		    blk = move_obj_to_storage(obj, &storage, &chain);
+		    if ( !blk ) goto o_written;
+		    my_xlog(LOG_STOR, "Stored in %u of storage %u\n", blk, storage->super.id);
 		    urll = strlen(url->proto)+strlen(url->host)+strlen(url->path)+10;
 		    urll+= 3 + 1; /* :// + \0 */
 		    url_str = xmalloc(urll, "url_str");
@@ -165,7 +178,10 @@ time_t			now;
 			if (chain) xfree(chain);
 			goto stored;
 		    }
-		    sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
+		    if ( obj->doc_type == HTTP_DOC )
+			sprintf(url_str,"%s%s:%d", url->host, url->path, url->port);
+		    else
+			sprintf(url_str,"%s://%s%s:%d", url->proto, url->host, url->path, url->port);
 		    /* insert this url in DB */
 		    bzero(&key, sizeof(key));
 		    bzero(&data,sizeof(data));
@@ -196,6 +212,7 @@ time_t			now;
 		    if (chain) xfree(chain);
 		stored:;
 		}
+    o_written:
 		UNLOCK_DB ;
 		UNLOCK_CONFIG ;
 		destroy_obj(obj);

@@ -176,8 +176,9 @@ typedef	unsigned	uint32_t;
 #define	ANSW_SIZE		(2*1024)
 #define	READ_ANSW_TIMEOUT	(10*60)		/* 10 minutes	*/
 
-#define	DEFAULT_EXPIRE_VALUE	(3*24*3600)	/* 3 days	*/
+#define	DEFAULT_EXPIRE_VALUE	(7*24*3600)	/* 7 days	*/
 #define	DEFAULT_EXPIRE_INTERVAL	(1*3600)	/* each hour	*/
+#define	FTP_EXPIRE_VALUE	(7*24*3600)	/* expire for ftp */
 
 #define	DEFAULT_LOW_FREE	(5)		/* these values for BIG storages */
 #define	DEFAULT_HI_FREE		(6)
@@ -194,6 +195,11 @@ typedef	unsigned	uint32_t;
 #define	ERR_INTERNAL		5
 #define	ERR_ACC_DENIED		6
 #define	ERR_TRANSFER		7
+
+#define	LOG_STOR		1
+#define	LOG_FTP			2
+#define	LOG_HTTP		4
+#define	LOG_DNS			8
 
 #define	SET(a,b)		(a|=(b))
 #define	CLR(a,b)		(a&=~b)
@@ -238,15 +244,20 @@ struct	buff {
 	char		*data;
 };
 
+#define	PROTO_HTTP	0
+#define	PROTO_FTP	1
+#define	PROTO_OTHER	2
 struct	request {
 	struct		sockaddr_in client_sa;
+	struct		sockaddr_in my_sa;
 	time_t		request_time;	/* time of request creation	*/
 	int		state;
 	int		http_major;
 	int		http_minor;
 	int		meth;
 	struct	url	url;
-        int		headers_off;
+	char		proto;
+	int		headers_off;
 	int		flags;
 	int		content_length;
 	int		leave_to_read;
@@ -262,6 +273,11 @@ struct	av {
 	char		*attr;
 	char		*val;
 	struct	av	*next;
+};
+
+struct	tcpport	{
+	u_short		port;
+	struct  tcpport *next;
 };
 
 struct	superb {
@@ -297,6 +313,10 @@ struct	disk_ref {
 	time_t		expires;		/* expiration date		*/
 };
 
+
+#define	HTTP_DOC	0
+#define	FTP_DOC		1
+
 struct	mem_obj {
 	struct	mem_obj		*next;		/* in hash			*/
 	struct	mem_obj		*prev;		/* in hash			*/
@@ -326,8 +346,11 @@ struct	mem_obj {
 	time_t			request_time;	/* when request was made	*/
 	time_t			response_time;	/* when responce was received	*/
 	struct	obj_times	times;
+	char			doc_type;	/* http or ftp */
 	struct	av		*headers;	/* headers */
 	struct	disk_ref	*disk_ref;	/* disk reference, if loaded from storage	*/
+	int			insertion_point;/* where to insert additional headers	*/
+	int			tail_length;	/* length of \n\n or \r\n\r\n et al.	*/
 };
 
 struct	output_object {
@@ -352,6 +375,8 @@ struct	server_answ {
 	int			status_code;
 	struct	obj_times	times;
 	struct	av		*headers;
+	time_t			response_time;	/* these times can be filled	*/
+	time_t			request_time;	/* when we load obj from disk	*/
 };
 
 struct	ftp_r {
@@ -369,6 +394,10 @@ struct	ftp_r {
 	struct	string_list *nlst;	/* NLST results		*/
 	int		received;	/* how much data received */
 	char		*type;		/* mime type		*/
+#define	FTP_TYPE_DIR	1
+#define	FTP_TYPE_FILE	2
+	int		file_dir;	/* file or dir		*/
+	struct	buff	*container;
 };
 
 struct	cidr_net {
@@ -625,6 +654,7 @@ struct		string_list	*stop_cache;
 struct		storage_st	*storages, *next_alloc_storage;
 void		*startup_sbrk;
 int		default_expire_value;
+int		ftp_expire_value;
 int		default_expire_interval;
 int		disk_low_free, disk_hi_free;
 int		kill_request, reconfig_request;
@@ -632,6 +662,9 @@ time_t		global_sec_timer;
 int		dns_ttl;
 int		icp_timeout;
 int		logs_buffered;
+int		verbose_startup;
+int		verbosity_level;
+struct	tcpport	*tcpports;
 
 pthread_mutex_t	obj_chain;
 pthread_mutex_t	malloc_mutex;
@@ -640,6 +673,7 @@ pthread_mutex_t	accesslog_lock;
 pthread_mutex_t	icp_resolver_lock;
 pthread_mutex_t	dns_cache_lock;
 pthread_mutex_t	st_check_in_progr_lock;
+pthread_mutex_t	mktime_lock;
 
 DB_ENV			dbenv;
 DB_INFO			dbinfo;
@@ -685,6 +719,8 @@ int		wait_for_read(int, int);
 void		*xmalloc(size_t, char*);
 void		xfree(void *);
 void 		my_log(char *form, ...);
+void 		my_xlog(int lvl, char *form, ...);
+void		verb_printf(char *form, ...);
 int		in_stop_cache(struct request *);
 void		log_access(int elapsed, struct sockaddr_in *sa, char *tag,
 		int code, int size, char *meth, struct url *url,
@@ -745,6 +781,7 @@ int		erase_from_disk(char *, struct disk_ref*);
 void		process_icp_msg(int so, char *buf, int len, struct sockaddr_in *sa);
 void		my_sleep(int);
 int		calculate_resident_size(struct mem_obj *);
+int		calculate_container_datalen(struct buff *);
 void		leave_obj(struct mem_obj*);
 void		destroy_obj(struct mem_obj*);
 int		move_obj_to_storage(struct mem_obj *obj, struct storage_st **st, struct disk_ref **);
@@ -792,7 +829,10 @@ int		denytime_check(struct denytime*);
 int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int);
 void		update_transfer_rate(struct request*, int size);
 int		group_traffic_load(struct group *group);
-
+char		*format_av_pair(char*, char*);
+int		tcp_port_in_use(u_short);
+void		add_to_tcp_port_in_use(u_short);
+void		free_tcp_ports_in_use(void);
 #ifdef		MODULES
 int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
 int	check_redirect(int so, struct request *rq, struct group *group, int *flag);

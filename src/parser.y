@@ -1,5 +1,5 @@
 %token	LOGFILE ACCESSLOG STATISTICS PIDFILE NAMESERVER HTTP_PORT ICP_PORT
-%token	ICONS_HOST ICONS_PORT ICONS_PATH EXPIRE_VALUE EXPIRE_INTERVAL
+%token	ICONS_HOST ICONS_PORT ICONS_PATH EXPIRE_VALUE FTP_EXPIRE_VALUE_T EXPIRE_INTERVAL
 %token	STOP_CACHE MAXRESIDENT CONNECT_FROM
 %token	MEM_MAX LO_MARK HI_MARK DISK_LOW_FREE_T DISK_HI_FREE_T
 %token	PARENT_T PEER_T SIBLING_T LOCAL_DOMAIN_T LOCAL_NETWORKS_T
@@ -9,7 +9,7 @@
 %token	DSTDOMAIN
 %token	STORAGE SIZE PATH DBNAME DBHOME
 %token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T DENYTIME_T
-%token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T
+%token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T INCLUDE_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name day
@@ -85,6 +85,8 @@ struct	peer_c {
 	struct	acls	*acls;
 } peer_c;
 
+struct	domain_list	*load_domlist_from_file(char*);
+
 %}
 
 %%
@@ -110,6 +112,7 @@ statement	: logfile
 		| icons_path
 		| icons_port
 		| expire_value
+		| ftp_expire_value
 		| expire_interval
 		| disk_low_free
 		| disk_hi_free
@@ -133,12 +136,12 @@ statement	: logfile
 		| L_EOS
 
 logfile		: LOGFILE STRING L_EOS {
-			printf("LOGFILE:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("LOGFILE:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(logfile, yylval.STRPTR, sizeof(logfile)-1);
 			free(yylval.STRPTR);
 		}
 		| LOGFILE string '{' num num '}' L_EOS {
-			printf("LOGFILE:\t<<%s>> num: %d, size: %d\n",
+			verb_printf("LOGFILE:\t<<%s>> num: %d, size: %d\n",
 			$2, $4, $5);
 			strncpy(logfile, $2, sizeof(logfile)-1);
 			log_num = $4;
@@ -147,13 +150,13 @@ logfile		: LOGFILE STRING L_EOS {
 		}
 
 accesslog	: ACCESSLOG STRING L_EOS {
-			printf("ACCESSLOG:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("ACCESSLOG:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(accesslog, yylval.STRPTR, sizeof(accesslog)-1);
 			accesslog_num = accesslog_size = 0;
 			free(yylval.STRPTR);
 		}
 		| ACCESSLOG string '{' num num '}' L_EOS {
-			printf("ACCESSLOG:\t<<%s>> num: %d, size: %d\n",
+			verb_printf("ACCESSLOG:\t<<%s>> num: %d, size: %d\n",
 			$2, $4, $5);
 			strncpy(accesslog, $2, sizeof(accesslog)-1);
 			accesslog_num = $4;
@@ -162,102 +165,107 @@ accesslog	: ACCESSLOG STRING L_EOS {
 		}
 
 logs_buffered	: LOGS_BUFFERED_T L_EOS {
-			printf("Making logs buffered\n");
+			verb_printf("Making logs buffered\n");
 			logs_buffered = TRUE;
 		}
 
 statistics	: STATISTICS STRING L_EOS {
-			printf("STATISTICS:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("STATISTICS:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(statisticslog, yylval.STRPTR, sizeof(statisticslog)-1);
 			free(yylval.STRPTR);
 		}
 
 pidfile		: PIDFILE STRING L_EOS {
-			printf("PIDFILE:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("PIDFILE:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(pidfile, yylval.STRPTR, sizeof(pidfile)-1);
 			free(yylval.STRPTR);
 		}
 
 nameserver	: NAMESERVER STRING L_EOS {
-			printf("NAMESERVER:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("NAMESERVER:\t<<%s>>\n", yylval.STRPTR);
 			if ( ns_curr < MAXNS ) {
 			    ns_sa[ns_curr].sin_addr.s_addr = inet_addr(yylval.STRPTR);
 			    ns_sa[ns_curr].sin_port = htons(53);
 			    ns_curr++;
 			} else {
-			    printf("You can configure maximum %d nameservers\n", MAXNS);
+			    verb_printf("You can configure maximum %d nameservers\n", MAXNS);
 			}
 			free(yylval.STRPTR);
 		}
 
 connect_from	: CONNECT_FROM STRING L_EOS {
-			printf("CONNECT_FROM:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("CONNECT_FROM:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(connect_from, yylval.STRPTR, sizeof(connect_from)-1);
 			free(yylval.STRPTR);
 		}
 
 stop_cache	: STOP_CACHE STRING L_EOS {
-			printf("STOP_CACHE:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("STOP_CACHE:\t<<%s>>\n", yylval.STRPTR);
 			add_to_stop_cache(yylval.STRPTR);
 		}
 maxresident	: MAXRESIDENT NUMBER L_EOS {
-			printf("MAXRESIDENT:\t %d\n", yylval.INT);
+			verb_printf("MAXRESIDENT:\t %d\n", yylval.INT);
 			maxresident = yylval.INT;
 		}
 
 http_port	: HTTP_PORT NUMBER L_EOS {
-			printf("HTTP_PORT\t<<%d>>\n", yylval.INT);
+			verb_printf("HTTP_PORT\t<<%d>>\n", yylval.INT);
 			http_port = yylval.INT;
 		}
 icp_port	: ICP_PORT NUMBER L_EOS {
-			printf("ICP_PORT\t<<%d>>\n", yylval.INT);
+			verb_printf("ICP_PORT\t<<%d>>\n", yylval.INT);
 			icp_port = yylval.INT;
 		}
 
 icp_timeout	: ICP_TIMEOUT NUMBER L_EOS {
-			printf("ICP_TIMEOUT\t<<%d>>\n", yylval.INT);
+			verb_printf("ICP_TIMEOUT\t<<%d>>\n", yylval.INT);
 			icp_timeout = 1000*yylval.INT;
 		}
 
 icons_host	: ICONS_HOST STRING L_EOS {
-			printf("ICONS_HOST:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("ICONS_HOST:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(icons_host, yylval.STRPTR, sizeof(icons_host)-1);
 			free(yylval.STRPTR);
 		}
 
 icons_port	: ICONS_PORT NUMBER L_EOS {
-			printf("ICONS_PORT:\t<<%d>>\n", yylval.INT);
+			verb_printf("ICONS_PORT:\t<<%d>>\n", yylval.INT);
 			sprintf(icons_port, "%d", yylval.INT);
 		}
 
 icons_path	: ICONS_PATH STRING L_EOS {
-			printf("ICONS_PATH:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("ICONS_PATH:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(icons_path, yylval.STRPTR, sizeof(icons_path)-1);
 			free(yylval.STRPTR);
 		}
 
 expire_value	: EXPIRE_VALUE NUMBER L_EOS {
-			printf("EXPIRE_VALUE:\t<<%d days>>\n", yylval.INT);
+			verb_printf("EXPIRE_VALUE:\t<<%d days>>\n", yylval.INT);
 			default_expire_value=yylval.INT * 24 * 3600;
 		}
 
+ftp_expire_value : FTP_EXPIRE_VALUE_T NUMBER L_EOS {
+			verb_printf("FTP_EXPIRE_VALUE:\t<<%d days>>\n", yylval.INT);
+			ftp_expire_value=yylval.INT * 24 * 3600;
+		}
+
 expire_interval	: EXPIRE_INTERVAL NUMBER L_EOS {
-			printf("EXPIRE_INTERVAL:<<%d hours>>\n", yylval.INT);
+			verb_printf("EXPIRE_INTERVAL:<<%d hours>>\n", yylval.INT);
 			default_expire_interval=yylval.INT * 3600;
 		}
 
 disk_low_free	: DISK_LOW_FREE_T NUMBER L_EOS {
-			printf("DISK_LOW_FREE:\t<<%d %%>>\n", yylval.INT);
+			verb_printf("DISK_LOW_FREE:\t<<%d %%>>\n", yylval.INT);
 			disk_low_free=yylval.INT ;
 		}
 
 disk_hi_free	: DISK_HI_FREE_T NUMBER L_EOS {
-			printf("DISK_HI_FREE:\t<<%d %%>>\n", yylval.INT);
+			verb_printf("DISK_HI_FREE:\t<<%d %%>>\n", yylval.INT);
 			disk_hi_free=yylval.INT ;
 		}
 
 parent		: PARENT_T string num L_EOS{
-			printf("PARENT: %s:%d\n", $2, $3);
+			verb_printf("PARENT: %s:%d\n", $2, $3);
 			strncpy(parent_host, $2, sizeof(parent_host));
 			parent_port = $3;
 			free($2);
@@ -265,7 +273,7 @@ parent		: PARENT_T string num L_EOS{
 
 local_domain	: LOCAL_DOMAIN_T domainlist L_EOS {
 		    struct domain_list *d;
-			printf ("LOCAL_DOMAIN\n");
+			verb_printf ("LOCAL_DOMAIN\n");
 			if ( !local_domains) local_domains = $2;
 			else {
 			    d = $2;
@@ -282,7 +290,7 @@ local_domain	: LOCAL_DOMAIN_T domainlist L_EOS {
 
 local_networks	: LOCAL_NETWORKS_T network_list L_EOS {
 		    struct cidr_net *n;
-			printf ("LOCAL_NETWORKS\n");
+			verb_printf ("LOCAL_NETWORKS\n");
 			if ( !local_networks) local_networks = $2;
 			else {
 			    n = local_networks;
@@ -297,29 +305,29 @@ local_networks	: LOCAL_NETWORKS_T network_list L_EOS {
 		}
 
 dbhome		: DBHOME STRING L_EOS {
-			printf("DBHOME:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("DBHOME:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(dbhome, yylval.STRPTR, sizeof(dbhome)-1);
 			free(yylval.STRPTR);
 		}
 
 dbname		: DBNAME STRING L_EOS {
-			printf("DBNAME:\t<<%s>>\n", yylval.STRPTR);
+			verb_printf("DBNAME:\t<<%s>>\n", yylval.STRPTR);
 			strncpy(dbname, yylval.STRPTR, sizeof(dbname)-1);
 			free(yylval.STRPTR);
 		}
 
 mem_max		: MEM_MAX num L_EOS {
-			printf("MEM_MAX:\t<<%d>>\n", $2);
+			verb_printf("MEM_MAX:\t<<%d>>\n", $2);
 			mem_max_val = $2 ;
 		}
 
 lo_mark		: LO_MARK num L_EOS {
-			printf("LO_MARK:\t<<%d>>\n", $2);
+			verb_printf("LO_MARK:\t<<%d>>\n", $2);
 			lo_mark_val = $2 ;
 		}
 
 hi_mark		: HI_MARK num L_EOS {
-			printf("HI_MARK:\t<<%d>>\n", $2);
+			verb_printf("HI_MARK:\t<<%d>>\n", $2);
 			hi_mark_val = $2 ;
 		}
 
@@ -332,20 +340,20 @@ module		: MODULE module_name '{' mod_ops '}' L_EOS {
 #ifdef	MODULES
 			struct general_module	*mod = module_by_name($2);
 			if ( mod ) {
-			    printf("Config %s\n", $2);
+			    verb_printf("Config %s\n", $2);
 			    if ( mod->config_beg ) (*mod->config_beg)();
 			    while( list ) {
-				printf("send '%s' to %s\n", list->string, $2);
+				verb_printf("send '%s' to %s\n", list->string, $2);
 				if (mod->config) (*mod->config)(list->string);
 				list = list->next;
 			    }
 			    if ( mod->config_end ) (*mod->config_end)();
-			    printf("Done with %s\n", $2);
+			    verb_printf("Done with %s\n", $2);
 			} else {
-			    printf("Module %s not found\n", $2);
+			    verb_printf("Module %s not found\n", $2);
 			}
 #else
-			printf("Modules was not configured\n");
+			verb_printf("Modules was not configured\n");
 #endif
 			free_string_list($4);
 			free($2);
@@ -360,14 +368,14 @@ module		: MODULE module_name '{' mod_ops '}' L_EOS {
 		}
 mod_ops		: mod_op {
 			$$ = $1;
-			printf("mod_op: %s\n", $$->string);
+			verb_printf("mod_op: %s\n", $$->string);
 		}
 		| mod_ops mod_op {
 		    struct string_list *last = $1;
 			while ( last->next ) last = last->next;
 			last->next = $2;
 			$$ = $1;
-			printf("mod_op: %s\n", $2->string);
+			verb_printf("mod_op: %s\n", $2->string);
 		}
 
 mod_op		: string {
@@ -394,7 +402,7 @@ module_name	: STRING {
 
 storage		: STORAGE '{' st_ops '}' L_EOS {
 		    struct storage_st *new;
-		    printf("Storage: %s (size %d bytes)\n", storage_path, storage_size);
+		    verb_printf("Storage: %s (size %d bytes)\n", storage_path, storage_size);
 		    new = xmalloc(sizeof(*new), "new storage");
 		    if ( !new ) {
 			yyerror();
@@ -502,7 +510,7 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 			bzero(new_grp, sizeof(*new_grp));
 			pthread_mutex_init(&new_grp->group_mutex, NULL);
 			new_grp->name = $2;
-			printf("Group '%s'\n", $2);
+			verb_printf("Group '%s'\n", $2);
 			ops = $4;
 			while ( ops ) {
 				next_ops = ops->next;
@@ -537,7 +545,7 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 					new_grp->denytimes = ops->val;
 					break;
 				default:
-					printf("Unknown OP\n");
+					verb_printf("Unknown OP\n");
 					break;
 				}
 				free(ops);
@@ -633,7 +641,7 @@ denytime	: DENYTIME_T dayset num ':' num {
 		    struct	group_ops_struct	*new_op;
 		    struct	denytime		*denytime;
 		    int		start_m, end_m;
-			printf("Denytime 0x%0X %d %d\n", $2, $3, $5);
+			verb_printf("Denytime 0x%0X %d %d\n", $2, $3, $5);
 			new_op = xmalloc(sizeof(*new_op), "");
 			denytime = xmalloc(sizeof(*denytime), "");
 			if ( !new_op || !denytime ) {
@@ -661,7 +669,7 @@ miss		: MISS_T DENY ';' {
 				$$ = NULL;
 			} else {
 			    new_op->op = OP_MISS;
-			    printf("MISS DENY\n");
+			    verb_printf("MISS DENY\n");
 			    new_op->val= (void*)TRUE;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -676,7 +684,7 @@ miss		: MISS_T DENY ';' {
 				$$ = NULL;
 			} else {
 			    new_op->op = OP_MISS;
-			    printf("MISS ALLOWED\n");
+			    verb_printf("MISS ALLOWED\n");
 			    new_op->val= (void*)FALSE;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -692,7 +700,7 @@ auth_mods	: AUTH_MODS_T string_list ';' {
 				$$ = NULL;
 			} else {
 			    new_op->op = OP_AUTH_MODS;
-			    printf("AUTH_MODS\n");
+			    verb_printf("AUTH_MODS\n");
 			    new_op->val= $2;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -707,7 +715,7 @@ redir_mods	: REDIR_MODS_T string_list ';' {
 				$$ = NULL;
 			} else {
 			    new_op->op = OP_REDIR_MODS;
-			    printf("REDIR_MODS\n");
+			    verb_printf("REDIR_MODS\n");
 			    new_op->val= $2;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -722,7 +730,7 @@ bandwidth	: BANDWIDTH_T num ';' {
 				$$ = NULL;
 			} else {
 			    new_op->op = OP_BANDWIDTH;
-			    printf("Bandwidth %dbytes/sec\n", $2);
+			    verb_printf("Bandwidth %dbytes/sec\n", $2);
 			    new_op->val= (void*)$2;
 			    new_op->next=NULL;
 			    $$ = new_op;
@@ -734,7 +742,7 @@ range		: NUMBER {
 			badp_p->length = 1;
 			if ( badp_p < &badports[MAXBADPORTS] ) badp_p++;
 			    else {
-			    printf("You can use max %d badports ranges\n", MAXBADPORTS);
+			    verb_printf("You can use max %d badports ranges\n", MAXBADPORTS);
 				badp_p--;
 			    }
 			}
@@ -744,7 +752,7 @@ range		: NUMBER {
 			badp_p->length = $4-$2+1;
 			if ( badp_p < &badports[MAXBADPORTS] ) badp_p++;
 			    else {
-			    printf("You can use max %d badports ranges\n", MAXBADPORTS);
+			    verb_printf("You can use max %d badports ranges\n", MAXBADPORTS);
 				badp_p--;
 			    }
 			}
@@ -788,7 +796,7 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
 				if ( !new_acls ) {
-					printf("No mem at http acl\n");
+					verb_printf("No mem at http acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -813,7 +821,7 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
 				if ( !new_acls ) {
-					printf("No mem at http acl\n");
+					verb_printf("No mem at http acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -838,7 +846,7 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new acl2");
 				if ( !new_acls ) {
-					printf("No mem at icp acl\n");
+					verb_printf("No mem at icp acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -863,7 +871,7 @@ icp		: ICP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new acl");
 				if ( !new_acls ) {
-					printf("No mem at icp acl\n");
+					verb_printf("No mem at icp acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -889,7 +897,7 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
 				if ( !new_acls ) {
-					printf("No mem at http acl\n");
+					verb_printf("No mem at http acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -914,7 +922,7 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new_acl");
 				if ( !new_acls ) {
-					printf("No mem at http acl\n");
+					verb_printf("No mem at http acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -939,7 +947,7 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new acl2");
 				if ( !new_acls ) {
-					printf("No mem at http acl\n");
+					verb_printf("No mem at http acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -964,7 +972,7 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 			} else {
 				new_acls = xmalloc(sizeof(*new_acls), "new acl");
 				if ( !new_acls ) {
-					printf("No mem at http acl\n");
+					verb_printf("No mem at http acl\n");
 					yyerror();
 					free(new_op);
 					$$ = NULL;
@@ -981,10 +989,24 @@ http		: HTTP '{' deny_acls allow_acls '}' {
 deny_acls	: deny_acl 			{ $$ = $1; }
 		| deny_acl deny_acls 		{ $2->next = $1 ; $$ = $2; }
 
+deny_acl	: DENY DSTDOMAIN INCLUDE_T string ';' { 
+			struct acl *new = xmalloc(sizeof(*new), "new acl");
+			if ( !new ) {
+				verb_printf("No mem for acl\n");
+				yyerror();
+				$$ = NULL;
+			} else {
+				$$ = new;
+				$$->list = load_domlist_from_file($4);
+				$$->next = NULL;
+				$$->type = ACL_DOMAINDST ;
+			}
+		}
+
 deny_acl	: DENY DSTDOMAIN domainlist ';' { 
 			struct acl *new = xmalloc(sizeof(*new), "new acl");
 			if ( !new ) {
-				printf("No mem for acl\n");
+				verb_printf("No mem for acl\n");
 				yyerror();
 				$$ = NULL;
 			} else {
@@ -996,12 +1018,27 @@ deny_acl	: DENY DSTDOMAIN domainlist ';' {
 		}
 
 allow_acls	: allow_acl 			{ $$ = $1; }
-		| allow_acl allow_acls 		{ $2->next = $1 ; $$ = $2; }
+		| allow_acl allow_acls 		{ $1->next = $2 ; $$ = $1; }
+
+allow_acl	: ALLOW  DSTDOMAIN INCLUDE_T string ';' { 
+			struct acl *new = xmalloc(sizeof(*new), "new acl");
+			verb_printf("Include from file %s\n",$4);
+			if ( !new ) {
+				verb_printf("No mem for acl\n");
+				yyerror();
+				$$ = NULL;
+			} else {
+				$$ = new;
+				$$->list = load_domlist_from_file($4);
+				$$->next = NULL;
+				$$->type = ACL_DOMAINDST ;
+			}
+		}
 
 allow_acl	: ALLOW  DSTDOMAIN domainlist ';' { 
 			struct acl *new = xmalloc(sizeof(*new), "new acl");
 			if ( !new ) {
-				printf("No mem for acl\n");
+				verb_printf("No mem for acl\n");
 				yyerror();
 				$$ = NULL;
 			} else {
@@ -1018,7 +1055,7 @@ string_list	: string_list_e { $$ = $1; }
 			$1->next = $2; $$ = $1; 
 			d = $1;
 			while(d) {
-				printf("string_list:<%s>\n", d->string);
+				verb_printf("string_list:<%s>\n", d->string);
 				d = d->next;
 			}
 		}
@@ -1033,13 +1070,17 @@ string_list_e	: string {
 			$$ = new;
 			free($1);
 		}
-domainlist	: domain { $$ = $1; }
+domainlist	: domain {
+			struct domain_list *d=$1;
+			verb_printf("<%s>\n", d->domain);
+			$$ = $1;
+		}
 		| domain domainlist {
 			struct domain_list *d;
-			$1->next = $2; $$ = $1; 
+			$1->next = $2; $$ = $1;
 			d = $1;
 			while(d) {
-				printf("<%s>\n", d->domain);
+				verb_printf("<%s>\n", d->domain);
 				d = d->next;
 			}
 		};
@@ -1047,7 +1088,10 @@ domainlist	: domain { $$ = $1; }
 domain		: STRING {
 			struct	domain_list *new;
 			new = xmalloc(sizeof(*new), "new acl");
-			if ( !new ) yyerror();
+			if ( !new ) {
+			    verb_printf("malloc failed\n");
+			    yyerror();
+			}
 			new->domain = malloc(strlen(yylval.STRPTR)+1);
 			if ( !new->domain ) yyerror();
 			strcpy(new->domain, yylval.STRPTR);
@@ -1091,13 +1135,13 @@ network		: NETWORK {
 				new->mask = 0;
 			    else {
 				if ( (masklen<0) || (masklen>32) ) {
-					printf("Invalid masklen %d\n", masklen);
+					verb_printf("Invalid masklen %d\n", masklen);
 					yyerror();
 					return(-1);
 				}
 				new->mask = (int)0x80000000 >> ( masklen - 1 );
 			    }
-			printf("NetWork: <<%8.8x/%d & %08x>>\n",  new->network,
+			verb_printf("NetWork: <<%8.8x/%d & %08x>>\n",  new->network,
 							new->masklen,
 							new->mask);
 			free(yylval.STRPTR);
@@ -1105,6 +1149,56 @@ network		: NETWORK {
 		}
 
 %%
+
+struct domain_list*
+load_domlist_from_file(char* file)
+{
+FILE			*f;
+struct	domain_list	*first=NULL, *new, *last=NULL;
+char			buf[128], *p;
+
+    f = fopen(file,"r");
+    if ( !f ) {
+	verb_printf("Failed to open file %s: %s\n", file, strerror(errno));
+	return(NULL);
+    }
+    /* read file - domain per line */
+    while ( fgets(buf, sizeof(buf), f) ) {
+	p = buf;
+	if ( ( p = memchr(buf, '\n', sizeof(buf)) ) ) *p = 0;
+	/* skip leading spaces */
+	p = buf;
+	while ( *p && isspace(*p) ) p++;
+	if ( !*p ) /* empty line */
+	    continue;
+	if ( *p == '#' ) /* comment */
+	    continue;
+	/* ok here is domain */
+	new = malloc(sizeof(*new));
+	bzero(new, sizeof(*new));
+	if ( !new ) {
+	    if ( first ) free_dom_list(first);
+	    fclose(f);
+	    return(NULL);
+	}
+	new->domain = malloc(strlen(p)+1);
+	if ( !new->domain ) {
+	    if ( first ) free_dom_list(first);
+	    fclose(f);
+	    return(NULL);
+	}
+	strcpy(new->domain, p);
+	if ( !strcmp(p, "*") )
+		new->length = -1;
+	    else
+		new->length = strlen(p);
+	if ( !first ) first = new;
+	if ( last ) last->next = new;
+	last = new;
+    }
+    fclose(f);
+    return(first);
+}
 
 int
 readconfig(char *name)

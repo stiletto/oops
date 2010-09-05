@@ -124,7 +124,7 @@ time_t			now;
 	    continue;
 	}
 	if ( start_cleanup(total_blks, total_free, disk_low_free) ) {
-	    my_log("Need disk clean up: free: %d/total: %d\n", total_free, total_blks);
+	    my_xlog(LOG_STOR, "Need disk clean up: free: %d/total: %d\n", total_free, total_blks);
 	    /* 1. create db cursor */
 	    rc = dbp->cursor(dbp, NULL, &dbcp
 #if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)   
@@ -175,7 +175,7 @@ time_t			now;
 	    UNLOCK_DB ;
 	    forced_cleanup = FALSE;
 	} else {
-	    my_log("Skip cleanup: %d out of %d (%d%%) free\n", total_free, total_blks,(total_free*100)/total_blks);
+	    my_xlog(LOG_STOR, "Skip cleanup: %d out of %d (%d%%) free\n", total_free, total_blks,(total_free*100)/total_blks);
 	}
 done:
 err:
@@ -245,7 +245,7 @@ run:
 	if ( disk_ref->expires < now ) {
 	    storage = locate_storage_by_id(disk_ref->id);
 	    if ( storage ) {
-		if ( ( storage->flags & ST_READY ) && SPACE_NOT_GOOD(storage) ) {
+		if ( ( storage->flags & ST_READY ) /*&& SPACE_NOT_GOOD(storage)*/ ) {
 		    dbcp->c_del(dbcp, 0);
 		    expired_cnt++ ;
 		    WRLOCK_STORAGE(storage);

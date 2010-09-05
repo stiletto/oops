@@ -133,6 +133,9 @@ line		[^\n]+
 <INITIAL>{expire_value}	{
 		return(EXPIRE_VALUE);
 		}
+<INITIAL>[Ff][Tt][Pp]-[Ee][Xx][Pp][Ii][Rr][Ee]-[Vv][Aa][Ll][Uu][ee] {
+		return(FTP_EXPIRE_VALUE_T);
+		}
 <INITIAL>{expire_interval} {
 		return(EXPIRE_INTERVAL);
 		}
@@ -268,6 +271,9 @@ line		[^\n]+
 <httpst,icpst>\}	{
 		BEGIN(groupst);
 		return('}');
+		}
+<httpst>[Ii][Nn][Cc][Ll][Uu][Dd][Ee][:] {
+		return(INCLUDE_T);
 		}
 <peerst,httpst,icpst,groupst>{allow}	{
 		return(ALLOW);

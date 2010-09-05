@@ -90,6 +90,7 @@ int			peerlen = sizeof(peer);
 struct  group		*group;
 struct	acl		*acl;
 struct	domain_list	*dom, *best_allow, *best_deny;
+struct	domain_list	*best_allow1, *best_deny1;
 char			host[MAXHOSTNAMELEN], lh[MAXHOSTNAMELEN], *t;
 char			*s;
 
@@ -128,23 +129,41 @@ char			*s;
     best_allow = best_deny = NULL;
     /* find longest allow str */
     acl = group->http->allow;
-    if ( acl )switch( acl->type ) {
-	case ACL_DOMAINDST:
-		dom = (struct domain_list*)acl->list;		
-		best_allow = find_best_dom(dom, host);
-		break;
-	default:
-		break;
-    }
-    /* find longest allow str */
-    acl = group->http->deny;
-    if ( acl ) switch( acl->type ) {
+    while ( acl ) {
+	if ( acl )switch( acl->type ) {
 	case ACL_DOMAINDST:
 		dom = (struct domain_list*)acl->list;
-		best_deny = find_best_dom(dom, host);
+		best_allow1 = find_best_dom(dom, host);
 		break;
 	default:
 		break;
+	}
+	if ( !best_allow ) best_allow = best_allow1;
+	    else {
+		if (best_allow && best_allow1 && 
+		    (best_allow1->length > best_allow->length))
+		    	best_allow = best_allow1;
+	}
+	acl = acl->next;
+    }
+    /* find longest deny str */
+    acl = group->http->deny;
+    while( acl ) {
+	if ( acl ) switch( acl->type ) {
+	case ACL_DOMAINDST:
+		dom = (struct domain_list*)acl->list;
+		best_deny1 = find_best_dom(dom, host);
+		break;
+	default:
+		break;
+	}
+	if ( !best_deny ) best_deny = best_deny1;
+	    else {
+		if (best_deny && best_deny1 && 
+		    (best_deny1->length > best_deny->length))
+		    	best_deny = best_deny1;
+	}
+	acl = acl->next;
     }
     if ( best_deny  && !best_allow ) return(ACCESS_DOMAIN);
     if ( best_allow && !best_deny  ) return(port_deny(group, rq));

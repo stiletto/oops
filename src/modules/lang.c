@@ -50,7 +50,7 @@ static	void		recode_buff(struct buff*, struct charset*);
 int
 mod_load()
 {
-    printf("Lang started\n");
+    verb_printf("Lang started\n");
     if ( charsets ) {
 	free_charsets(charsets);
 	charsets = NULL;
@@ -63,7 +63,7 @@ int
 mod_unload()
 {
     WRLOCK_LANG_CONFIG ;
-    printf("Lang stopped\n");
+    verb_printf("Lang stopped\n");
     return(MOD_CODE_OK);
 }
 
@@ -102,7 +102,7 @@ char	*p = config;
 	    if ( !cs && !(cs = lookup_charset_by_name(charsets, agent))) {
 		cs = add_new_charset(&charsets, agent);
 		if ( !cs ) {
-		    printf("Can't create charset\n");
+		    verb_printf("Can't create charset\n");
 		    goto done;
 		}
 		continue;
@@ -113,7 +113,7 @@ char	*p = config;
 	    struct string_list *list = cs->CharsetAgent;
 
 	    while(list) {
-		printf("Agent: %s\n", list->string);
+		verb_printf("Agent: %s\n", list->string);
 		list = list->next;
 	    }
 	}
@@ -129,11 +129,11 @@ char	*p = config;
 	FILE		*Tf;
 
 	if ( sscanf(p+18, " %80s %128s", &charset, &path) == 2 ) {
-	    printf("<<recodetable for %s: %s>>\n", charset, path);
+	    verb_printf("<<recodetable for %s: %s>>\n", charset, path);
 	    if ( !(cs=lookup_charset_by_name(charsets, charset)) ) {
 		cs = add_new_charset(&charsets, charset);
 		if ( !cs ) {
-		    printf("Can't create charset\n");
+		    verb_printf("Can't create charset\n");
 		    goto done;
 		}
 	    }
@@ -159,7 +159,7 @@ char	*p = config;
 		}
 		fclose(Tf);
 	    } else
-		printf("Can't open %s: \n", strerror(errno));
+		verb_printf("Can't open %s: \n", strerror(errno));
 	}
     }
 done:

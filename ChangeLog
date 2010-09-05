@@ -1,7 +1,26 @@
+	27.08.99
+		http acl {allow|deny} include:filename - read allowed/denied
+			domains from file (usefull if you have lots of domains
+			to allow/deny)
+		-v option now eanble verbose logging at startup
+			(without -v you will get very compact startup log)
+		-x option now control log verbosity.
+	26.08.99
+		myport for modules done. redir module can listen on separate
+		port.
+		allow dstdomain bugs fixed - can use lot of strings 'allow dstdomain'
+	18.08.99
+		Fixed several bugs:
+		Header Age: is correct again.
+		Replace modified doc on disk works again.
+		ftp-docs are saved now with Expire time 24 hours.
+		Expired documents will be deleted from storages even if there
+			is enough space in storages.
+		Client socket now is nonblocked - fixed possible
+			lock in reading from client.
 11.08.99 version 1.2b
 	   icp:
-		Correct relations with PARENT/SIBLIG - now send requests to 
-		all peers.
+		Correct relations with PARENT/SIBLIG
 		When received HIT from any peer - use it.
 		When received only MISSes - send request to first answered
 			 PARENT

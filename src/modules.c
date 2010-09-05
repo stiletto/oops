@@ -391,5 +391,53 @@ int		      rc = MOD_CODE_OK;
     return(rc);
 }
 
+int
+parse_myports(char *string, u_short *ports, int number)
+{
+char	buf[10], *p, *d;
+u_short	port, *pptr=ports;
+int	nres=0, rc, one=-1, so;
+struct	sockaddr_in	sin_addr;
+
+    if ( !ports || !string ) return(0);
+    while( string && *string && (nres < number) ) {
+	while ( *string && !isdigit(*string) ) string++;
+	if ( !*string ) break;
+	p = string;
+	d = buf;
+	while ( *p && isdigit(*p) ) {
+	    *d++ = *p++;
+	}
+	*d = 0;
+	port = atoi(buf);
+	if ( port == http_port ) {
+	    nres++;
+	    *pptr++ = port;
+	} else
+	if ( tcp_port_in_use(port) ) {
+	    nres++;
+	    *pptr++ = port;
+	} else
+	if ( port && (so = socket(AF_INET, SOCK_STREAM, 0)) >= 0 ) {
+	    setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
+	    bzero(&sin_addr, sizeof(sin_addr));
+	    sin_addr.sin_family = AF_INET;
+	    sin_addr.sin_port   = htons(port);
+	    rc = bind(so, (struct sockaddr*)&sin_addr, sizeof(sin_addr));
+	    if ( rc >=0 ) {
+		nres++;
+		*pptr++ = port;
+		add_socket_to_listen_list(so, 0, NULL);
+		add_to_tcp_port_in_use(port);
+		listen(so, 128);
+	    } else {
+		printf("parse_myports:bind: %s\n", strerror(errno));
+	    }
+	    printf("port = %d\n", port);
+	}
+	string = p;
+    }
+    return(nres);
+}
 
 #endif

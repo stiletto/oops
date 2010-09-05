@@ -31,6 +31,8 @@
 #include	"oops.h"
 #include	"modules.h"
 
+char	*days[] = {"Sun", "Mon","Tue","Wed","Thu","Fri","Sat"};
+char	*months[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
 FILE	*logf, *accesslogf;
 void	flush_log();
 int	lookup_dns_cache(char* name, struct dns_cache_item *items, int counter);
@@ -40,12 +42,59 @@ int	readt(int, char*, int, int);
 int	my_gethostbyname(char *name);
 void	get_hash_stamp(char*, int*, int*);
 void
+verb_printf(char *form, ...)
+{
+va_list ap;
+
+    if ( !verbose_startup ) return;
+    va_start(ap, form);
+    vprintf(form, ap);
+    va_end(ap);
+}
+
+void
 my_log(char *form, ...)
 {
 va_list	ap;
 char		ctbuf[80], *c;
 time_t		now;
 void		*self;
+
+    rwl_wrlock(&log_lock);
+    if ( !logf ) {
+        rwl_unlock(&log_lock);
+    	return;
+    }
+    now = time(NULL);
+#if	defined(SOLARIS)
+    ctime_r(&now, ctbuf, sizeof(ctbuf)-1);
+#else
+#if	defined(LINUX)
+    ctime_r(&now, ctbuf);
+#else
+    sprintf(ctbuf, "%u\n", now);
+#endif
+#endif
+    c = strchr(ctbuf, '\n');
+    if ( c ) *c = ' ';
+    va_start(ap, form);
+    self = (void*)pthread_self();
+    fprintf(logf, "%s [%p]", ctbuf, self);
+    vfprintf(logf, form, ap);
+    rwl_unlock(&log_lock);
+    va_end(ap);
+    return;
+}
+
+void
+my_xlog(int lvl, char *form, ...)
+{
+va_list	ap;
+char		ctbuf[80], *c;
+time_t		now;
+void		*self;
+
+    if ( !TEST(lvl, verbosity_level) ) return;
 
     rwl_wrlock(&log_lock);
     if ( !logf ) {
@@ -130,13 +179,13 @@ str_to_sa(char *val, struct sockaddr *sa)
 		    else {
 			he = gethostbyname(val);
 			if ( !he ) {
-			    my_log("%s is not a hostname, not an IP addr\n", val);
+			    my_xlog(LOG_DNS, "%s is not a hostname, not an IP addr\n", val);
 			    return(1);
 			}
 			ad = (*(struct in_addr*)*he->h_addr_list).s_addr;
 		}
 		if ( !ad ) {
-			my_log("%s is not a hostname, not an IP addr\n", val);
+			my_xlog(LOG_DNS, "%s is not a hostname, not an IP addr\n", val);
 			return(1);
 		}
 		((struct sockaddr_in*)sa)->sin_addr.s_addr = ad;
@@ -215,7 +264,7 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
     }
     dns_so = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if ( dns_so == -1 ) {
-	my_log("Can't create NDS socket: %s\n", strerror(errno));
+	my_log("Can't create DNS socket: %s\n", strerror(errno));
 	return(0);
     }
     dns_sa.sin_family = AF_INET;
@@ -253,7 +302,7 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 resend:
     r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&dns_sa, sizeof(dns_sa));
     if ( r == -1 ) {
-	my_log("Can't send to DNS server: %s\n", strerror(errno));
+	my_xlog(LOG_DNS, "Can't send to DNS server: %s\n", strerror(errno));
 	close(dns_so);
 	return(0);
     }
@@ -263,17 +312,17 @@ resend:
 	for (i=1;i<ns_configured;i++)
 	    sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&ns_sa[i], sizeof(struct sockaddr_in));
     }
-    /* wait for responce */
+    /* wait for response */
     r = readt(dns_so, (char*)dnsa, sizeof(dnsa), resend_tmo);resend_tmo <<= 1;
     switch(r) {
     case(-2): /* timeout */
 	if (--resend_cnt) goto resend;
 	break;
     case(-1): /* error 		*/
-	my_log("Error reading DNS answer: %s\n", strerror(errno));
+	my_xlog(LOG_DNS, "Error reading DNS answer: %s\n", strerror(errno));
 	break;
     case (0): /* ????? 		*/
-	my_log("Emty DNS answer\n");
+	my_xlog(LOG_DNS, "Emty DNS answer\n");
 	break;
     default:  /* parse data 	*/
 	ah = (struct dnsqh *)dnsa;
@@ -284,7 +333,7 @@ resend:
 	if ( (flags & 0x8000) && (ah->id == qh->id) && (!(flags&0xf)) ) {
 	    if ( !ntohs(ah->ancount) ) break;
 	} else {
-	    my_log("Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
+	    my_xlog(LOG_DNS, "Failed DNS answer: qid(%x)<->aid(%x), flags:%x\n", qh->id,
 	    				ah->id, flags);
 	    break;
 	}
@@ -318,7 +367,7 @@ find_IN_A:
 	if ( gota > acount ) break;
 	*current = ntohl(result);
 	addr.s_addr = *current;
-	my_log("Added %s for %s\n", inet_ntoa(addr), tmpname);
+	my_xlog(LOG_DNS, "Added %s for %s\n", inet_ntoa(addr), tmpname);
 	current++;
 	results++;
 	s += rdl;
@@ -335,7 +384,7 @@ find_IN_A:
 	dns_name  = xmalloc(strlen(name)+1, "dns_name");
 	if ( !dns_items || !dns_name )
 	    goto dns_c_failed;
-	my_log("Put %d answers in dns_cache\n", results);
+	my_xlog(LOG_DNS, "Put %d answers in dns_cache\n", results);
 	strcpy(dns_name, (char*)&tmpname[0]);
 	ci = dns_items; current = answers;
 	for(i=0;i<results;i++,current++,ci++) {
@@ -345,7 +394,7 @@ find_IN_A:
 	}
 	if ( lookup_dns_cache(dns_name, dns_items, results) ) goto dns_c_failed;
 
-	my_log("Done...\n");
+	my_xlog(LOG_DNS, "Done...\n");
 	goto fin;
 
     dns_c_failed:
@@ -356,7 +405,7 @@ find_IN_A:
   fin:
     close(dns_so);
     addr.s_addr = answers[0];
-    my_log("returned %s\n", inet_ntoa(addr));
+    my_xlog(LOG_DNS, "returned %s\n", inet_ntoa(addr));
     return(answers[0]);
 }
 
@@ -375,7 +424,7 @@ unsigned		use;
     cp = dns_hash[hash].first;
     while ( cp ) {
 	if ( (cp->stamp == stamp) && !strcmp(name,cp->name) ) {
-	    my_log("It's here\n");
+	    my_xlog(LOG_DNS, "It's here\n");
 	    break;
 	}
 	cp = cp->next;
@@ -667,12 +716,16 @@ int
 mk1123time(time_t time, char *buf, int size)
 {
 struct	tm	tm;
-int		rc;
 time_t		holder = time;
+char		tbuf[80];
 
     gmtime_r(&holder, &tm);
-    rc = strftime(buf, size, "%a, %d %b %Y %H:%M:%S GMT", &tm);
-    return(rc);
+    sprintf(tbuf, "%s, %d %s %d %02d:%02d:%02d GMT",
+    		days[tm.tm_wday], tm.tm_mday,
+    		months[tm.tm_mon], tm.tm_year+1900,
+		tm.tm_hour, tm.tm_min, tm.tm_sec);
+    strncpy(buf, tbuf, size);
+    return(TRUE);
 }
 
 /* accept tm for GMT, return time */
@@ -680,20 +733,27 @@ int
 tm_to_time(struct tm *tm, time_t *time)
 {
 struct		tm ttm;
+time_t		res, dst;
 
     /* mktime convert from localtime, so shift tm to localtime	*/
     memcpy(&ttm, tm, sizeof(ttm));
     ttm.tm_isdst = -1;
+    pthread_mutex_lock(&mktime_lock);
+    res = mktime(&ttm);
+    pthread_mutex_unlock(&mktime_lock);
+    dst = 0;
+    if ( ttm.tm_isdst > 0)
+            dst = -3600;
 #if defined(SOLARIS)
-    ttm.tm_sec -= timezone;
+    res -= timezone+dst;
 #else
 #ifdef	HAVE__GMTOFF__
-    ttm.tm_sec -= ttm.__tm_gmtoff__;
+    res += ttm.__tm_gmtoff__ - dst;
 #else
-    ttm.tm_sec -= ttm.tm_gmtoff;
+    res += ttm.tm_gmtoff - dst;
 #endif
 #endif
-    return((*time = mktime(&ttm)));
+    return(*time = res);
 }
 
 char*
@@ -907,6 +967,17 @@ struct	av	*av = obj->headers;
 	if ( av->attr ) rs+=strlen(av->attr);
 	if ( av->val ) rs+= strlen(av->val);
 	av = av->next;
+    }
+    return(rs);
+}
+int
+calculate_container_datalen(struct buff *b)
+{
+int		rs = 0;
+
+    while( b ) {
+	rs += b->used;
+	b = b->next;
     }
     return(rs);
 }
@@ -1307,6 +1378,22 @@ char	*t;
 	}
 	return;
     }
+    if ( !strncasecmp(p, "X-oops-internal-request-time: ", 30) ) {
+	char        *x;
+
+	x=p + 30;
+	while( *x && isspace(*x) ) x++;
+	a->request_time = atoi(x);
+	return;
+    }
+    if ( !strncasecmp(p, "X-oops-internal-response-time: ", 31) ) {
+	char        *x;
+
+	x=p + 31;
+	while( *x && isspace(*x) ) x++;
+	a->response_time = atoi(x);
+	return;
+    }
     if ( !strncasecmp(p, "Content-length: ", 16) ) {
 	char        *x;
 	/* length */
@@ -1320,8 +1407,7 @@ char	*t;
 	/* length */
 	x=p + 6; /* strlen("date: ") */
 	while( *x && isspace(*x) ) x++;
-	a->times.date  = time(NULL);
-;
+	a->times.date  = global_sec_timer;
 	if (http_date(x, &a->times.date) ) my_log("Can't parse date: %s\n", x);
 	return;
     }
@@ -1554,6 +1640,8 @@ go:
 	struct buff	*new = NULL, *old = NULL, *body;
 	int		all_siz;
 
+	obj->insertion_point = start-beg;
+	obj->tail_length = off;
 	a->state |= GOT_HDR ;
 	obj->content_length = a->content_len;
 	b->used = ( start + off ) - beg;	/* trunc first buf to header siz	*/
@@ -2006,7 +2094,7 @@ char		   *ext;
     if ( ext ) ext++;
     if ( ext && *ext ) while ( mt->ext ) {
 	if ( !strcasecmp(ext,mt->ext) ) {
-	    my_log("type: %s\n", mt->type);
+	    my_xlog(LOG_HTTP, "type: %s\n", mt->type);
 	    return(mt->type);
 	}
 	mt++;
@@ -2275,4 +2363,64 @@ char	res;
     if ( !strcasecmp(day, "all") ) res = 127; else
     res = -1;
     return(res);
+}
+
+/* insert additional (oops-internal) headers in object */
+int
+insert_header(char *attr, char *val, struct mem_obj *obj)
+{
+char	tbuf[10], *fmt;
+int	size_incr;
+
+    if ( !obj->container ) return(1);
+    if ( !obj->insertion_point || obj->tail_length<=0 ) return(1);
+
+    memcpy(tbuf, obj->container->data + obj->insertion_point, obj->tail_length);
+    fmt = malloc(2 + strlen(attr) + 1 + strlen(val) + 1);
+    if ( !fmt ) return(1);
+    sprintf(fmt,"\r\n%s %s", attr, val);
+    size_incr = strlen(fmt);
+    obj->container->used -= obj->tail_length;
+    attach_data(fmt, size_incr, obj->container);
+    attach_data(tbuf, obj->tail_length, obj->container);
+    obj->insertion_point += size_incr;
+    obj->size += size_incr;
+    free(fmt);
+    return(0);
+}
+
+int
+tcp_port_in_use(u_short port)
+{
+struct	tcpport	*curr = tcpports;
+
+    while ( curr ) {
+	if ( curr->port == port ) return(TRUE);
+	curr = curr->next;
+    }
+    return(FALSE);
+}
+
+void
+add_to_tcp_port_in_use(u_short port)
+{
+struct	tcpport	*new = malloc(sizeof(*new));
+
+    if ( !new ) return;
+    new->port = port;
+    new->next = tcpports;
+    tcpports = new;
+}
+
+void
+free_tcp_ports_in_use()
+{
+struct	tcpport	*curr = tcpports, *next;
+
+    while( curr ) {
+	next = curr->next;
+	free(curr);
+	curr = next;
+    }
+    tcpports = NULL;
 }
