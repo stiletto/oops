@@ -101,6 +101,8 @@ ssl.o:		ssl.c oops.h
 statistics.o:	statistics.c oops.h
 list.o:		list.c llt.h oops.h
 modules.o:	modules.c modules.h
+common.o:       common.c oops.h
+
 version.h:	version
 		echo "#define VERSION \""`cat version`"\""> version.h
 

@@ -1,6 +1,20 @@
 /*
-	addrd common code for client and sever
-	$Id: common.c,v 1.2 1996/11/28 10:24:01 igor Exp igor $
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
 */
 
 #include	<stdio.h>
@@ -25,44 +39,6 @@
 #include	"oops.h"
 
 
-int
-readn(int so, char* buf, int len, int tmo)
-{
-int		to_read = len, sr, readed = 0, got;
-char		*p = buf;
-time_t		start, now;
-struct	pollarg	pa;
-
-	if ( so < 0 ) return(0);
-	if ( len <= 0 ) return(0);
-	start = time(NULL);
-rl1:
-	now = time(NULL);
-	pa.fd = so;
-	pa.request = FD_POLL_RD;
-	sr = poll_descriptors(1, &pa, (tmo - (start-now))*1000);
-	if ( sr < 0 ) {
-		if ( errno == EINTR ) return(readed);
-		return(sr);
-	}
-	if ( sr == 0 ) {
-		/* timeot */
-		return(readed);
-	}
-	/* have somethng to read	*/
-	got = read(so, p, to_read);
-	if ( got == 0 )
-		return(readed);
-	if ( got <  0 ) {
-		return(got);
-	}
-	p	+= got;
-	readed	+= got;
-	to_read -= got;
-	if ( to_read == 0 ) return readed;
-	goto rl1;
-}
-
 /* read with timeout */
 int
 readt(int so, char* buf, int len, int tmo)
@@ -85,6 +61,7 @@ struct	pollarg	pollarg;
 		/* timeout */
 		return(-2);
 	}
+	if ( IS_HUPED(&pollarg) ) return(0);
 	/* have somethng to read	*/
 	got = recv(so, p, to_read, 0);
 	return(got);
@@ -106,23 +83,6 @@ struct	pollarg	pollarg;
 	if ( sr <= 0 )
 		return(FALSE);
 	return(TRUE);
-}
-
-int
-writen(int so, char* buf, int len)
-{
-int	towrite = len, written;
-char	*p = buf;
-
-	if ( so < 0 ) return(0);
-
-	while (towrite) {
-		written = write(so, p, towrite);
-		if ( written < 0 ) return(written);
-		towrite -= written;
-		p += written;
-	}
-	return(len);
 }
 
 int
@@ -161,6 +121,7 @@ struct pollarg	pollarg;
 	   /* timeot */
 	   return(-1);
 	}
+	if ( IS_HUPED(&pollarg) ) return(-1);
 	/* have somethng to write	*/
 	got = send(so, p, to_write, 0);
 	if ( got > 0 ) {
@@ -247,6 +208,7 @@ u_char		*s;
 	    free(recoded);
 	    return(-1);
 	}
+	if ( IS_HUPED(&pollarg) ) return(-1);
 	/* have somethng to write	*/
 	got = send(so, p, to_write, 0);
 	if ( got > 0 ) {

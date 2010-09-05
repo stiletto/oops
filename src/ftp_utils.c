@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include        <stdio.h>
 #include        <stdlib.h>
 #include        <fcntl.h>
@@ -140,7 +159,7 @@ char			*answer = NULL;
 	goto icp_failed;
  server_connect_done:;
 	if ( server_so < 0 )
-	    goto icp_failed;
+	    goto error;
 	/* fetch from parent */
 	fill_mem_obj(so, rq, headers, obj, server_so, source_type, &peer_sa);
 	return;
@@ -209,7 +228,7 @@ char			*answer = NULL;
     }
 have_p:
     server_so = server_connect(&ftp_request);
-    if ( server_so == -1 ) goto done;
+    if ( server_so == -1 ) goto error1;
     ftp_request.control = server_so;
 
     r = get_server_greeting(&ftp_request);	if ( r == -1 ) goto error;
@@ -250,10 +269,11 @@ have_p:
 
     goto done;
 error:
+    send_ftp_err(&ftp_request);
+error1:
     gettimeofday(&stop_tv, NULL);
     delta_tv = (stop_tv.tv_sec-start_tv.tv_sec)*1000 +
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
-    send_ftp_err(&ftp_request);
     log_access(delta_tv, &rq->client_sa,
 	"TCP_MISS", 555, ftp_request.received,
 	"GET", &rq->url, "DIRECT", ftp_request.type, rq->url.host);
@@ -381,6 +401,7 @@ time_t			started;
         close(data); req->data = -1;
 	if ( r < 0 ) return(r);
 	data = req->data = r;
+	my_xlog(LOG_FTP,"ftp:recv_nlst: Accepted\n");
     }
     nlst_buff = alloc_buff(CHUNK_SIZE);
     if ( !nlst_buff ) {
@@ -1225,11 +1246,12 @@ wpasv:
     goto wpasv;
 use_pasv:
     /* retrive info about server pasive port */
-    p = memchr(resp_buff->data, '(', resp_buff->used);
+    p = memchr((resp_buff->data)+checked, '(', resp_buff->used);
     if ( !p || !*++p) {
 	my_log("Unrecognized format of PASV answer\n");
 	goto error;
     }
+extract_port:
     for(j=0;j<6;j++) {
 	i[j] = atoi(p);
 	while(*p && isdigit(*p) ) p++;

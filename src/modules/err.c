@@ -57,7 +57,7 @@ static	void		reload_template();
 char	*messages[2][8] = {
 
 	/*-- LANG_EN --*/
-	{ "Bad formed url",
+	{ "Bad formed request or url",
 	  "Bad port",
 	  "Access denied to this domain",
 	  "DNS error, can't resolve",
@@ -244,6 +244,18 @@ struct	buff		*body;
 			if ( code == ERR_ACL_DENIED ) {
 			    attach_data(": ", 2, body);
 			    attach_data(reason, strlen(reason), body);
+			}
+			tptr = proc+2;
+			break;
+		case 'H':
+		case 'h':
+			{
+			char	*buf = malloc(strlen(host_name)+10);
+			    if ( buf ) {
+				sprintf(buf, "%s:%d", host_name, http_port);
+				attach_data(buf, strlen(buf), body);
+				free(buf);
+			    }
 			}
 			tptr = proc+2;
 			break;

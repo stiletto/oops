@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include        <stdio.h>
 #include        <stdlib.h>
 #include        <fcntl.h>
@@ -74,8 +93,16 @@ int			mysalen = sizeof(request.my_sa);
 struct	group		*group;
 int			miss_denied = TRUE;
 int			so, new_object, redir_mods_visited, auth_mods_visited;
+int			accepted_so;
+struct	work		*work;
 
-   so = (int)arg;
+
+   work = (struct work*)arg;
+   if ( !work ) return(NULL);
+   so = work->so;
+   accepted_so = work->accepted_so;
+   free(work);	/* we don't need it anymore	*/
+
    fcntl(so, F_SETFL, fcntl(so, F_GETFL, 0)|O_NONBLOCK);
 
    increment_clients();
@@ -83,6 +110,7 @@ int			so, new_object, redir_mods_visited, auth_mods_visited;
 
 re: /* here we go if client want persistent connection */
    bzero(&request, sizeof(request));
+   request.accepted_so = accepted_so;
    getpeername(so, (struct sockaddr*)&request.client_sa, &clsalen);
    getsockname(so, (struct sockaddr*)&request.my_sa, &mysalen);
    request.request_time = started = time(NULL);
@@ -157,6 +185,8 @@ re: /* here we go if client want persistent connection */
 	status = check_headers(&request, (char*)ip, (char*)cp, &checked_len, so);
 	if ( status ) {
 	    my_xlog(LOG_HTTP|LOG_FTP, "Failed to check headers\n");
+	    say_bad_request(so, "Bad request format.\n", "",
+		    ERR_BAD_URL, &request);
 	    goto done;
 	}
 	if ( request.state == REQUEST_READY )
@@ -283,12 +313,12 @@ ck_acc:
     }
 
     if ( !request.url.host || !request.url.host[0] ) {
-	    say_bad_request(so, "No host part in URL\n", NULL,
+	    say_bad_request(so, "No host part in URL\n", "",
 		    ERR_BAD_URL, &request);
 	    goto done;
     }
 
-    if ( strcasecmp(request.url.proto, "ftp")   && /* ftp processed below */
+    if ( (request.proto != PROTO_FTP)   && /* ftp processed below */
 	((!request.meth==METH_GET) 		||
 	 ( request.flags & RQ_HAS_NO_STORE) 	||
 	 ( request.flags & RQ_HAS_AUTHORIZATION)||
@@ -302,7 +332,7 @@ ck_acc:
 	close(so); so = -1;
 	goto done;
     }
-    if ( !request.refresh_pattern.valid && in_stop_cache(&request) ) {
+    if ( (request.proto != PROTO_FTP) && !request.refresh_pattern.valid && in_stop_cache(&request) ) {
 	if ( miss_denied ) {
 	    say_bad_request(so, "Please contact cachemaster\n", "Proxy access denied.\n",
 		ERR_ACC_DENIED, &request);
@@ -1491,11 +1521,11 @@ int			modflags = 0;
     if ( !TEST(modflags, MOD_AFLAG_OUT) )
 #endif
     {
-	writet(so, hdr, strlen(hdr), READ_ANSW_TIMEOUT);
-	writet(so, r, strlen(r), READ_ANSW_TIMEOUT);
-	writet(so, rf, strlen(rf), READ_ANSW_TIMEOUT);
-	writet(so, reason, strlen(reason), READ_ANSW_TIMEOUT);
-	writet(so, trailer, strlen(trailer), READ_ANSW_TIMEOUT);
+	if (hdr ) writet(so, hdr, strlen(hdr), READ_ANSW_TIMEOUT);
+	if ( r  ) writet(so, r, strlen(r), READ_ANSW_TIMEOUT);
+	if ( rf ) writet(so, rf, strlen(rf), READ_ANSW_TIMEOUT);
+	if ( reason ) writet(so, reason, strlen(reason), READ_ANSW_TIMEOUT);
+	if ( trailer) writet(so, trailer, strlen(trailer), READ_ANSW_TIMEOUT);
     }
 }
 int

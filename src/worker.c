@@ -42,9 +42,9 @@ void*		(*processor)(void*);
 	dataq_dequeue_special(&wq, (void**)&work);
 	so =	    work->so;
 	processor = work->f;
-	free(work);
 	if ( processor ) {
-	    (*processor)((void*)so);
+	    (*processor)((void*)work);
 	}
+	/* work freed by processor */
     }
 }

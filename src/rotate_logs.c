@@ -1,5 +1,22 @@
 /*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
 */
+
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<unistd.h>
@@ -32,6 +49,13 @@ void	rotate_file(char * name, FILE **f, int num);
 void
 rotate_log_file()
 {
+struct	stat	stat;
+int		r;
+
+    if ( !logf ) return;
+    r = fstat(fileno(logf), &stat);
+    if ( !S_ISREG(stat.st_mode) )
+	return;
     my_log("Rotate File %s\n", logfile);
     rwl_wrlock(&log_lock);
     rotate_file(logfile,&logf,log_num);
@@ -43,6 +67,13 @@ rotate_log_file()
 void
 rotate_accesslog_file()
 {
+struct	stat	stat;
+int		r;
+
+    if ( !accesslogf ) return;
+    r = fstat(fileno(accesslogf), &stat);
+    if ( !S_ISREG(stat.st_mode) )
+	return;
     my_log("Rotate File %s\n", accesslog);
     pthread_mutex_lock(&accesslog_lock);
     rotate_file(accesslog,&accesslogf,accesslog_num);

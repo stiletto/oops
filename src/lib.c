@@ -1,5 +1,22 @@
 /*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
 */
+
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<unistd.h>
@@ -16,7 +33,7 @@
 #include	<sys/socketvar.h>
 #include	<sys/resource.h>
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+#if	defined(HAVE_POLL) && !defined(LINUX)
 #include	<sys/poll.h>
 #endif
 
@@ -40,7 +57,7 @@ int	free_charset(struct charset *charsets);
 
 int	readt(int, char*, int, int);
 int	my_gethostbyname(char *name);
-char	my_gethostbyaddr(int);
+char	*my_gethostbyaddr(int);
 void	get_hash_stamp(char*, int*, int*);
 
 void    CTIME_R(time_t *a, char *b) {
@@ -313,7 +330,7 @@ char	*t=NULL, tmpname[MAXHOSTNAMELEN+1];
 }
 
 static u_short	q_id = 0;
-char
+char*
 my_gethostbyaddr(int addr)
 {
 struct	dnsqh {
@@ -387,6 +404,7 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
 	my_log("Can't create DNS socket: %s\n", strerror(errno));
 	return(0);
     }
+    bzero(&dns_sa, sizeof(dns_sa));
     dns_sa.sin_family = AF_INET;
 #if	!defined(SOLARIS) && !defined(LINUX)
     dns_sa.sin_len = sizeof(dns_sa);
@@ -417,7 +435,7 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
     *d++=0;*d++ = 1;
     *d++=0;*d++ = 1;
     rq_len = d - dnsq;
-    resend_cnt = 5;
+    resend_cnt = 10;
     resend_tmo = 1;
 resend:
     r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&dns_sa, sizeof(dns_sa));
@@ -425,15 +443,23 @@ resend:
 	my_xlog(LOG_DNS, "Can't send to DNS server: %s\n", strerror(errno));
 	close(dns_so);
 	return(0);
-    }
+    } else
+	my_xlog(LOG_DNS, "DNS rq sent\n");
     if ( (ns_configured > 1) && (wait_for_read(dns_so, 500) == FALSE) ) {
 	int i;
 	/* if we have another nameservers, which we can try to send rq */
-	for (i=1;i<ns_configured;i++)
-	    sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&ns_sa[i], sizeof(struct sockaddr_in));
+	for (i=1;i<ns_configured;i++) {
+	    r = sendto(dns_so, (char*)dnsq, rq_len, 0, (struct sockaddr*)&ns_sa[i], sizeof(struct sockaddr_in));
+	    if ( r == -1 ) {
+		my_xlog(LOG_DNS, "Can't send to DNS server: %s\n", strerror(errno));
+	    } else
+		my_xlog(LOG_DNS, "DNS rq sent\n");
+	}
     }
     /* wait for response */
-    r = readt(dns_so, (char*)dnsa, sizeof(dnsa), resend_tmo);resend_tmo <<= 1;
+    r = readt(dns_so, (char*)dnsa, sizeof(dnsa), resend_tmo);
+    resend_tmo <<= 1;
+    if ( resend_tmo > 30 ) resend_tmo = 30;
     switch(r) {
     case(-2): /* timeout */
 	if (--resend_cnt) goto resend;
@@ -487,7 +513,6 @@ find_IN_A:
 	if ( gota > acount ) break;
 	*current = ntohl(result);
 	addr.s_addr = *current;
-	my_xlog(LOG_DNS, "Added %s for %s\n", inet_ntoa(addr), tmpname);
 	current++;
 	results++;
 	s += rdl;
@@ -525,7 +550,6 @@ find_IN_A:
   fin:
     close(dns_so);
     addr.s_addr = answers[0];
-    my_xlog(LOG_DNS, "returned %s\n", inet_ntoa(addr));
     return(answers[0]);
 }
 
@@ -992,14 +1016,14 @@ int	rc;
     }
     if ( size < 0 ) {
 	my_log("size<=0 in increase_hash_size\n");
-	exit(1);
+	do_exit(1);
 	return;
     }
     if ( !(rc = pthread_mutex_lock(&hash->size_lock)) ) {
 	hash->size += size;
 	if ( hash->size < 0 ) {
     	    my_log("increase: hash_size has negative value: %d!\n", hash->size);
-	    exit(1);
+	    do_exit(1);
 	}
 	pthread_mutex_unlock(&hash->size_lock);
     } else {
@@ -1017,7 +1041,7 @@ int	rc;
     }
     if ( size < 0 ) {
 	my_log("size<0 in decrease_hash_size\n");
-	exit(1);
+	do_exit(1);
 	return;
     }
     total_alloc -= size;
@@ -1025,7 +1049,7 @@ int	rc;
 	hash->size -= size;
 	if ( hash->size < 0 ) {
     	    my_log("decrease: hash_size has negative value: %d!\n", hash->size);
-	    exit(1);
+	    do_exit(1);
 	}
 	pthread_mutex_unlock(&hash->size_lock);
     } else {
@@ -1050,7 +1074,7 @@ struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 #endif
 #if	defined(RLIMIT_NOFILE)
 	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
-	    rl.rlim_cur = rl.rlim_max;
+	    rl.rlim_cur = rl.rlim_max = OPEN_FILES_MAXIMUM;
 	    if ( !setrlimit(RLIMIT_NOFILE, &rl) ) {
 		printf("RLIMIT_NOFILE changed to maximum: %u\n", (unsigned)rl.rlim_max);
 	    } else {
@@ -1075,6 +1099,34 @@ struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
 		printf("RLIMIT_NPROC changed to maximum: %u\n", (unsigned)rl.rlim_cur);
 	    } else {
 		printf("warning: Can't change RLIMIT_NPROC\n");
+	    }
+	}
+#endif
+}
+void
+report_limits()
+{
+struct	rlimit	rl = {RLIM_INFINITY, RLIM_INFINITY};
+
+#if	defined(RLIMIT_DATA)
+	if ( !getrlimit(RLIMIT_DATA, &rl) ) {
+	    my_log("RLIMIT_DATA: %u\n", (unsigned)rl.rlim_cur);
+	}
+#endif
+#if	defined(RLIMIT_NOFILE)
+	if ( !getrlimit(RLIMIT_NOFILE, &rl) ) {
+	    my_log("RLIMIT_NOFILE: %u\n", (unsigned)rl.rlim_cur);
+	}
+#endif
+#if	defined(RLIMIT_CORE)
+	if ( !getrlimit(RLIMIT_CORE, &rl) ) {
+	    my_log("RLIMIT_CORE: %u\n", (unsigned)rl.rlim_cur);
+	}
+#endif
+#if	defined(RLIMIT_NPROC) && defined(LINUX)
+	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
+	    if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
+		printf("RLIMIT_NPROC: %u\n", (unsigned)rl.rlim_cur);
 	    }
 	}
 #endif
@@ -1188,7 +1240,7 @@ int	rc=-1;
 
     if ( n > 0 ) {
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+#if	defined(HAVE_POLL) && !defined(LINUX)
 	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
 			    *pollfdsaved = NULL, *pfdc;
 	struct	pollarg *pa;
@@ -1300,7 +1352,7 @@ int	rc=-1;
 
     } else {
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+#if	defined(HAVE_POLL) && !defined(LINUX)
 	rc = poll(NULL, 0, msec);
 #else
 	struct timeval	tv;
@@ -1331,7 +1383,7 @@ int	rc=-1;
 
     if ( n > 0 ) {
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+#if	defined(HAVE_POLL) && !defined(LINUX)
 	struct	pollfd	pollfd[MAXPOLLFD], *pollptr,
 			    *pollfdsaved = NULL, *pfdc;
 	struct	pollarg *pa;
@@ -1437,7 +1489,7 @@ int	rc=-1;
 
     } else {
 
-#if	defined(HAVE_POLL) && !defined(LINUX) && !defined(FREEBSD)
+#if	defined(HAVE_POLL) && !defined(LINUX)
 	rc = poll(NULL, 0, msec);
 #else
 	struct timeval	tv;
@@ -1836,7 +1888,7 @@ go:
 		*/
 		a->flags |= (ANSW_NO_STORE | ANSW_SHORT_CONTAINER);
 	    } else /* obj is not too large */
-		all_siz = a->content_len;
+		all_siz = MIN(a->content_len, 1024*32);
 	} else /* no Content-Len: */
 	    all_siz = ROUND_CHUNKS(end-start-off);
 	body = alloc_buff(all_siz);
@@ -2096,7 +2148,7 @@ char	*p;
 
 	if ( size < 0 ) {
 	    my_log("Alloc %d for %s\n", size, d);
-	    exit(1);
+	    do_exit(1);
 	}
 	p = malloc(size);
 	return(p);
@@ -2523,8 +2575,6 @@ int	mod_flags = 0;
     send_hot_buff = obj->body;
     sended = send_hot_pos = 0;
 send_it:;
-    FD_ZERO(&wset);
-    FD_SET(so, &wset);
     tv.tv_sec = READ_ANSW_TIMEOUT;tv.tv_usec = 0;
 /*    r = select(so+1, NULL, &wset, NULL, &tv);*/
     pollarg.fd = so;
@@ -2637,20 +2687,23 @@ tcp_port_in_use(u_short port)
 struct	tcpport	*curr = tcpports;
 
     while ( curr ) {
-	if ( curr->port == port ) return(TRUE);
+	if ( curr->port == port ) {
+	    return(curr->so);
+	}
 	curr = curr->next;
     }
-    return(FALSE);
+    return(0);
 }
 
 void
-add_to_tcp_port_in_use(u_short port)
+add_to_tcp_port_in_use(u_short port, int so)
 {
 struct	tcpport	*new = malloc(sizeof(*new));
 
     if ( !new ) return;
     new->port = port;
     new->next = tcpports;
+    new->so = so;
     tcpports = new;
 }
 

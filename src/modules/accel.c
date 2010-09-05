@@ -357,6 +357,7 @@ struct	to_host	*host, *next_host;
 	while ( host ) {
 	    next_host = host->next;
 	    if ( host->name ) free(host->name);
+	    if ( host->path ) free(host->path);
 	    free(host);
 	    host = next_host;
 	}
@@ -785,7 +786,8 @@ u_short			port;
 		this = this->next_in_hash;
 	    }
 	hash_found:
-	    return(this);
+	    if ( this ) return(this);
+	    goto try_addresses;
 	}
 	while(map) {
 	    switch( map->type ) {
@@ -816,8 +818,22 @@ u_short			port;
 	    }
 	    map = map->next;
 	}
-    } else /* We failed to find Host */
-	return(NULL);
+    }
+try_addresses:
+    /* If we didn't find hostname from host - try addresses   */
+    map = maps;
+    while ( map ) {
+	if ( map->from_host ) {
+	    str_to_sa(map->from_host, (struct sockaddr*)&map_sa);
+	    if ( (map_sa.sin_addr.s_addr == rq->my_sa.sin_addr.s_addr) &&
+		(!map->from_port || (map->from_port == ntohs(rq->my_sa.sin_port)) ) ) {
+		my_log("Map found: %s\n", map->from_host);
+		break;
+	    }
+	}
+	map = map->next;
+    }
+
     if ( !map ) {
 	if ( !default_map ) goto done;
 	my_log("Default used\n");
@@ -891,6 +907,7 @@ do_next_host:
 
 	    if ( ( o = strchr(buf, '/') ) ) {
 		path = strdup(o);
+		*o = 0;
  	    }
 	    if ( ( o = strchr(buf, ':') ) ) {
 		port = atoi(o+1);
@@ -1224,6 +1241,7 @@ do_next_host:
 
 	    if ( ( o = strchr(buf, '/') ) ) {
 		path = strdup(o);
+		*o = 0;
  	    }
 	    if ( ( o = strchr(buf, ':') ) ) {
 		port = atoi(o+1);

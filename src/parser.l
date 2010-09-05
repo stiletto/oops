@@ -1,4 +1,4 @@
-%a 8000
+%a 10000
 %o 15000
 %p 5000
 %n 1000
@@ -12,6 +12,12 @@
 #include "y.tab.h"
 int	atline;
 int	parser_errors;
+
+#ifdef	USE_LARGE_FILES
+#define	ATOOFF	atoll
+#else
+#define	ATOOFF	atoi
+#endif
 %}
 
 %s	groupst peerst
@@ -22,6 +28,7 @@ nl	\n
 number	[0-9]+
 numberk	{number}[Kk]
 numberm	{number}[Mm]
+numberg	{number}[Gg]
 sp		[\t ]+
 comment		\#.*
 network		{number}("."{number})*"/"{number}
@@ -83,9 +90,21 @@ line		[^\n]+
 <storagest>{size} {
 		return(SIZE);
 		}
+<storagest>[Oo][Ff][Ff][Ss][Ee][Tt] {
+		return(STORAGE_OFFSET_T);
+		}
+<storagest>[Aa][Uu][Tt][Oo] {
+		return (AUTO_T);
+		}
 <storagest>\}	{
 		BEGIN(INITIAL);
 		return('}');
+		}
+<INITIAL>[Uu][Ss][Ee][Rr][Ii][Dd] {
+		return(USERID_T);
+		}
+<INITIAL>[Cc][Hh][Rr][Oo][Oo][Tt] {
+		return(CHROOT_T);
 		}
 <INITIAL>{group}		{
 		BEGIN(groupst);
@@ -249,6 +268,22 @@ line		[^\n]+
 		BEGIN(aclst);
 		return(ACL_ALLOW_T);
 		}
+<storagest>{number}	{
+		yylval.OFFSET = (off_t)ATOOFF(yytext);
+		return(NUMBER);
+		}
+<storagest>{numberk}	{
+		yylval.OFFSET = (off_t)ATOOFF(yytext) * (off_t)1024;
+		return(NUMBER);
+		}
+<storagest>{numberm}	{
+		yylval.OFFSET = (off_t)ATOOFF(yytext) * (off_t)1024 * (off_t)1024;
+		return(NUMBER);
+		}
+<storagest>{numberg}	{
+		yylval.OFFSET = (off_t)ATOOFF(yytext) * (off_t)1024 * (off_t)1024 * (off_t)1024;
+		return(NUMBER);
+		}
 {number}	{
 		yylval.INT = atoi(yytext);
 		return(NUMBER);
@@ -259,6 +294,10 @@ line		[^\n]+
 		}
 {numberm}	{
 		yylval.INT = atoi(yytext) * 1024 * 1024;
+		return(NUMBER);
+		}
+{numberg}	{
+		yylval.INT = atoi(yytext) * 1024 * 1024 * 1024;
 		return(NUMBER);
 		}
 <modulest>\{	{

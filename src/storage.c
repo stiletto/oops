@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<unistd.h>
@@ -26,8 +45,12 @@
 
 #include	"oops.h"
 
-#define		STORAGE_PAGE_SIZE	(4096)
-#define		ROUNDPG(x)		((x/STORAGE_PAGE_SIZE + 1)*STORAGE_PAGE_SIZE)
+#define		ST_LSEEK(a,b,c)		lseek(a,storage->i_off + b,c)
+#define		ST_PREAD(a,b,c,d)	pread(a,b,c,d+storage->i_off)
+#define		ST_PWRITE(a,b,c,d)	pwrite(a,b,c,d+storage->i_off)
+
+#define		ROUNDPG(x)		(((x)/STORAGE_PAGE_SIZE + \
+					 ((x)%STORAGE_PAGE_SIZE?1:0))*STORAGE_PAGE_SIZE)
 #define		BLKSIZE			STORAGE_PAGE_SIZE
 #define		MAGIC			(0x0bdcdada)
 
@@ -215,20 +238,36 @@ int		map_words, map_bits;
 char		*map_ptr;
 
     while(storage) {
-	size = ROUNDPG(storage->size);
+	if ( storage->size == -1 ) {
+	    /* autodetect */
+	    fd = open(storage->path, O_CREAT|O_RDWR, 0644);
+	    if ( fd >= 0 ) {
+		size = lseek(fd, 0, SEEK_END);
+		size -= storage->i_off;
+		close(fd);
+	    } else {
+		my_log("Can't open file: %s\n", strerror(errno));
+		goto try_next;
+	    }
+	} else
+	    size = ROUNDPG((storage->size)-(storage->i_off));
 	blk_num = size/STORAGE_PAGE_SIZE;
 	if ( blk_num < 2 ) {
 	    my_log("Storage size(%d bytes) is too small, skip it\n", storage->size);
 	    goto try_next;
 	}
+#if	defined(WITH_LARGE_FILES)
+	my_log("Formatting storage %s for %lld bytes\n", storage->path, (long long)size);
+#else
 	my_log("Formatting storage %s for %d bytes\n", storage->path, size);
+#endif
 	gettimeofday(&tv, NULL);
 	fd = open(storage->path, O_CREAT|O_RDWR, 0644);
 	if ( fd == -1 ) {
 	    my_log("open(%s): %s\n", storage->path, strerror(errno));
 	    goto try_next;
 	}
-	if ( lseek(fd, size-1, SEEK_SET) == -1 ) {
+	if ( ST_LSEEK(fd, size-1, SEEK_SET) == -1 ) {
 	    my_log("seek(%s, %u): %s\n", storage->path, size-1, strerror(errno));
 	    goto try_next;
 	}
@@ -244,7 +283,7 @@ char		*map_ptr;
 	map_words = blk_num/32 + (blk_num%32?1:0);
 	super.blks_free -= ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE;
 
-	if ( lseek(fd, 0, SEEK_SET) == -1 ) {
+	if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
 	    my_log("seek(%s, %u): %s\n", storage->path, 0, strerror(errno));
 	    goto try_next;
 	}
@@ -261,7 +300,7 @@ char		*map_ptr;
 	}
 	bzero(map_ptr, map_words*4);
 	set_bits(map_ptr, 0, ROUNDPG(map_words*4)/STORAGE_PAGE_SIZE+1);
-	lseek(fd, STORAGE_PAGE_SIZE, SEEK_SET);
+	ST_LSEEK(fd, STORAGE_PAGE_SIZE, SEEK_SET);
 	write(fd, map_ptr, map_words*4);
 try_next:
 	printf("\n");
@@ -283,7 +322,8 @@ void
 init_storage(struct storage_st *storage)
 {
 int		fd = -1;
-int		map_words, blk_num;
+int		map_words;
+uint32_t	blk_num;
 char		*map_ptr=NULL;
 
 
@@ -302,7 +342,7 @@ char		*map_ptr=NULL;
     }
     storage->fd = fd;
     /* read super */
-    if ( lseek(fd, 0, SEEK_SET) == -1 ) {
+    if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
 	my_log("seek(%s, %u): %s\n", storage->path, 0, strerror(errno));
 	goto error;
     }
@@ -321,7 +361,7 @@ char		*map_ptr=NULL;
     if ( !map_ptr ) {
 	goto error;
     }
-    lseek(fd, STORAGE_PAGE_SIZE, SEEK_SET);
+    ST_LSEEK(fd, STORAGE_PAGE_SIZE, SEEK_SET);
     if ( read(fd, map_ptr, map_words*4) != map_words*4 )
 	goto error;
     storage->map = map_ptr;
@@ -398,11 +438,11 @@ char		*allocated = NULL;
     for (i=0;i<o;i++,po++) {
 	if ( !*po ) {
 	    my_log("Try to set 0 bit\n");
-	    exit(1);
+	    do_exit(1);
 	}
 	if ( test_bit(storage->map, *po) ) {
 	    my_log("Trying to set busy bit %d\n", *po);
-	    exit(1);
+	    do_exit(1);
 	}
 	set_bits(storage->map, *po, 1);
     }
@@ -426,7 +466,7 @@ int	 released;
 	goto error;
     if ( !disk_ref ) {
 	my_log("Fatal: zero disk_ref\n");
-	exit(1);
+	do_exit(1);
     }
 
     next_blk = (uint32_t*)(disk_ref+1);
@@ -434,17 +474,17 @@ int	 released;
 
     if ( !released ) {
 	my_log("Fatal: why to release 0 blks\n");
-	exit(1);
+	do_exit(1);
     }
     storage->super.blks_free += released;
     while( released ) {
 	if ( !*next_blk ) {
 	    my_log("Fatal: attempt to release 0 blk\n");
-	    exit(1);
+	    do_exit(1);
 	}
 	if ( TEST(storage->flags, ST_CHECKED) && !test_bit(storage->map, *next_blk) ) {
 	    my_log("Trying to free free bit\n");
-	    exit(1);
+	    do_exit(1);
 	}
 	clr_bits(storage->map, *next_blk, 1);
 	released--;
@@ -461,7 +501,7 @@ flush_super(struct storage_st *storage)
 {
 int	rc;
 
-    rc = lseek(storage->fd, 0, SEEK_SET);
+    rc = ST_LSEEK(storage->fd, 0, SEEK_SET);
     if ( rc == -1 )
 	return(1);
     rc = write(storage->fd, &storage->super, sizeof(storage->super) );
@@ -471,10 +511,11 @@ int	rc;
 int
 flush_map(struct storage_st *storage)
 {
-int	rc;
-int	map_words, blk_num;
+int		rc;
+int		map_words;
+uint32_t	blk_num;
 
-    rc = lseek(storage->fd, BLKSIZE, SEEK_SET);
+    rc = ST_LSEEK(storage->fd, BLKSIZE, SEEK_SET);
     if ( rc == -1 )
 	return(1);
     blk_num = storage->super.blks_total;
@@ -540,7 +581,7 @@ off_t		next_position;
 #ifdef	HAVE_PWRITE
     next_position = *n*BLKSIZE;
 #else
-    lseek(storage->fd, *n*BLKSIZE, SEEK_SET);
+    ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif
 
     space = BLKSIZE;
@@ -551,7 +592,7 @@ off_t		next_position;
 	if ( !to_move ) goto nextb;
 	if ( to_move <= space ) {
 #ifdef	HAVE_PWRITE
-	    rc = pwrite(storage->fd, c, to_move, next_position);
+	    rc = ST_PWRITE(storage->fd, c, to_move, next_position);
 	    next_position += to_move;
 #else
 	    rc = write(storage->fd, c, to_move);
@@ -564,13 +605,13 @@ off_t		next_position;
 #ifdef	HAVE_PWRITE
 		next_position = *n*BLKSIZE;
 #else
-		lseek(storage->fd, *n*BLKSIZE, SEEK_SET);
+		ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif
 	    }
 	    to_move = 0;
 	} else {
 #ifdef	HAVE_PWRITE
-	    rc = pwrite(storage->fd, c, space, next_position);
+	    rc = ST_PWRITE(storage->fd, c, space, next_position);
 #else
 	    rc = write(storage->fd, c, space);
 #endif
@@ -582,7 +623,7 @@ off_t		next_position;
 #ifdef	HAVE_PWRITE
 	    next_position = *n*BLKSIZE;
 #else
-	    lseek(storage->fd, *n*BLKSIZE, SEEK_SET);
+	    ST_LSEEK(storage->fd, *n*BLKSIZE, SEEK_SET);
 #endif
 	    goto cwb;
 	}
@@ -663,7 +704,8 @@ int
 load_obj_from_disk(struct mem_obj *obj, struct disk_ref *disk_ref)
 {
 struct 	buff		*b;
-size_t			to_load, next_read;
+size_t			to_load;
+off_t			next_read;
 uint32_t		*n;
 int			rc, fd=-1;
 struct	storage_st	*storage;
@@ -689,13 +731,13 @@ char			answer[BLKSIZE+1];
     bzero(&a, sizeof(a));
 s:  
 #ifndef	HAVE_PREAD
-    rc = lseek(fd, *n*BLKSIZE, SEEK_SET);
+    rc = ST_LSEEK(fd, *n*BLKSIZE, SEEK_SET);
     if ( rc == -1 )
 	goto err;
 #endif
 r:  next_read = MIN(BLKSIZE, to_load);
 #ifdef	HAVE_PREAD
-    rc = pread(fd, answer, next_read, *n*BLKSIZE);
+    rc = ST_PREAD(fd, answer, next_read, *n*BLKSIZE);
 #else
     rc =  read(fd, answer, next_read);
 #endif
@@ -790,7 +832,7 @@ struct memb {
 	uint32_t        flags; 
 	uint32_t        refs;  
 };                             
-struct  memb    *map;
+struct  memb    *map = NULL;
 
     if ( !dbp )
 	return;
@@ -805,7 +847,7 @@ struct  memb    *map;
     if ( tstorage.fd == -1 )
 	return;
     fd = tstorage.fd;
-    if ( lseek(fd, 0, SEEK_SET) == -1 ) {
+    if ( ST_LSEEK(fd, 0, SEEK_SET) == -1 ) {
 	my_log("seek(%s, %u): %s\n", tstorage.path, 0, strerror(errno));
 	close(fd);
 	return;
@@ -834,12 +876,12 @@ struct  memb    *map;
     bitmap = calloc(map_words*4, 1);
     if ( !bitmap ) {
 	my_log("Can't allocate memory for map\n");
-	exit(1);
+	goto abor;
     }
-    lseek(fd, BLKSIZE, SEEK_SET);
+    ST_LSEEK(fd, BLKSIZE, SEEK_SET);
     if ( read(fd, bitmap, map_words*4) != map_words*4 ) {
 	my_log("Can't read map\n");
-	exit(1);
+	goto abor;
     }
     tstorage.map = bitmap;
     /*in_map_free = calc_free_bits(bitmap, 0, blk_num);*/
@@ -847,7 +889,7 @@ struct  memb    *map;
     map = calloc(blk_num, sizeof(struct memb));
     if ( !map ) {
 	my_log("Can't allocate memory for map\n");
-	exit(1);
+	goto abor;
     }
     rc = dbp->cursor(dbp, NULL, &dbcp
 #if     (DB_VERSION_MAJOR>2) || (DB_VERSION_MINOR>=6)
@@ -857,7 +899,7 @@ struct  memb    *map;
     if ( rc ) {
 	my_log("Cant create cursor for checking\n");
 	dbp->close(dbp, 0);
-	exit(1);
+	goto abor;
     }
 do_scan:
     if ( MUST_BREAK )
@@ -875,8 +917,9 @@ do_scan:
 		dbcp->c_close(dbcp);
 		goto fix_unrefs;
 	default:
-		my_log("Can't find url\n");
+		my_log("Can't find url: %d\n", rc);
 		dbp->close(dbp, 0);
+		dbp = NULL;
 		goto abor;
     }
     if ( disk_ref->id != tstorage.super.id ) {
@@ -936,7 +979,7 @@ s:  map[*n].refs++;
     if ( !s ) {
 	my_log("No memory\n");
 	dbp->close(dbp, 0);
-	exit(1);
+	do_exit(1);
     }
     strncpy(s, key.data, key.size);
     s[key.size] = 0;

@@ -29,6 +29,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<signal.h>
 #include	<locale.h>
 #include	<time.h>
+#include	<pwd.h>
 
 #if	defined(SOLARIS)
 #include	<thread.h>
@@ -72,6 +73,8 @@ void	free_denytimes(struct denytime *);
 void	free_dstd_ce(void*);
 int	close_listen_so_list(struct listen_so_list *list);
 extern	int	str_to_sa(char*, struct sockaddr *);
+void	open_db();
+void	set_user();
 
 size_t	db_cachesize = 4*1024*1024;	/* 4M */
 static	int	my_bt_compare(const DBT*,const DBT*);
@@ -227,6 +230,7 @@ int	format_storages = 0;
 	}
     }
 #endif
+    server_so = -1;
     icp_so = -1;
     groups = 0;
     stop_cache = NULL;
@@ -264,11 +268,17 @@ int	format_storages = 0;
     charsets = NULL;
     acl_allow = acl_deny = NULL;
     stop_cache_acl = NULL;
+    oops_user = NULL;
+    oops_chroot = NULL;
 #ifdef	MODULES
     if ( !check_config_only )
 	load_modules();
 #endif
     base_64_init();
+
+    /* reserve some fd's	*/
+    for(i=0;i<RESERVED_FD;i++)
+	reserved_fd[i] = open("/dev/null", O_RDONLY);
 
 run:
     reconfig_request = 1;
@@ -276,6 +286,7 @@ run:
     st_check_in_progr = TRUE;
     pthread_mutex_unlock(&st_check_in_progr_lock);
     WRLOCK_CONFIG;
+    dbenv = NULL;
     bzero(base,		sizeof(base));
     bzero(logfile,	sizeof(logfile));  log_num = log_size = 0;
     bzero(accesslog,	sizeof(accesslog));accesslog_num = accesslog_size = 0;
@@ -316,13 +327,14 @@ run:
     logs_buffered	= FALSE;
     insert_x_forwarded_for = TRUE;
     insert_via		= TRUE;
-
-    bzero(&dbenv, sizeof(dbenv));
-    bzero(&dbinfo,sizeof(dbinfo));
-    dbinfo.db_cachesize = db_cachesize;
-    dbinfo.db_pagesize = 16*1024;	/* 16k */
-    dbinfo.bt_compare = my_bt_compare;
-
+    if ( oops_user ) {
+	free(oops_user);
+	oops_user = NULL;
+    }
+    if ( oops_chroot ) {
+	free(oops_chroot);
+	oops_chroot = NULL;
+    }
     if ( stop_cache )
 	free_stop_cache();
 
@@ -383,28 +395,23 @@ run:
 	stop_cache_acl = NULL;
     }
 
+    /* release reserved fd's	*/
+    for(i=0;i<RESERVED_FD;i++)
+	if ( reserved_fd[i] >= 0 ) {
+	    close(reserved_fd[i]);
+	}
+
     /* go read config */
     if ( readconfig(configfile) ) exit(1);
     if ( check_config_only ) exit(0);
+    if ( oops_chroot ) {
+	int rc = chroot(oops_chroot);
 
-    init_domain_name();
-    sort_networks();
-    (void)print_networks(sorted_networks_ptr,sorted_networks_cnt, TRUE);
-    print_acls();
+	if ( rc == -1 )
+	    verb_printf("Can't chroot(): %s\n", strerror(errno));
+    }
+    if ( oops_user ) set_user();
 
-    if ( local_networks ) {
-	local_networks_sorted = (struct cidr_net**)sort_n(local_networks, &local_networks_sorted_counter);
-	print_networks(local_networks_sorted, local_networks_sorted_counter, FALSE);
-    }
-    if ( local_domains ) {
-	verb_printf("Local domains:\n");
-	print_dom_list(local_domains );
-    }
-    if ( !mem_max_val ) {
-	mem_max_val = 20 * 1024 * 1024;
-	lo_mark_val = 15 * 1024 * 1024;
-	hi_mark_val = 17 * 1024 * 1024;
-    }
     if ( logfile[0] != 0 ) {
         rwl_wrlock(&log_lock);
 	if ( logf )
@@ -424,6 +431,29 @@ run:
 	    setbuf(accesslogf, NULL);
     }
 
+    /* reserve them again	*/
+    for(i=0;i<RESERVED_FD;i++) {
+	reserved_fd[i] = open("/dev/null", O_RDONLY);
+    }
+
+    init_domain_name();
+    sort_networks();
+    (void)print_networks(sorted_networks_ptr,sorted_networks_cnt, TRUE);
+    print_acls();
+
+    if ( local_networks ) {
+	local_networks_sorted = (struct cidr_net**)sort_n(local_networks, &local_networks_sorted_counter);
+	print_networks(local_networks_sorted, local_networks_sorted_counter, FALSE);
+    }
+    if ( local_domains ) {
+	verb_printf("Local domains:\n");
+	print_dom_list(local_domains );
+    }
+    if ( !mem_max_val ) {
+	mem_max_val = 20 * 1024 * 1024;
+	lo_mark_val = 15 * 1024 * 1024;
+	hi_mark_val = 17 * 1024 * 1024;
+    }
     next_alloc_storage = NULL;
     reconfig_request = 0;
     if ( disk_hi_free >= 100          ) disk_hi_free  = DEFAULT_HI_FREE;
@@ -445,19 +475,8 @@ run:
 	exit(0);
     }
 
-    if ( dbhome[0] && db_appinit(dbhome, NULL, &dbenv, 
-    		DB_CREATE|DB_THREAD) ) {
-		my_log("db_appinit(%s) failed: %s\n", dbhome, strerror(errno));
-    }
-    if ( (rc = db_open(dbname, DB_BTREE,
-    		DB_CREATE|DB_THREAD,
-    		0644,
-    		&dbenv,
-    		&dbinfo,
-    		&dbp)) ) {
-	my_log("db_open: %s\n", strerror(rc));
-	dbp = NULL;
-    }
+    report_limits();
+    open_db();
     prepare_storages();
     my_log( "oops %s Started\n", VERSION);
     version = VERSION;
@@ -508,9 +527,14 @@ run:
 	dbp->close(dbp, 0);
 	dbp = NULL;
     }
-    if ( dbhome[0] && db_appexit(&dbenv) ) {
+#if	DB_VERSION_MAJOR<3
+    if ( dbhome[0] && db_appexit(dbenv) ) {
 	my_log("db_appexit failed");
     }
+    if ( dbenv ) free(dbenv);
+#else
+    if ( dbenv ) dbenv->close(dbenv,0);
+#endif
     reconfig_request = 0;
     UNLOCK_CONFIG ;
     goto run;
@@ -891,4 +915,78 @@ struct	listen_so_list *new = xmalloc(sizeof(*new),""), *next;
 	next->next = new;
     }
     return(0);
+}
+void
+open_db()
+{
+int	rc;
+
+    dbp = NULL;
+#if	DB_VERSION_MAJOR<3
+    dbenv = calloc(sizeof(*dbenv),1);
+    bzero(&dbinfo,sizeof(dbinfo));
+    dbinfo.db_cachesize = db_cachesize;
+    dbinfo.db_pagesize = 16*1024;	/* 16k */
+    dbinfo.bt_compare = my_bt_compare;
+    if ( !dbhome[0] || !dbname[0] ) return;
+    if (db_appinit(dbhome, NULL, dbenv, 
+    		DB_CREATE|DB_THREAD) ) {
+		my_log("db_appinit(%s) failed: %s\n", dbhome, strerror(errno));
+    }
+    if ( (rc = db_open(dbname, DB_BTREE,
+    		DB_CREATE|DB_THREAD,
+    		0644,
+    		dbenv,
+    		&dbinfo,
+    		&dbp)) ) {
+	my_log("db_open: %s\n", strerror(rc));
+	dbp = NULL;
+    }
+#else
+    if ( !dbhome[0] || !dbname[0]) return;
+    if ( db_env_create(&dbenv, 0) )
+	return;
+    dbenv->set_errfile(dbenv, stderr);
+    dbenv->set_errpfx(dbenv, "oops");
+    dbenv->set_cachesize(dbenv, 0, db_cachesize, 0);
+    rc = dbenv->open(dbenv, dbhome, NULL,
+	DB_CREATE|DB_THREAD|DB_INIT_MPOOL,
+	0);
+    if ( rc ) {
+	my_log("Can't open dbenv.\n");
+	dbenv->close(dbenv, 0); dbenv = NULL;
+	return;
+    }
+    rc = db_create(&dbp, dbenv, 0);
+    if ( rc ) {
+	dbenv->close(dbenv, 0); dbenv = NULL;
+	dbp = NULL;
+	return;
+    }
+    dbp->set_bt_compare(dbp, my_bt_compare);
+    dbp->set_pagesize(dbp, 16*1024);
+    rc = dbp->open(dbp, dbname, NULL, DB_BTREE, DB_CREATE, 0);
+    if ( rc ) {
+	my_log("dbp->open(%s): %s\n", dbname, db_strerror(rc));
+	dbenv->close(dbenv, 0); dbenv = NULL;
+	dbp = NULL;
+	return;
+    }
+#endif
+}
+void
+set_user()
+{
+int		rc;
+struct passwd	*pwd = NULL;
+         
+    if ( (pwd = getpwnam(oops_user)) ) {
+	rc = setgid(pwd->pw_gid);
+	if ( rc == -1 )
+	    printf("set_user: Can't setgid(): %s\n", strerror(errno));
+	rc = setuid(pwd->pw_uid);
+	if ( rc == -1 )
+	    printf("set_user: Can't setuid(): %s\n", strerror(errno));
+    } else
+	printf("set_user: Can't getpwnam('%s')\n", oops_user);
 }

@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include        <stdio.h>
 #include        <stdlib.h>
 #include        <fcntl.h>
@@ -102,6 +121,17 @@ int		 purge = PURGE_INTERVAL;
 	    oops_stat.hits1 = oops_stat.hits0;
 	    oops_stat.requests_http0 = 0;
 	    oops_stat.hits0 = 0;
+
+	    oops_stat.requests_icp1 = oops_stat.requests_icp0;
+	    oops_stat.requests_icp0 = 0;
+	    if ( oops_stat.requests_http1 > oops_stat.requests_http0_max )
+		oops_stat.requests_http0_max = oops_stat.requests_http1;
+	    if ( oops_stat.requests_icp1 > oops_stat.requests_icp0_max )
+		oops_stat.requests_icp0_max = oops_stat.requests_icp1;
+	    if ( oops_stat.hits0_max > oops_stat.hits1 )
+		oops_stat.hits0_max = oops_stat.hits1;
+	    if ( oops_stat.clients > oops_stat.clients_max )
+		oops_stat.clients_max = oops_stat.clients;
 	    UNLOCK_STATISTICS(oops_stat);
 	    reqs = temp_stat.requests_http0;
 	    hits = temp_stat.hits0;

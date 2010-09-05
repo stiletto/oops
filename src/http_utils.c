@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include        <stdio.h>
 #include        <stdlib.h>
 #include        <fcntl.h>
@@ -63,7 +82,6 @@
 
 int		no_direct_connections	= FALSE;
 
-int		writen(int, char*, int);
 int		str_to_sa(char*, struct sockaddr*);
 void		analyze_header(char*, struct server_answ *);
 int		attach_data(char* src, int size, struct buff *buff);
@@ -302,6 +320,8 @@ char			*table = NULL;
 			table, TRUE);
 		  else
 		    writet(so, hdrs_to_send->data, hdrs_to_send->used, READ_ANSW_TIMEOUT);
+		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+		    update_transfer_rate(rq, hdrs_to_send->used);
 		free_container(hdrs_to_send);
 		if ( obj->container && obj->container->next ) {
 		    if ( recode_answer )
@@ -309,8 +329,11 @@ char			*table = NULL;
 				table, FALSE);
 		      else
 			writet(so, obj->container->next->data, obj->container->next->used, READ_ANSW_TIMEOUT);
+		    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) )
+			update_transfer_rate(rq, obj->container->next->used);
 		}
-		if ( obj->content_length && (sent >= obj->content_length) )
+		if ( obj->content_length
+		    && (sent >= obj->container->used + obj->content_length) )
 		    goto done;
 	    }
 	    continue ;
@@ -340,7 +363,8 @@ char			*table = NULL;
 		    goto done;
 	    }
 	}
-	if ( obj->content_length && (sent >= obj->content_length) )
+	if (     obj->content_length
+	     && (sent >= obj->container->used + obj->content_length) )
 	    goto done;
     }
 done:
@@ -1114,8 +1138,6 @@ int			convert_charset = FALSE;
     while(1) {
 	struct pollarg pollarg[2];
 
-	FD_ZERO(&rset); FD_ZERO(&wset);
-	FD_SET(server_so, &rset);
 	pollarg[0].fd = server_so;
 	pollarg[0].request = FD_POLL_RD;
 	pollarg[1].fd = 0;
@@ -1124,6 +1146,10 @@ int			convert_charset = FALSE;
 	    else	      maxfd = so;
 	if ( (obj->state == OBJ_INPROGR) && (received > sended) && (so != -1) ) {
 	    if ( (++pass)%2 && TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
+		if ( TEST(obj->flags, ANSW_SHORT_CONTAINER) ) {
+		    SLOWDOWN;
+		    goto ignore_bw_overload;
+		}
 		r = group_traffic_load(rq_to_group(rq));
 		tv.tv_sec = 0;tv.tv_usec = 0;
 		if ( r < 75 ) /* low load */
@@ -1437,17 +1463,6 @@ int			convert_charset = FALSE;
 	    }
 	} else {
 	    body_size += r;
-	    if ( TEST(obj->flags, ANSW_SHORT_CONTAINER) ) {
-		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) && (++pass)%2 )
-		    SLOWDOWN ;
-		if ( writet(so, answer, r, READ_ANSW_TIMEOUT) < 0 )
-		    goto error;
-		received += r;
-		sended   += r;
-		if ( TEST(rq->flags, RQ_HAS_BANDWIDTH))
-			update_transfer_rate(rq, r);
-		goto rcv_d;
-	    }
 	    /* store data in hot_buff */
 	    if ( store_in_chain(answer, r, obj) ) {
 		my_log("Can't store\n");
@@ -1817,8 +1832,6 @@ do_it:
 	my_log("What the fuck? to_send = %d\n", to_send);
 	return(-1);
     }
-    FD_ZERO(&wset);
-    FD_SET(so, &wset);
     tv.tv_sec = READ_ANSW_TIMEOUT; tv.tv_usec = 0 ;
 
     pollarg.fd = so;
@@ -1848,7 +1861,7 @@ int
 send_data_from_buff_no_wait(int so, struct buff **hot, int *pos, int *sended, int *rest_in_chunk, int flags, struct mem_obj *obj, char *table)
 {
 int		r, to_send, cz_here, faked_sent, chunk_size;
-struct	buff	*b = *hot;
+struct	buff	*b = *hot, *t = NULL, *nt;
 char		*cb, *ce, *cd;
 char		ch_sz[16];	/* buffer to collect chunk size	*/
 u_char		recode_buff[2048];
@@ -1860,6 +1873,20 @@ char		*source;
 	my_log("Check yourself: sending chunked in send_data_from_buff\n");
 	return(-1);
     }
+    /* if we use short container - free all sent buffs (prev to *hot) */
+    if ( obj
+	 && TEST(obj->flags, ANSW_SHORT_CONTAINER) 
+	 && obj->container 
+	 && (*hot != obj->container) ) {
+	t = obj->container->next;
+	while ( t && (t != *hot ) ) {
+	    nt = t->next;
+	    if ( t->data ) free(t->data);
+	    free(t);
+	    t = nt;
+	}
+	obj->container->next = t;
+    }
     if ( TEST(flags, RQ_CONVERT_FROM_CHUNKED ) )
 	goto send_chunked;
 
@@ -1868,7 +1895,7 @@ do_it:
     if ( !to_send ) {
 	if ( !b->next ) return(0);
 	*hot = b->next;
-	b = b->next;
+	b = *hot;
 	*pos = 0;
 	goto do_it;
     }

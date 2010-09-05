@@ -1,7 +1,7 @@
-om shutdown flush all in-memory pages to disk. - done 07.09.99
+on shutdown flush all in-memory pages to disk. - done 07.09.99
 
 configurable option: fetch HEAD and compare before
-sending cached doc. - done? 08.09.99
+	sending cached doc. - done? 08.09.99
 
 correct Vary: heder processiong.
 

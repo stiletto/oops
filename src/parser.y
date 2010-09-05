@@ -14,7 +14,7 @@
 %token	LAST_MODIFIED_FACTOR_T MAX_EXPIRE_VALUE_T
 %token	INSERT_X_FORWARDED_FOR_T INSERT_VIA_T ACL_T REFRESH_PATTERN_T
 %token	ACL_ALLOW_T ACL_DENY_T SRCDOMAINS_T BIND_T STOP_CACHE_ACL_T
-%token	NETWORKS_ACL_T
+%token	NETWORKS_ACL_T STORAGE_OFFSET_T AUTO_T USERID_T CHROOT_T
 
 %type	<NETPTR>	network_list network
 %type	<STRPTR>	group_name string module_name day
@@ -24,21 +24,10 @@
 %type	<GROUPOPS>	denytime
 %type	<STORAGEST>	st_op st_ops
 %type	<INT>		num
+%type	<OFFSET>	offset
 %type	<ACL>		allow_acl deny_acl allow_acls deny_acls
 %type	<DOMAIN>	domain domainlist
 %type	<CHAR>		dayset
-
-%union	{
-	int				INT;
-	char				*STRPTR;
-	char				CHAR;
-	struct	cidr_net		*NETPTR;
-	struct	group_ops_struct	*GROUPOPS;
-	struct	acl			*ACL;
-	struct	domain_list		*DOMAIN;
-	struct	storage_st		*STORAGEST;
-	struct	string_list		*STRING_LIST;
-	}
 
 %{
 #include	<stdio.h>
@@ -77,7 +66,8 @@ int	atline;
 int	parser_errors;
 
 static	char	*storage_path = NULL, *storage_db = NULL;
-static	int	storage_size = 0;
+static	off_t	storage_size = 0;
+static	off_t	storage_offset = 0;
 static	int	ns_curr;
 
 static	struct	peer_c	*peerc_ptr = NULL;
@@ -93,6 +83,21 @@ struct	peer_c {
 struct	domain_list	*load_domlist_from_file(char*);
 
 %}
+
+%union	{
+	int				INT;
+	char				*STRPTR;
+	char				CHAR;
+	struct	cidr_net		*NETPTR;
+	struct	group_ops_struct	*GROUPOPS;
+	struct	acl			*ACL;
+	struct	domain_list		*DOMAIN;
+	struct	storage_st		*STORAGEST;
+	struct	string_list		*STRING_LIST;
+	off_t				OFFSET;
+	}
+
+
 
 %%
 
@@ -148,6 +153,8 @@ statement	: logfile
 		| acl_allow
 		| acl_deny
 		| stop_cache_acl
+		| userid
+		| chroot
 		| error L_EOS {
 			yyerrok;
 		  }
@@ -165,6 +172,14 @@ logfile		: LOGFILE STRING L_EOS {
 			log_num = $4;
 			log_size = $5;
 			free($2);
+		}
+
+userid		: USERID_T string L_EOS {
+			oops_user = $2;
+		}
+
+chroot		: CHROOT_T string L_EOS {
+			oops_chroot = $2;
 		}
 
 insert_x_forwarded_for : INSERT_X_FORWARDED_FOR_T string L_EOS {
@@ -310,6 +325,11 @@ pidfile		: PIDFILE STRING L_EOS {
 nameserver	: NAMESERVER STRING L_EOS {
 			verb_printf("NAMESERVER:\t<<%s>>\n", yylval.STRPTR);
 			if ( ns_curr < MAXNS ) {
+			    bzero(&ns_sa[ns_curr], sizeof(ns_sa[ns_curr]));
+			    ns_sa[ns_curr].sin_family = AF_INET;
+#if	!defined(SOLARIS) && !defined(LINUX)
+			    ns_sa[ns_curr].sin_len = sizeof(ns_sa[ns_curr]);
+#endif
 			    ns_sa[ns_curr].sin_addr.s_addr = inet_addr(yylval.STRPTR);
 			    ns_sa[ns_curr].sin_port = htons(53);
 			    ns_curr++;
@@ -488,6 +508,8 @@ hi_mark		: HI_MARK num L_EOS {
 
 num		: NUMBER { $$ = yylval.INT;}
 
+offset		: NUMBER { $$ = yylval.OFFSET;}
+
 string		: STRING { $$ = yylval.STRPTR; }
 
 module		: MODULE module_name '{' mod_ops '}' L_EOS {
@@ -557,7 +579,11 @@ module_name	: STRING {
 
 storage		: STORAGE '{' st_ops '}' L_EOS {
 		    struct storage_st *new;
+#if	defined(WITH_LARGE_FILES)
+		    verb_printf("Storage: %s (size %lld bytes)\n", storage_path, storage_size);
+#else
 		    verb_printf("Storage: %s (size %d bytes)\n", storage_path, storage_size);
+#endif
 		    new = xmalloc(sizeof(*new), "new storage");
 		    if ( !new ) {
 			yyerror();
@@ -565,6 +591,7 @@ storage		: STORAGE '{' st_ops '}' L_EOS {
 		    bzero(new, sizeof(*new));
 		    new->path = storage_path;
 		    new->size = storage_size;
+		    new->i_off = storage_offset;
 		    if ( !storages ) {
 			storages = new;
 		    } else {
@@ -576,6 +603,7 @@ storage		: STORAGE '{' st_ops '}' L_EOS {
 		    }
 		    storage_path = NULL;
 		    storage_size = 0;
+		    storage_offset = 0;
 		}
 
 peerconfig	: PEER_PARENT_T ';' {
@@ -651,7 +679,9 @@ peer		: PEER_T string num num '{' peerops '}' L_EOS {
 st_ops		: st_op {}
 		| st_op st_ops {}
 
-st_op		: SIZE num ';' { storage_size = $2; }
+st_op		: SIZE offset ';' { storage_size = $2; }
+		| SIZE AUTO_T ';' { storage_size = -1; }
+		| STORAGE_OFFSET_T offset ';' {storage_offset = $2; }
 		| PATH STRING ';' { storage_path = yylval.STRPTR; }
 
 group		: GROUP group_name '{' group_ops '}' L_EOS {

@@ -15,6 +15,16 @@ http_port	3128
 icp_port	3130
 
 ##
+## Change euid to that user
+##
+#userid		nobody
+
+##
+## Change root directory. If don't know exactly what are you doing -
+## leave commented.
+#chroot		???
+
+##
 #  Logfile - just debug output
 #  When used in form 'filename {N S}'
 #  will be rotated automatically (up to N files up to S bytes in size)
@@ -228,8 +238,12 @@ local-networks	195.114.128/19 10/8 192.168/16
 group	paco	{
 ##
 #	You can describe group ip adresses here, or using src_ip acl's
-#	with networks_acl directive
-#	networks_acl always have higher preference (checked first)
+#	with networks_acl directive.
+#	networks_acl always have higher preference (checked first) and
+#	are checked in the order of appearance.
+#	If host wil not fall in any networks_acl - we check in networks.
+#       networks are ordered by masklen - longest masks(most specific networks)
+#	are checked first.
 ##
 	networks	195.114.128/19 127/8 195.5.40.93/32;
 #	networks_acl	LOCAL_NETWORKS !BAD_NETWORKS
@@ -307,13 +321,25 @@ dbname	dburl
 ##
 #  Storage description (can be several)
 #  path - filename of storage. can be raw device (be carefull!)
-#  size - size (of storage file). Currently can't be large then 
-#  approximately 2.1G. Size used only durig format process (oops -z).
+#  size - size (of storage file). Can be smthng like 100k or 200m or 4g
+#  Size used only durig format process (oops -z).
 ##
 
 storage {
 	path @prefix@/oops/storages/oops_storage ;
+#	Size of the storage. Can be in bytes or 'auto'. Auto is
+#	usefull for pre-created storages or disk slices.
+#	NOTE: 'size auto' wont work for Linux on disk slices.
+#	To use large ( > 2G ) files run configure with --enable-large-files
+
 	size 20m ;
+
+#	You have to use 'offset' in the case yor raw device (or slice).
+#	require that. For example if you use entire disk as storage
+#	under Soalris/Sparc - you have to skip first block
+#	which contain disk label (that is storage will start from
+#	next 512 sector.
+#	offset	512;
 }
 
 #storage {
@@ -401,9 +427,9 @@ module	vary {
 }
 
 ##
-## WWW -accelerator. To use - insert line
-## redir_mods accel;
-## in the group 'world' description
+## WWW -accelerator. To use - addword accel to
+## redir_mods line for
+## the group 'world' description
 ##
 #module	accel {
 # myport can have next form:
@@ -414,4 +440,15 @@ module	vary {
 #	Checked once per minute. No need to restart oops if maps changed
 ##
 #	file			@prefix@/oops/accel_maps
+#}
+
+##
+## Transparent proxy. To use - add word 'transparent' into
+## redir_mods line for your group.
+## in the your local (or any other) group description
+##
+#module	transparent {
+# myport can have next form:
+# myport [{hostname|ip_addr}:]port ...
+#	myport			3128
 #}

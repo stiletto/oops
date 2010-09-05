@@ -10,7 +10,7 @@ OPT_MODS = @OPT_MODS@
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) $< -o $@
 
 all:	log_dummy.so err.so passwd_file.so lang.so redir.so oopsctl_mod.so oopsctl \
-	vary_header.so accel.so $(OPT_MODS)
+	vary_header.so accel.so transparent.so $(OPT_MODS)
 
 log_dummy.so:	log_dummy.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) log_dummy.c -o log_dummy.so

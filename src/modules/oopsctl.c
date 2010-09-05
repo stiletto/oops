@@ -19,6 +19,7 @@
 #include	<sys/file.h>
 #include	<sys/time.h>
 #include	<sys/un.h>
+#include	<sys/wait.h>
 
 #include	<netinet/in.h>
 
@@ -122,11 +123,41 @@ char 			cmdarg[1024];
     }
     if ( !strcasecmp(*command, "chkconfig") ) {
 	char	cmdpath[1024], cmdarg[1024];
-
 	sprintf(cmdpath,"%s/oops", OOPS_HOME);
+	sprintf(cmdarg, "-C%s/oops.cfg", OOPS_HOME);
 	*(1+command) = cmdpath;
+	*(2+command) = cmdarg;
 	execv(cmdpath, command+1);
 	printf("Can't execute: %s\n", strerror(errno));
+    }
+    if ( !strcasecmp(*command, "reconfigure") ) {
+	char	cmdpath[1024], cmdarg[1024];
+	pid_t	child;
+	int	stat;
+
+	/* first check if config is OK */
+	sprintf(cmdpath,"%s/oops", OOPS_HOME);
+	sprintf(cmdarg, "-C%s/oops.cfg", OOPS_HOME);
+	*(1+command) = cmdpath;
+	*(2+command) = cmdarg;
+	child = fork();
+	switch (child) {
+	case -1:
+		printf("Can't start child: %s\n", strerror(errno));
+		exit(1);
+	case 0:
+		execv(cmdpath, command+1);
+		printf("Can't execute: %s\n", strerror(errno));
+	default:
+		/* wait for child */
+		waitpid((pid_t)-1, &stat, 0);
+		if ( WIFEXITED(stat) && !WEXITSTATUS(stat) ) { /* ok */
+		    *(1+command) = NULL;
+		    goto srv_conn;
+		}
+		printf("Check config failed: exitcode: %d\n", WEXITSTATUS(stat));
+		exit(1);
+	}
     }
     if ( !strcasecmp(*command,"stat") || 
 	 !strcasecmp(*command,"htmlstat") ||
@@ -135,6 +166,7 @@ char 			cmdarg[1024];
 	 !strcasecmp(*command,"stop") ||
 	 !strcasecmp(*command,"shutdown")
         ) {
+srv_conn:
      /* connecting to server */
      oopsctl_so = socket(AF_UNIX, SOCK_STREAM, 0);
      if ( oopsctl_so == -1 ) {

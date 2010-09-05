@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include	<stdio.h>
 #include	<stdlib.h>
 #include	<unistd.h>
@@ -95,9 +114,14 @@ struct	peer	*peer;
     buf = xmalloc(ROUND(len+sizeof(struct icp_hdr),CHUNK_SIZE),"icp_rq");
     if ( ! buf )
 	return(-1);
-    sprintf(buf+sizeof(struct icp_hdr)+4, "%s://%s:%d%s",
+    if ( rq->url.port != 80 )
+	sprintf(buf+sizeof(struct icp_hdr)+4, "%s://%s:%d%s",
 			rq->url.proto,rq->url.host,
     			rq->url.port,rq->url.path);
+      else
+	sprintf(buf+sizeof(struct icp_hdr)+4, "%s://%s%s",
+			rq->url.proto,rq->url.host,
+    			rq->url.path);
     icp_hdr	= (struct icp_hdr*)buf;
     icp_opcode 		= ICP_OP_QUERY;
     icp_version 	= 2;
@@ -176,37 +200,18 @@ process_icp_msg(int so, char *buf, int len, struct sockaddr_in *sa)
 struct	icp_hdr		*icp_hdr = (struct icp_hdr*)buf;
 int			*intp;
 char			*urlp;
-int			r_h_a;
-struct	url		url;
+int			r_h_a, denied;
 struct	mem_obj 	*res;
 struct	peer		*peer;
 struct	icp_lookup	icp_lookup;
+struct	request		request;
 
     if ( len <= 0 )
 	return;
-/*    my_log("icp: opcode:  %d\n", icp_opcode);
-    my_log("icp: version: %d\n", icp_version);
-    my_log("icp: msg_len: %d\n", ntohs(icp_msg_len));
-    my_log("icp: rq_n:    %d\n", ntohl(icp_rq_n));
-    my_log("icp: opt:     %d\n", ntohl(icp_opt));
-    my_log("icp: opt_data:%d\n", ntohl(icp_opt_data));
-*/
     switch(icp_opcode) {
 	case ICP_OP_INVALID:
 		break;
 	case ICP_OP_QUERY:
-		LOCK_STATISTICS(oops_stat);
-		    oops_stat.requests_icp++;
-		UNLOCK_STATISTICS(oops_stat);
-		RDLOCK_CONFIG;
-		peer = peer_by_addr(sa);
-		if ( peer ) {
-		    /* here update peer statistics			*/
-		    peer->rq_recvd++;
-		} else {
-		    my_log("Peer not found\n");
-		}
-		UNLOCK_CONFIG ;
 		if ( len != ntohs(icp_msg_len) ) {
 		    my_log("Wrong len\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
@@ -222,38 +227,61 @@ struct	icp_lookup	icp_lookup;
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
+		LOCK_STATISTICS(oops_stat);
+		    oops_stat.requests_icp++;
+		    oops_stat.requests_icp0++;
+		UNLOCK_STATISTICS(oops_stat);
+		bzero(&request, sizeof(request));
+		memcpy(&request.client_sa, sa, sizeof(*sa));
 		my_log("ICP_OP_QUERY: %s\n", urlp);
-		if ( parse_url(urlp, NULL, &url, -1) ) {
+		if ( parse_url(urlp, NULL, &request.url, -1) ) {
 		    my_log("Wrong url\n");
 		    send_icp_op_err(so, sa, htonl(icp_rq_n));
 		    return;
 		}
-
-		res = locate_in_mem(&url, 0, NULL, NULL);
+		RDLOCK_CONFIG;
+		denied = deny_http_access(so, &request);
+		if ( denied ) {
+		    UNLOCK_CONFIG ;
+		    send_icp_op(so, sa, ICP_OP_DENIED, htonl(icp_rq_n), urlp);
+		    free_url(&request.url);
+		    return;
+		}
+		peer = peer_by_addr(sa);
+		if ( peer ) {
+		    /* here update peer statistics			*/
+		    peer->rq_recvd++;
+		}
+		UNLOCK_CONFIG ;
+		res = locate_in_mem(&request.url, 0, NULL, NULL);
 		if ( res ) {
 		    my_log("ICP_MEM_HIT\n");
 		    icp_opcode = ICP_OP_HIT;
 		    icp_opt=0;
 		    send_icp_op(so, sa, ICP_OP_HIT, htonl(icp_rq_n), urlp);
+		    if ( peer )
+			peer->hits_sent++;
 		} else {
 		    struct disk_ref	*tmp_ref;
 		    int			rc;
 		    /* locate on storage */
 		    RDLOCK_CONFIG;
 		    RDLOCK_DB;
-		    rc = locate_url_on_disk(&url, &tmp_ref);
+		    rc = locate_url_on_disk(&request.url, &tmp_ref);
 		    UNLOCK_DB;
 		    UNLOCK_CONFIG;
 		    if ( rc >= 0 )xfree(tmp_ref);
 		    if ( !rc ) {
 			my_log("ICP_STOR_HIT\n");
 			send_icp_op(so, sa, ICP_OP_HIT, htonl(icp_rq_n), urlp);
+			if ( peer )
+			    peer->hits_sent++;
 		    } else {
 			my_log("ICP_MISS\n");
 			send_icp_op(so, sa, ICP_OP_MISS, htonl(icp_rq_n), urlp);
 		    }
 		}
-		free_url(&url);
+		free_url(&request.url);
 		break;
 	case ICP_OP_HIT:
 		if ( len != ntohs(icp_msg_len) ) {

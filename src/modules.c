@@ -1,3 +1,23 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
+
 #ifdef	MODULES
 
 #include	<stdio.h>
@@ -631,26 +651,32 @@ struct		sockaddr_in	sin_addr;
 	    nres++;
 	    bzero(pptr, sizeof(*pptr));
 	    pptr->port = port;
+	    pptr->so = -1;	/* this is sign to use server_so */
 	    pptr++;
 	} else
-	if ( tcp_port_in_use(port) ) {
+	if ( (so = tcp_port_in_use(port)) ) {
 	    nres++;
 	    bzero(pptr, sizeof(*pptr));
 	    pptr->port = port;
+	    pptr->so = so;
 	    pptr++;
 	} else
 	if ( port && (so = socket(AF_INET, SOCK_STREAM, 0)) >= 0 ) {
 	    setsockopt(so, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof(one));
 	    sin_addr.sin_family = AF_INET;
 	    sin_addr.sin_port   = htons(port);
+#if	!defined(LINUX) && !defined(SOLARIS)
+	    sin_addr.sin_len	= sizeof(sin_addr);
+#endif
 	    rc = bind(so, (struct sockaddr*)&sin_addr, sizeof(sin_addr));
 	    if ( rc >=0 ) {
 		nres++;
 		pptr->port = port;
 		pptr->in_addr = sin_addr.sin_addr;
+		pptr->so = so;
 		pptr++;
 		add_socket_to_listen_list(so, 0, NULL);
-		add_to_tcp_port_in_use(port);
+		add_to_tcp_port_in_use(port, so);
 		listen(so, 128);
 	    } else {
 		printf("parse_myports:bind: %s\n", strerror(errno));

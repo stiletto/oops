@@ -1,3 +1,57 @@
+Version 1.2f
+	25.01.00
+		added --with-DB to configure.in
+		last FD_SET,FD_ZERO removed
+		icp now return ICP_DENIED if requested URL
+			will be denied from peer.
+	21.01.00
+		reserved_fd - reserve several file descriprors with
+			low numbers (because under Solaris fopen can 
+			fail if there is no free descriptors < 255)
+	19.01.00
+		Fixed bug with WarFTPd
+	18.01.00
+		Fixed bug with destroyed document content
+			when max_resident=0 and bandwidth control turned on
+		Fixed bug in run_client.c: core dumped when calling
+			say_bad_request()
+		Fixed problem for transparent.c under Linux ipchains. Also
+			switched to different method of myport processing
+		Fixed bug: removed all FD_SET and FD_ZERO from http_utils.c:
+			core dumps because of lot of connections.
+		Memory leak in accel.c during reconfigure.
+	14.01.00
+		Fixed bug in ftp (requests like FTP://smthng
+			returned BAD PORT)
+		Fixed bug in run_client (ftp requests was processed by http
+			code if document was somehow forced be non-cachable)
+		Fixed bug in send_not_cached (oops close connection
+			too early, before end of doc)
+	13.01.00
+		bugfix in accel: map src host/path lead to host/path/path.
+		transparent finished.
+		%H in err_template - to show proxy hostname
+		poll(2) enabled for FreeBSD 3.3+.
+		report free space on storage in %% (patches from Andy
+			Igoshin)
+	10.01.00
+		Configure: oops userid and chroot added
+			   autodetect ipfilter
+		module transparent
+		bug in writet (IS_HANGUP())
+	08.01.00
+		DNS:	timeout increased. Fixed bug in dns init (parser.y)
+	07.01.00
+		storages:
+		    size auto - for pre-created and raw storages
+				automatically detect size duting format
+		    offset    - all read/writes to stoarge with given offset
+				for example to use entire disk under
+				Sparc Solaris, you must give offset 512
+				to save disk label.
+		some emprovements and fixes in 'oopsctl stat'
+	02.01.00
+		large files support (for freebsd,solaris)
 Version 1.2e
 	29.12.99 - more acls, groups using acls, stop_cache using acls
 		   load acls from file, host hash for accel.

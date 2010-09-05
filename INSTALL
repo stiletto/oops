@@ -21,5 +21,6 @@ Known problems:
    Latest RedHat comes with right libraries. If you
    have any info re other Linux distributions, please, send me info.
 
-2) FreeBSD - don't use libdb which is supplied with new FreeBSD (3.x) - use
-   DB from Sleepycat.
+2) FreeBSD - don't use old libdb which is supplied with new FreeBSD (3.x) -
+   use DB from Sleepycat.
+   This programm can hang under old versions of FreeBSD (prior to 3.3)

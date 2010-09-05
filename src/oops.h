@@ -115,6 +115,8 @@ typedef	unsigned	uint32_t;
 #define	MAXNS		(5)
 #define	MAXBADPORTS	(10)
 
+#define		STORAGE_PAGE_SIZE	((off_t)4096)
+
 #define	CHUNK_SIZE	(64)
 #define	ROUND_CHUNKS(s)	((((s) / CHUNK_SIZE) + 1) * CHUNK_SIZE)
 
@@ -209,6 +211,8 @@ typedef	unsigned	uint32_t;
 #define	DEFAULT_MAXRESIDENT	(1024*1024)	/* 1MB		*/
 #define	DEFAULT_DNS_TTL		(30*60)		/* 30 min's	*/
 #define	DEFAULT_ICP_TIMEOUT	(1000000)	/* 1 sec	*/
+
+#define	RESERVED_FD		(20)		/* reserve low number file descriptors */
 
 #define	ADDR_AGE		(3600)
 
@@ -311,6 +315,7 @@ struct	request {
 	struct	l_string_list	*cs_to_server_table;
 	struct	l_string_list	*cs_to_client_table;
 	char			*matched_acl;
+	int			accepted_so;	/* socket where was accept-ed		*/
 };
 
 struct	av {
@@ -322,11 +327,13 @@ struct	av {
 struct	tcpport	{
 	u_short		port;
 	struct  tcpport *next;
+	int		so;
 };
 
 typedef struct	myport_ {
 	u_short		port;
 	struct	in_addr	in_addr;
+	int		so;		/* socket (transparent on linux need it) */
 } myport_t;
 
 struct	superb {
@@ -347,12 +354,13 @@ struct	superb {
 struct	storage_st {
 	struct	storage_st	*next;
 	char			*path;		/* path to storage	*/
-	int			size;		/* size			*/
+	off_t			size;		/* size			*/
 	int			flags;		/* flags, like ready	*/
 	rwl_t			storage_lock;	/* locks for writings	*/
 	struct	superb		super;		/* in-memory super	*/
 	int			fd;		/* descriptor for access*/
 	char			*map;		/* busy map		*/
+	off_t			i_off;		/* initial offset in file*/
 };
 
 struct	disk_ref {
@@ -669,6 +677,7 @@ struct	peer	{
 	int			an_recvd;	/* tot. answers		*/
 	int			hits_recvd;	/* tot. hits received	*/
 	int			rq_recvd;	/* tot. reqs received	*/
+	int			hits_sent;	/* hits answers to peer	*/
 	time_t			last_sent;	/* time when last rq sent  */
 	time_t			last_recv;	/* time when last rq recvd */
 };
@@ -714,6 +723,7 @@ typedef	struct	work {
 	int	so;		/* socket		*/
 	void*	(*f)(void*);	/* processor or NULL	*/
 	int	flags;
+	int	accepted_so;	/* on which socket connection was accepted	*/
 } work_t;
 
 
@@ -738,6 +748,13 @@ struct	oops_stat {
 	uint32_t	requests_http1;	/* last minute requests			*/
 	uint32_t	hits1;		/* last minute hits			*/
 	uint32_t	storages_free;	/* current free storage %%		*/
+
+	uint32_t	requests_icp0;	/* current minute icp requests processed		*/
+	uint32_t	requests_icp1;	/* prev minute icp requests processed		*/
+	uint32_t	requests_http0_max; /* per minute max			*/
+	uint32_t	requests_icp0_max;
+	uint32_t	hits0_max;	/* maximum current minute hits		*/
+	uint32_t	clients_max;	/* maximum number of clients		*/
 };
 
 #define	MAXPOLLFD	(64)
@@ -765,10 +782,12 @@ char    	statisticslog[MAXPATHLEN];
 char		dbhome[MAXPATHLEN];
 DB		*dbp;
 char		dbname[MAXPATHLEN];
+int		reserved_fd[RESERVED_FD];
 int		accesslog_num, accesslog_size;
 int		log_num, log_size;
 int		maxresident;
 int		icp_so;
+int		server_so;
 int		peer_down_interval;
 char    	icons_path[MAXPATHLEN];
 char    	icons_port[64];
@@ -822,9 +841,10 @@ pthread_mutex_t	dns_cache_lock;
 pthread_mutex_t	st_check_in_progr_lock;
 pthread_mutex_t	mktime_lock;
 
-DB_ENV			dbenv;
+DB_ENV			*dbenv;
+#if	DB_VERSION_MAJOR<3
 DB_INFO			dbinfo;
-
+#endif
 int			use_workers;
 int			current_workers;
 int			max_workers;
@@ -853,6 +873,8 @@ int		daemon(int, int);
 list_t		icp_requests_list;
 char		domain_name[MAXHOSTNAMELEN+1];
 char		host_name[MAXHOSTNAMELEN+1];
+char		*oops_user;
+char		*oops_chroot;
 int             insert_via;
 int             insert_x_forwarded_for;
 named_acl_t	*named_acls;
@@ -926,6 +948,7 @@ void		rwl_rdlock(rwl_t*);
 void		rwl_wrlock(rwl_t*);
 void		rwl_unlock(rwl_t*);
 void		remove_limits();
+void		report_limits();
 void		free_storages(struct storage_st*);
 void		init_storages(struct storage_st*);
 void		free_storage(struct storage_st *);
@@ -991,7 +1014,7 @@ void		update_transfer_rate(struct request*, int size);
 int		group_traffic_load(struct group *group);
 char		*format_av_pair(char*, char*);
 int		tcp_port_in_use(u_short);
-void		add_to_tcp_port_in_use(u_short);
+void		add_to_tcp_port_in_use(u_short, int);
 void		free_tcp_ports_in_use(void);
 void		flush_mem_cache(int);
 void		init_domain_name();

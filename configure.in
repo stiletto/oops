@@ -10,14 +10,25 @@ sed_script='s/,/.so /g'
 AC_ARG_ENABLE(opt-modules,--enable-opt-modules      Additional modules(comma separated),\
 OPT_MODS=`echo $enable_opt_modules | sed "$sed_script"`.so)
 
+AC_ARG_ENABLE(large-files,--enable-large-files      Enable large files support,\
+large_files="yes")
+
+AC_ARG_WITH(DB,--with-DB                 BerkeleyDB home directoty,\
+LIBDB_PATH=$withval,LIBDB_PATH="")
+
 AC_CHECK_HEADER(unistd.h)
 AC_CHECK_HEADER(pthread.h)
 AC_CHECK_HEADER(crypt.h, HAVE_CRYPT_H="-DHAVE_CRYPT_H", HAVE_CRYPT_H="")
+AC_CHECK_HEADER(netinet/ip_fil.h, HAVE_IPF="1", HAVE_IPF="0")
 
 pwd=`pwd`
 LIBDB_NAME=-ldb
 AC_MSG_CHECKING(for libdb.a)
-if test -r "/usr/local/BerkeleyDB/lib/libdb.a"; then
+if test "X$LIBDB_PATH" != "X" ; then
+    LIBDB_PATH=$LIBDB_PATH
+elif test -r "/usr/local/BerkeleyDB.3.0/lib/libdb.a"; then
+    LIBDB_PATH="/usr/local/BerkeleyDB.3.0/lib"
+elif test -r "/usr/local/BerkeleyDB/lib/libdb.a"; then
     LIBDB_PATH="/usr/local/BerkeleyDB/lib"
 elif test -r "$pwd/libdb.a"; then
     LIBDB_PATH="$pwd"
@@ -35,7 +46,9 @@ else
 fi
 AC_MSG_RESULT($LIBDB_PATH)
 
-if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
+if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB.3.0/lib"; then
+    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB.3.0/include -L/usr/local/BerkeleyDB.3.0/lib"
+elif test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
     CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
 elif test "$LIBDB_PATH" = "$pwd"; then
     CFLAGS="$CFLAGS -I$pwd -L$pwd"
@@ -45,6 +58,8 @@ elif test "$LIBDB_PATH" = "/usr/local/lib"; then
     else
 	CFLAGS="$CFLAGS -I/usr/local/include -L/usr/local/lib"
     fi
+else
+    CFLAGS="$CFLAGS -I$LIBDB_PATH/include -L$LIBDB_PATH/lib"
 fi
 
 AC_CHECK_LIB(pthread, pthread_create, pthread_in=pthread,pthread_in=no)
@@ -204,14 +219,23 @@ irix*)    CFLAGS="-D_SGI_MP_SOURCE";;
 osf*)     CFLAGS="-D_REENTRANT";;
 freebsd*) CFLAGS="$CFLAGS -pthread -D_REENTRANT -DFREEBSD -D_THREAD_SAFE"
 	  LIBS="-lc_r $LEXLIB $LIBDB_NAME -lcrypt $LIBS"
+	  if test "$large_files" = "yes" ; then
+		## FreeBSD need no any special flags for 64bit files
+		CFLAGS="$CFLAGS -DWITH_LARGE_FILES"
+	  fi
 	  ;;
-linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
+gnu*|linux*)   CFLAGS="$CFLAGS -D_REENTRANT -DLINUX"
 	  if test "$pthread_in" = "pthreads" ; then
 		CFLAGS="$CFLAGS -D_MIT_POSIX_THREADS"
 		LIBS="-lpthreads $LEXLIB -ldb -lcrypt $LIBS"
 		echo Probably you have MIT-threads. If yes, swich to LinuxThreads.
 	  else
 		LIBS="-lpthread $LEXLIB $LIBDB_NAME -lcrypt $LIBS"
+	  fi
+	  if test "$large_files" = "yes" ; then
+		## Linux ext2fs does'nt support large files yet.
+		AC_MSG_RESULT(Warning: Linux ext2fs doesn't support large files.)
+		CFLAGS="$CFLAGS -DWITH_LARGE_FILES -D_FILE_OFFSET_BITS=64"
 	  fi
 	  ;;
 solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
@@ -222,6 +246,9 @@ solaris*) CFLAGS="$CFLAGS -D_REENTRANT -DSOLARIS "
 		*)	CFLAGS="$CFLAGS -mt"
 			;;
 	  esac
+	  if test "$large_files" = "yes" ; then
+		CFLAGS="$CFLAGS -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 -DWITH_LARGE_FILES"
+	  fi
 	  ;;
 esac
 
@@ -242,5 +269,6 @@ AC_SUBST(STRTOKOBJ)
 AC_SUBST(SOFLAGS)
 AC_SUBST(OPT_MODS)
 AC_SUBST(HAVE_GETHOSTBYNAME_R)
+AC_SUBST(HAVE_IPF)
 
 AC_OUTPUT(src/Makefile src/modules/Makefile src/oops.cfg src/config.h)

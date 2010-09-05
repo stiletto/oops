@@ -121,7 +121,9 @@ char *ptr = buff, c;
     while( read(so, &c, 1) == 1 ) {
 	/* skip any leading space chars */
 	if ( (ptr==buff) && isspace(c) ) continue;
-	if ( c == '\n' || c == '\r' ) return(1);
+	if ( c == '\n' || c == '\r' ) {
+	    return(1);
+	}
 	*ptr = c; ptr++; *ptr = 0;
         if ( ptr - buff >= len -1 )
             return(1);
@@ -180,8 +182,11 @@ int			uptime = global_sec_timer - start_time;
 struct	storage_st	*storage;
 struct	general_module	*mod;
 struct	peer		*peer;
-int			last_min_req_rate, last_min_hit_rate;
+int			last_min_req_rate, last_min_hit_rate,last_min_icp_rate;
 int			tot_req_rate, tot_hit_rate;
+int			peer_hits_percent;
+int			max_req_rate, max_icp_rate, max_hit_rate;
+off_t			free_pages_p;
 char			ctime_buf[30] = "";
 
     if ( oops_stat.requests_http1 ) {
@@ -190,6 +195,7 @@ char			ctime_buf[30] = "";
     } else {
 	last_min_req_rate = last_min_hit_rate = 0;
     }
+    last_min_icp_rate = oops_stat.requests_icp1/6;
     if ( uptime ) {
 	tot_req_rate = (oops_stat.requests_http*10)/uptime;
 	if ( oops_stat.requests_http )
@@ -199,6 +205,9 @@ char			ctime_buf[30] = "";
     } else {
 	tot_req_rate = tot_hit_rate = 0;
     }
+    max_req_rate = oops_stat.requests_http0_max/6;
+    max_icp_rate = oops_stat.requests_icp0_max/6;
+    max_hit_rate = oops_stat.hits0_max/6;
     write(so, "## --  General info   --\n", 25);
     sprintf(buf, "Version      : %s, DB version: %s\n", version, db_ver);
     write(so, buf, strlen(buf));
@@ -209,7 +218,7 @@ char			ctime_buf[30] = "";
     CTIME_R(&global_sec_timer, ctime_buf);
     sprintf(buf,  "Last update  : %s", ctime_buf);
     write(so, buf, strlen(buf));
-    sprintf(buf, "Clients      : %d\n", clients_number);
+    sprintf(buf, "Clients      : %d (max: %d)\n", clients_number, oops_stat.clients_max);
     write(so, buf, strlen(buf));
     sprintf(buf, "HTTP requests: %d\n", oops_stat.requests_http);
     write(so, buf, strlen(buf));
@@ -221,13 +230,20 @@ char			ctime_buf[30] = "";
 	sprintf(buf, "Thread pool  : %d ready to serve (out of %d max)\n", current_workers, max_workers);
 	write(so, buf, strlen(buf));
     }
-    sprintf(buf, "Curr.req.rate: %d.%d req/sec\n", last_min_req_rate/10, last_min_req_rate%10);
-    write(so, buf, strlen(buf));
-    sprintf(buf, "Curr.hit.rate: %d.%d %%\n", last_min_hit_rate/10, last_min_hit_rate%10);
+    sprintf(buf, "Curr.req.rate: %d.%d req/sec (max: %d.%d)\n",
+	last_min_req_rate/10, last_min_req_rate%10,
+	max_req_rate/10, max_req_rate%10);
     write(so, buf, strlen(buf));
     sprintf(buf, "Tot.req.rate : %d.%d req/sec\n", tot_req_rate/10, tot_req_rate%10);
     write(so, buf, strlen(buf));
+    sprintf(buf, "Curr.hit.rate: %d.%d %%\n",
+	last_min_hit_rate/10, last_min_hit_rate%10);
+    write(so, buf, strlen(buf));
     sprintf(buf, "Tot.hit.rate : %d.%d %%\n", tot_hit_rate/10, tot_hit_rate%10);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "Curr.icp.rate: %d.%d req/sec (max: %d.%d)\n",
+	last_min_icp_rate/10, last_min_icp_rate%10,
+	max_icp_rate/10, max_icp_rate%10);
     write(so, buf, strlen(buf));
     /* storages */
     write(so, "## --    storages     --\n", 25);
@@ -236,11 +252,28 @@ char			ctime_buf[30] = "";
     while(storage) {
 	sprintf(buf, "Storage      : %s\n", storage->path);
 	write(so, buf, strlen(buf));
-	sprintf(buf, "Size         : %d bytes (%dMb)\n", storage->size,
+	if ( storage->size != -1 )
+#if	defined(WITH_LARGE_FILES)
+	    sprintf(buf, "Size         : %lld bytes (%dMb)\n", storage->size,
+					(int)(storage->size/(off_t)(1024*1024)));
+#else
+	    sprintf(buf, "Size         : %d bytes (%dMb)\n", storage->size,
 					storage->size/(1024*1024));
+#endif
+	else
+	    sprintf(buf, "Size         : %d blks (%dMb)\n",
+					storage->super.blks_total,
+					(int)((long long)storage->super.blks_total*4)/1024);
 	write(so, buf, strlen(buf));
-	sprintf(buf, "Free blks    : %d blks (%dMb)\n", storage->super.blks_free,
-					(storage->super.blks_free*4096)/(1024*1024));
+	if ( storage->super.blks_free == 0 || storage->super.blks_total == 0 )
+	    free_pages_p = 0;
+	    else
+		free_pages_p = ((long long)1000*(long long)storage->super.blks_free)/storage->super.blks_total;
+	sprintf(buf, "Free blks    : %d blks (%dMb) %d.%d %%\n",
+		storage->super.blks_free,
+		(int)(((off_t)storage->super.blks_free*STORAGE_PAGE_SIZE)/(off_t)(1024*1024)),
+		(free_pages_p == 0) ? 0 : free_pages_p/10,
+		(free_pages_p == 0) ? 0 : free_pages_p%10);
 	write(so, buf, strlen(buf));
 	sprintf(buf, "State        : %s\n", (storage->flags&ST_READY)?
 					"READY":"NOT_READY");
@@ -313,9 +346,23 @@ char			ctime_buf[30] = "";
 	write(so, buf, strlen(buf));
         sprintf(buf, "Answ. recvd  : %d\n", peer->an_recvd);
 	write(so, buf, strlen(buf));
-        sprintf(buf, "Hits recvd   : %d\n", peer->hits_recvd);
+	if ( peer->an_recvd == 0 || peer->hits_recvd == 0 )
+	    peer_hits_percent = 0;
+	    else
+		peer_hits_percent = (peer->hits_recvd*1000)/peer->an_recvd;
+        sprintf(buf, "Hits recvd   : %d (%d.%d %%)\n", peer->hits_recvd,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
 	write(so, buf, strlen(buf));
         sprintf(buf, "Reqs recvd   : %d\n", peer->rq_recvd);
+	write(so, buf, strlen(buf));
+	if ( peer->hits_sent == 0 || peer->rq_recvd == 0 )
+	    peer_hits_percent = 0;
+	    else
+		peer_hits_percent = (peer->hits_sent*1000)/peer->rq_recvd;
+        sprintf(buf, "Hits sent    : %d (%d.%d %%)\n", peer->hits_sent,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
 	write(so, buf, strlen(buf));
         sprintf(buf, "Status       : %s\n",
         	TEST(peer->state, PEER_DOWN)?"DOWN":"UP");
@@ -336,8 +383,11 @@ int			uptime = global_sec_timer - start_time;
 struct	storage_st	*storage;
 struct	general_module	*mod;
 struct	peer		*peer;
-int			last_min_req_rate, last_min_hit_rate;
+int			last_min_req_rate, last_min_hit_rate, last_min_icp_rate;
 int			tot_req_rate, tot_hit_rate;
+int			max_req_rate, max_icp_rate, max_hit_rate;
+int			peer_hits_percent;
+int			free_pages_p;
 char			ctime_buf[30];
 
     if ( oops_stat.requests_http1 ) {
@@ -356,6 +406,10 @@ char			ctime_buf[30];
     } else {
 	tot_req_rate = tot_hit_rate = 0;
     }
+    max_req_rate = oops_stat.requests_http0_max/6;
+    max_icp_rate = oops_stat.requests_icp0_max/6;
+    max_hit_rate = oops_stat.hits0_max/6;
+    last_min_icp_rate = oops_stat.requests_icp1/6;
     sprintf(buf, "<html><title>Oops stat</title>\n");
     write(so, buf, strlen(buf));
     if ( html_refresh ) {
@@ -373,7 +427,7 @@ char			ctime_buf[30];
     CTIME_R(&global_sec_timer, ctime_buf);
     sprintf(buf,  "<tr><td>Last update<td>%s", ctime_buf);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Clients<td>%d\n", clients_number);
+    sprintf(buf, "<tr><td>Clients<td>%d (max: %d)\n", clients_number, oops_stat.clients_max);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>HTTP requests<td>%d\n", oops_stat.requests_http);
     write(so, buf, strlen(buf));
@@ -385,13 +439,21 @@ char			ctime_buf[30];
 	sprintf(buf, "<tr><td>Thread pool<td>%d ready to serve (out of %d max)\n", current_workers, max_workers);
 	write(so, buf, strlen(buf));
     }
-    sprintf(buf, "<tr><td>Curr.req.rate<td>%d.%d req/sec\n", last_min_req_rate/10, last_min_req_rate%10);
+    sprintf(buf, "<tr><td>Curr.req.rate<td>%d.%d req/sec (max: %d.%d)\n",
+	last_min_req_rate/10, last_min_req_rate%10,
+	max_req_rate/10, max_req_rate%10);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Curr.hit.rate<td>%d.%d %%\n", last_min_hit_rate/10, last_min_hit_rate%10);
+    sprintf(buf, "<tr><td>Tot.req.rate<td>%d.%d req/sec\n",
+	tot_req_rate/10, tot_req_rate%10);
     write(so, buf, strlen(buf));
-    sprintf(buf, "<tr><td>Tot.req.rate<td>%d.%d req/sec\n", tot_req_rate/10, tot_req_rate%10);
+    sprintf(buf, "<tr><td>Curr.hit.rate<td>%d.%d %%\n",
+	last_min_hit_rate/10, last_min_hit_rate%10);
     write(so, buf, strlen(buf));
     sprintf(buf, "<tr><td>Tot.hit.rate<td>%d.%d %%\n", tot_hit_rate/10, tot_hit_rate%10);
+    write(so, buf, strlen(buf));
+    sprintf(buf, "<tr><td>Curr.icp.rate<td>%d.%d req/sec (max: %d.%d)\n",
+	last_min_icp_rate/10, last_min_icp_rate%10,
+	max_icp_rate/10, max_icp_rate%10);
     write(so, buf, strlen(buf));
     /* storages */
     sprintf(buf, "<tr bgcolor=blue><td><font color=yellow>Storages</font><td>&nbsp\n");
@@ -401,11 +463,26 @@ char			ctime_buf[30];
     while(storage) {
 	sprintf(buf, "<tr><td>Storage<td>%s\n", storage->path);
 	write(so, buf, strlen(buf));
-	sprintf(buf, "<tr><td>Size<td>%d bytes (%dMb)\n", storage->size,
+	if ( storage->size != -1 )
+#if	defined(WITH_LARGE_FILES)
+	    sprintf(buf, "<tr><td>Size<td>%lld bytes (%dMb)\n", storage->size,
+					(int)(storage->size/(off_t)(1024*1024)));
+#else
+	    sprintf(buf, "<tr><td>Size<td>%d bytes (%dMb)\n", storage->size,
 					storage->size/(1024*1024));
+#endif
+	else
+	    sprintf(buf, "<tr><td>Size<td>%d blks (%dMb)\n", storage->super.blks_total,
+					(int)((long long)(storage->super.blks_total*4)/1024));
 	write(so, buf, strlen(buf));
-	sprintf(buf, "<tr><td>Free blks<td>%d blks (%dMb)\n", storage->super.blks_free,
-					(storage->super.blks_free*4096)/(1024*1024));
+	if ( storage->super.blks_free == 0 || storage->super.blks_total == 0 )
+	    free_pages_p = 0;
+	    else
+		free_pages_p = ((long long)1000*(long long)storage->super.blks_free)/storage->super.blks_total;
+	sprintf(buf, "<tr><td>Free blks<td>%d blks (%dMb) %d.%d %%\n", storage->super.blks_free,
+					(int)(((off_t)storage->super.blks_free*STORAGE_PAGE_SIZE)/(off_t)(1024*1024)),
+					(free_pages_p == 0) ? 0 : free_pages_p/10,
+					(free_pages_p == 0) ? 0 : free_pages_p%10);
 	write(so, buf, strlen(buf));
 	sprintf(buf, "<tr><td>State<td>%s\n", (storage->flags&ST_READY)?
 					"READY":"<font color=red>NOT_READY</font>");
@@ -477,9 +554,23 @@ char			ctime_buf[30];
 	write(so, buf, strlen(buf));
         sprintf(buf, "<tr><td>Answ. recvd<td>%d\n", peer->an_recvd);
 	write(so, buf, strlen(buf));
-        sprintf(buf, "<tr><td>Hits recvd<td>%d\n", peer->hits_recvd);
+	if ( peer->an_recvd == 0 || peer->hits_recvd == 0 )
+	    peer_hits_percent = 0;
+	    else
+		peer_hits_percent = (peer->hits_recvd*1000)/peer->an_recvd;
+        sprintf(buf, "<tr><td>Hits recvd<td>%d (%d.%d %%)\n", peer->hits_recvd,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
 	write(so, buf, strlen(buf));
         sprintf(buf, "<tr><td>Reqs recvd<td>%d\n", peer->rq_recvd);
+	write(so, buf, strlen(buf));
+	if ( peer->hits_sent == 0 || peer->rq_recvd == 0 )
+	    peer_hits_percent = 0;
+	    else
+		peer_hits_percent = (peer->hits_sent*1000)/peer->rq_recvd;
+        sprintf(buf, "<tr><td>Hits sent<td>%d (%d.%d %%)\n", peer->hits_sent,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent/10,
+			(peer_hits_percent == 0) ? 0 : peer_hits_percent%10);
 	write(so, buf, strlen(buf));
         sprintf(buf, "<tr><td>Status<td>%s\n",
         	TEST(peer->state, PEER_DOWN)?"DOWN":"UP");
@@ -495,14 +586,20 @@ char			ctime_buf[30];
 void*
 process_call(void *arg)
 {
-int	so = (int)arg;
+struct	work	*work;
+int	so;
 char	command[128];
 
+    if ( !arg ) return(NULL);
+    work = arg;
+    so = work->so;
+    free(work);
     my_log("Accept called on %d\n", so);
     /* done */
     while( read_command(so, command, sizeof(command)) &&
            process_command(so, command) );
     close(so);
+    return(NULL);
 }
 
 void

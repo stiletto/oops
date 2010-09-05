@@ -1,4 +1,4 @@
-VER=1.2e
+VER=1.2f
 
 
 all:
@@ -9,8 +9,8 @@ clean:
 	cd src/modules; $(MAKE) clean
 
 distclean:
-	rm -f config.cache config.status config.log ;
-	cd src; rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln version.h config.h oops
+	rm -f config.cache config.status config.log *~;
+	cd src; rm -f Makefile *o lex.yy.c  y.tab.[ch] *~ *.ln version.h config.h oops core
 	cd src/modules; rm -f Makefile *o oopsctl *~ *.ln
 
 tar:

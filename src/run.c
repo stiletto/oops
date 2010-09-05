@@ -1,3 +1,22 @@
+/*
+Copyright (C) 1999 Igor Khasilev, igor@paco.net
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+
+*/
+
 #include        <stdio.h>
 #include        <stdlib.h>
 #include        <fcntl.h>
@@ -28,7 +47,6 @@
 #include	"dataq.h"
 
 struct		sockaddr_in	Me;
-int		server_so = -1;
 pthread_t 	gc_thread = (pthread_t)NULL, rl_thread = (pthread_t)NULL;
 pthread_t 	dc_thread = (pthread_t)NULL;
 pthread_t 	dl_thread = (pthread_t)NULL;
@@ -47,7 +65,7 @@ struct	run_mod_arg {
 };
 
 void	*run_client(void*);
-void	*run_module(int, void* (*f)(void*));
+void	*run_module(int, void* (*f)(void*), int);
 void	cleanup(void);
 void	*worker(void*);
 void	add_workers();
@@ -203,10 +221,17 @@ struct	pollarg		*pollarg;
 	pollarg = xmalloc(2*sizeof(struct pollarg),"");
 
 wait_clients:
-    pollarg[0].fd = server_so;
-    pollarg[0].request = FD_POLL_RD;
-    pollarg[1].fd = icp_so;
-    pollarg[1].request = FD_POLL_RD;
+    pollarg[0].request = pollarg[1].request = 0;
+    if ( server_so >= 0 ) {
+	pollarg[0].fd = server_so;
+	pollarg[0].request = FD_POLL_RD;
+    } else
+	my_log("server so = %d\n", server_so);
+    if ( icp_so >= 0 ) {
+	pollarg[1].fd = icp_so;
+	pollarg[1].request = FD_POLL_RD;
+    } else
+	my_log("icp so = %d\n", icp_so);
     if ( listen_so_list ) {
 	struct	listen_so_list	*list = listen_so_list;
 	int			k=2;
@@ -261,12 +286,15 @@ wait_clients:
 	cli_addr_len = sizeof(cli_addr);
 	r = accept(server_so, (struct sockaddr*)&cli_addr, &cli_addr_len);
 	if ( r >= 0 ) {
+	    work_t  *work = xmalloc(sizeof(*work),"");
+	    if ( work ) {
+		work->so = r;
+		work->f  = run_client;
+		work->flags = WORK_NORMAL;
+		work->accepted_so = -1 ; /* this is http_port socket */
+	    }
 	    if ( use_workers ) {
-	        work_t  *work = xmalloc(sizeof(*work),"");
 		if ( work ) {
-		    work->so = r;
-		    work->f  = run_client;
-		    work->flags = WORK_NORMAL;
 		    dataq_enqueue(&wq, (void*)work);
 		    add_workers();
 		} else { /* failed to create worker */
@@ -276,7 +304,7 @@ wait_clients:
 		pthread_t 	cli_thread;
 		pthread_sigmask(SIG_BLOCK, &newset, &oset);
 		/* well, process with this client */
-		res = pthread_create(&cli_thread, &p_attr, run_client, (void*)r);
+		res = pthread_create(&cli_thread, &p_attr, run_client, (void*)work);
 		if ( res ) {
 		    my_log("Can't pthread_create\n");
 		    close(r);
@@ -296,9 +324,9 @@ wait_clients:
 		rc = accept(pollarg[k].fd, &cli_addr, &cli_addr_len);
 		if ( rc < 0 ) goto acc_f;
 		if ( list->process_call ) {
-		    run_module(rc, list->process_call);
+		    run_module(rc, list->process_call, pollarg[k].fd);
 		} else {
-		    run_module(rc, run_client);
+		    run_module(rc, run_client, pollarg[k].fd);
 		}
 	    }
 	acc_f:
@@ -310,17 +338,20 @@ wait_clients:
 }
 
 void*
-run_module(int so, void *(f)(void*))
+run_module(int so, void *(f)(void*), int accepted_so)
 {
 pthread_t 		cli_thread;
 int			res;
+work_t  *work = xmalloc(sizeof(*work),"");
 
+    if ( work ) {
+	work->so = so;
+	work->f  = f;
+	work->flags = WORK_MODULE;
+	work->accepted_so = accepted_so;
+    }
     if ( use_workers ) {
-	work_t  *work = xmalloc(sizeof(*work),"");
 	if ( work ) {
-	    work->so = so;
-	    work->f  = f;
-	    work->flags = WORK_MODULE;
 	    dataq_enqueue(&wq, (void*)work);
 	    add_workers();
 	} else { /* failed to create worker */
@@ -329,7 +360,7 @@ int			res;
     } else {
 	pthread_sigmask(SIG_BLOCK, &newset, &oset);
 	/* well, process with this client */
-	res = pthread_create(&cli_thread, &p_attr, f, (void*)so);
+	res = pthread_create(&cli_thread, &p_attr, f, (void*)work);
 	if ( res ) {
 	    my_log("Can't pthread_create\n");
 	    close(so);
@@ -361,6 +392,12 @@ struct storage_st	*storage;
 	dbp->sync(dbp, 0);
 	dbp->close(dbp, 0);
     }
+#if     DB_VERSION_MAJOR<3
+    if ( dbenv ) free(dbenv);
+#else
+    if ( dbenv )
+	dbenv->close(dbenv,0);
+#endif
     if ( (storage = storages) ) {
 	while (storage) {
 	    my_log("Locking %s\n", storage->path);

@@ -28,6 +28,9 @@ Special thanks:
 	Ilia Zadorozhko <ilia@kyivstar.net> for first and brave real-life
 			testing on linux.
 	Andrew Vasilyev <andy@demos.su> for testing on "totally different"
-			hardware (IBM Netfinity with RAID)
+			hardware (IBM Netfinity with RAID), ideas,
+			bug reports, support.
 	Eugen Sobchenko <quaker@tty.dhs.org> for oops www-site developement
-			and support
+			and support.
+	Andy Igoshin	<ai@vsu.ru> for lot of ideas, notes, bug reports,
+			testing on real heavy-loaded system.
