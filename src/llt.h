@@ -23,6 +23,10 @@ ll_t *ll_peek(llh_t *head);
 ll_t *ll_dequeue(llh_t *head);
 ll_t *ll_traverse(llh_t *ptr, int (*func)(void *, void *), void *user);
 int ll_check(llh_t *head);
+int list_init(list_t*);
+int list_add(list_t *, void*);
+int list_remove(list_t*, void*);
+int list_traverse(list_t *ptr, int (*func)(void *, void *), void *user);
 #define llt_h
 #endif
 /* EndSourceFile */

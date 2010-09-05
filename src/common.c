@@ -30,8 +30,6 @@ readn(int so, char* buf, int len, int tmo)
 {
 int		to_read = len, sr, readed = 0, got;
 char		*p = buf;
-fd_set		fdr;
-struct	timeval tv;
 time_t		start, now;
 struct	pollarg	pa;
 

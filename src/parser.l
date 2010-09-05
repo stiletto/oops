@@ -1,4 +1,4 @@
-%a 5000
+%a 6000
 %o 10000
 %p 5000
 %n 1000
@@ -257,6 +257,9 @@ line		[^\n]+
 		}
 <groupst>[Rr][Ee][Dd][Ii][Rr]_[Mm][Oo][Dd][Ss] {
 		return(REDIR_MODS_T);
+		}
+<groupst>[Dd][Ee][Nn][Yy][Tt][Ii][Mm][Ee] {
+		return(DENYTIME_T);
 		}
 <groupst>{icp}	{
 		BEGIN(icpst);

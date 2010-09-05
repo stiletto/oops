@@ -1,7 +1,5 @@
 /* BeginSourceFile list2.c */
 
-#define	NDEBUG
-
 #include <stdlib.h>
 #include <pthread.h>
 #include <assert.h>

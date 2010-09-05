@@ -91,8 +91,6 @@ struct	mem_obj	*check_validity(int, struct request*, char *, struct mem_obj*);
 char*		build_direct_request(char *meth, struct url *url, char *headers, struct request *rq);
 char*		build_parent_request(char *meth, struct url *url, char *headers, struct request *rq);
 
-pthread_mutex_t	icp_so_lock;
-
 void
 send_not_cached(int so, struct request *rq, char *headers)
 {
@@ -194,6 +192,7 @@ int			have_code = 0, sent = 0;
 	}
 	to_write = r;
 	p = answer;
+    w_l:
 	while( to_write ) {
 	    if ( TEST(rq->flags, RQ_HAS_BANDWIDTH) ) {
 		if ( (++pass)%2 ) SLOWDOWN ;
@@ -365,7 +364,7 @@ done:
 	else		    have_code = 555;
     if ( new_obj ) received = new_obj->size;
          else	   received =     obj->size;
-    if ( (content_type = attr_value(obj->headers, "Content-Type")) ) {
+    if ( content_type = attr_value(obj->headers, "Content-Type") ) {
 	char *p;
 	strncpy(ctbuf, content_type, sizeof(ctbuf)-1);
         p = &ctbuf[0];
@@ -398,7 +397,8 @@ send_data_from_obj(struct request *rq, int so, struct mem_obj *obj, int flags)
 {
 int 		r, sended, received, state, send_hot_pos, pass=0, sf=0, ssended;
 struct	buff	*send_hot_buff;
-char		*transfer_encoding;
+struct	timeval	tv;
+char		*content_type, *transfer_encoding;
 char		convert_from_chunked = FALSE, downgrade_minor = FALSE;
 int		rest_in_chunk = 0;
 struct	pollarg	pollarg;
@@ -535,7 +535,8 @@ char			mk1123buff[50];
 struct	mem_obj 	*new_obj = NULL;
 char			*answer = NULL;
 struct	server_answ	answer_stat;
-int			r;
+int			r, maxfd;
+struct	timeval		tv;
 struct	buff		*to_server_request = NULL;
 
     /* send If-modified-Since request	*/
@@ -728,20 +729,23 @@ int			source_type;
     }
     gettimeofday(&start_tv, NULL);
     if ( !parent_port && peers && (icp_so != -1) && (rq->meth == METH_GET) && !is_local_dom(rq->url.host) ) {
-	struct icp_queue_elem *new_qe;
-	struct timeval tv = start_tv;
+	struct icp_queue_elem *new;
+	struct timeval   tv;
+	int		status;
+
 	bzero((void*)&peer_sa, sizeof(peer_sa));
 	my_log("sending icp_requests\n");
-	new_qe = (struct icp_queue_elem*)xmalloc(sizeof(*new_qe),"icp_q_e");
-	if ( !new_qe ) goto icp_failed;
-	bzero(new_qe, sizeof(*new_qe));
-	pthread_cond_init(&new_qe->icpr_cond, NULL);
-	pthread_mutex_init(&new_qe->icpr_mutex, NULL);
-	new_qe->waitors = 1;
+	new = (struct icp_queue_elem*)xmalloc(sizeof(*new),"icp_q_e");
+	if ( !new ) goto icp_failed;
+	bzero(new, sizeof(*new));
+	pthread_cond_init(&new->icpr_cond, NULL);
+	pthread_mutex_init(&new->icpr_mutex, NULL);
+	gettimeofday(&tv, NULL);
+	new->waitors = 1;
 	/* XXX make rq_n generation more random */
-	new_qe->rq_n    = tv.tv_sec+tv.tv_usec;
-	pthread_mutex_lock(&new_qe->icpr_mutex);
-	if ( !send_icp_requests(rq, new_qe) ) {
+	new->rq_n    = tv.tv_sec+tv.tv_usec;
+	pthread_mutex_lock(&new->icpr_mutex);
+	if ( !send_icp_requests(rq, new) ) {
 	    /* was placed in queue	*/
 	    struct timespec  ts;
 	    tv.tv_sec  += icp_timeout/1000000;
@@ -753,37 +757,53 @@ int			source_type;
 	    ts.tv_sec  = tv.tv_sec;
 	    ts.tv_nsec = tv.tv_usec*1000;
 	    /* wait for answers */
-	    if ( pthread_cond_timedwait(&new_qe->icpr_cond,&new_qe->icpr_mutex,&ts) ) {
+	    if ( pthread_cond_timedwait(&new->icpr_cond,&new->icpr_mutex,&ts) ) {
 		/* failed */
 		my_log("icp timedout\n");
 	    } else {
 		/* success */
 		my_log("icp_success\n");
 	    }
-	    new_qe->rq_n = 0;
-	    pthread_mutex_unlock(&new_qe->icpr_mutex);
-	    if ( new_qe->status ) {
+	    new->waitors = 0;
+	    status = new->status;
+	    pthread_mutex_unlock(&new->icpr_mutex);
+	    if ( status ) {
 		my_log("Fetch from neighbour\n");
-		peer_sa = new_qe->peer_sa;
-		source_type = new_qe->type;
-		server_so = peer_connect(so, &new_qe->peer_sa, rq);
-		icp_request_destroy(new_qe);
-		xfree(new_qe);
+		peer_sa = new->peer_sa;
+		source_type = new->type;
+		icp_request_destroy(new);
+		server_so = peer_connect(so, &peer_sa, rq);
 		goto server_connect_done;
-	    } else {
-		if ( no_direct_connections ) {
-		   /* what now ? */
-		}
-		my_log("Direct\n");
 	    }
-	    icp_request_destroy(new_qe);
-	    xfree(new_qe);
-	    goto icp_failed;
+	    /* there was no hits, or no answers. 		*/
+	    /* check if there was miss from parent		*/
+	    if ( new->type ) {
+		peer_sa = new->peer_sa;
+		source_type = new->type;
+		icp_request_destroy(new);
+		server_so = peer_connect(so, &peer_sa, rq);
+		goto server_connect_done;
+	    }
+	    /*
+		   If we have live parent we can try fetch from it
+		   Otherwise go DIRCT
+	    */
+	    if ( find_best_parent(&peer_sa) ) {
+		icp_request_destroy(new);
+		source_type = PEER_PARENT;
+		server_so = peer_connect(so, &peer_sa, rq);
+		goto server_connect_done;
+	    }
+	    if ( no_direct_connections ) {
+	    }
+	    my_log("Direct\n");
+	    icp_request_destroy(new);
 	} else {
-	    pthread_mutex_unlock(&new_qe->icpr_mutex);
-	    pthread_mutex_destroy(&new_qe->icpr_mutex);
-	    pthread_cond_destroy(&new_qe->icpr_cond);
-	    xfree(new_qe);
+	    new->waitors = 0;
+	    pthread_mutex_unlock(&new->icpr_mutex);
+	    pthread_mutex_destroy(&new->icpr_mutex);
+	    pthread_cond_destroy(&new->icpr_cond);
+	    xfree(new);
 	}
 
  icp_failed:;
@@ -1115,7 +1135,7 @@ error:
     if ( obj->status_code ) have_code = obj->status_code;
 	else		    have_code = 555;
 
-    if ( (content_type = attr_value(obj->headers, "Content-Type")) ) {
+    if ( content_type = attr_value(obj->headers, "Content-Type") ) {
 	char *p;
 	strncpy(ctbuf, content_type, sizeof(ctbuf)-1);
         p = &ctbuf[0];
@@ -1157,7 +1177,7 @@ done:
 	(stop_tv.tv_usec-start_tv.tv_usec)/1000;
     if ( obj->status_code ) have_code = obj->status_code;
 	else		    have_code = 555;
-    if ( (content_type = attr_value(obj->headers, "Content-Type")) ) {
+    if ( content_type = attr_value(obj->headers, "Content-Type") ) {
 	char *p;
 	strncpy(ctbuf, content_type, sizeof(ctbuf)-1);
         p = &ctbuf[0];
@@ -1443,6 +1463,7 @@ do_it_chunked:
 	cz_here = FALSE;
 	cd = ch_sz;
 	*cd = 0;
+    find_chunk_size:
 	cb = b->data + *pos;
 	ce = b->data + b->used;
     find_chunk_size_again:
@@ -1780,6 +1801,8 @@ int
 peer_connect(int client_so, struct sockaddr_in *peer_sa, struct request *rq)
 {
 int 			server_so = -1, r;
+struct	sockaddr_in 	server_sa;
+struct	sockaddr_in	dst_sa;
 
     my_log("Connecting to peer\n");
     server_so = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);

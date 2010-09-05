@@ -14,11 +14,12 @@ General procedure:
 
 
 Known problems:
+
 1) linux - Don't use MIT_PTHREADS. Use LinuxThreads and glibc later
    than 2.0.7-19. Wrong thread library manifest itself in broken
    connections.
    Latest RedHat comes with right libraries. If you
    have any info re other Linux distributions, please, send me info.
 
-2) FreeBSD - SIGHUP may interrupt sessions. As this never happens with
-   Solaris and linux, I think this is FreeBSD pthreads problem.
+2) FreeBSD - don't use libdb which is supplied with new FreeBSD (3.x) - use
+   DB from Sleepycat.

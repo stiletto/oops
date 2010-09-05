@@ -46,6 +46,8 @@ int	parse_answ(struct buff*, int*, int (*f)(char *, void*), void *);
 int	parse_ftp_srv_answ(struct buff *, int *, struct ftp_r *);
 void	send_ftp_err(struct ftp_r *);
 char	*in_nlst(char *, struct string_list *);
+int	recv_ftp_nlst(struct ftp_r *req);
+int	request_list(struct ftp_r *ftp_r);
 
 void
 ftp_fill_mem_obj(int so, struct request *rq,
@@ -197,9 +199,7 @@ recv_ftp_nlst(struct ftp_r *req)
 {
 char			buf[160];
 int			r, received = 0, sa_len, checked, r_code;
-int			client = req->client;
 int			data = req->data;
-struct	mem_obj		*obj = req->obj;
 char			*tmpbuf = NULL;
 struct  sockaddr_in 	sa;
 struct	buff		*nlst_buff = NULL;
@@ -503,7 +503,7 @@ lrwxrwxrwx   1 root  wheel         7 May  2  1997 www.FAQ.koi8 -> www.FAQ
 	case 'l':	type = LINK; 	break;
 	default:	type = UNKNOWN; break;
     }
-    if ( t = in_nlst(p, req->nlst) ) {
+    if ( (t = in_nlst(p, req->nlst)) ) {
 	if ( (t > p) && ( t<=p+strlen(p) ) ) *(t-1)=0;
 	htmlized_something = html_escaping(p);
 	sprintf(tempbuf, "<img src=\"http://%s:%s/%s/%s\" alt=\"%s\">%s ",

@@ -3,6 +3,7 @@
 #include        <fcntl.h>
 #include        <errno.h>
 #include        <stdarg.h>
+#include        <string.h>
 #include        <strings.h>
 #include        <netdb.h>
 #include        <unistd.h>
@@ -69,10 +70,9 @@ char			icp_buf[16384];
 void
 run()
 {
-int	r, res;
+int	r, res,rc;
 int	one = -1;
 int			cli_addr_len, descriptors;
-fd_set			rq;
 int			icp_sa_len;
 struct	sockaddr_in	cli_addr, icp_sa;
 struct	pollarg		*pollarg;
@@ -188,9 +188,6 @@ struct	pollarg		*pollarg;
 	pollarg = xmalloc(2*sizeof(struct pollarg),"");
 
 wait_clients:
-    FD_ZERO(&rq);
-    FD_SET(server_so, &rq);
-    FD_SET(icp_so, &rq);
     pollarg[0].fd = server_so;
     pollarg[0].request = FD_POLL_RD;
     pollarg[1].fd = icp_so;
@@ -231,11 +228,11 @@ wait_clients:
     if ( IS_READABLE(&pollarg[1]) ) {
 	/* icp request */
 	icp_sa_len = sizeof(icp_sa);
-	r = recvfrom(icp_so, icp_buf, sizeof(icp_buf), 0, (struct sockaddr*)&icp_sa, &icp_sa_len);
-	if ( r < 0 ) {
+	rc = recvfrom(icp_so, icp_buf, sizeof(icp_buf), 0, (struct sockaddr*)&icp_sa, &icp_sa_len);
+	if ( rc < 0 ) {
 	    my_log("icp:recv_from: %s\n", strerror(errno));
 	} else {
-	    process_icp_msg(icp_so, icp_buf, r, &icp_sa);
+	    process_icp_msg(icp_so, icp_buf, rc, &icp_sa);
 	}
 	r--; /* one descriptor processed */
     }

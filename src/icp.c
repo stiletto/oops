@@ -2,6 +2,7 @@
 #include	<stdlib.h>
 #include	<unistd.h>
 #include	<errno.h>
+#include	<string.h>
 #include	<strings.h>
 #include	<stdarg.h>
 #include	<netdb.h>
@@ -49,9 +50,9 @@ struct icp_hdr {
 };
 
 struct	icp_lookup {
-	char			*buf;
 	struct sockaddr_in	sa;
 	char			type;
+	int			rq_n;
 };
 
 void	send_icp_op(int so, struct sockaddr_in *sa, int op, int rq_n, char *urlp);
@@ -59,6 +60,7 @@ void	send_icp_op_err(int so, struct sockaddr_in *sa, int rq_n);
 struct	peer	*peer_by_addr(struct sockaddr_in*);
 int	process_miss(void*, void*);
 int	process_hit(void*, void*);
+
 
 #define	icp_opcode	icp_hdr->w0.opcode
 #define	icp_version	icp_hdr->w0.version
@@ -138,7 +140,9 @@ struct	peer	*peer;
 	my_log("sending to: %s\n", peer->name);
 	rr = sendto(icp_so, buf, len, 0, (struct sockaddr*)&peer->addr, sizeof(struct sockaddr_in));
 	if ( rr != -1 ) {
-	    if ( !TEST(peer->state, PEER_DOWN) ) succ++;
+	    if ( !TEST(peer->state, PEER_DOWN) ) 
+		succ++;
+	    peer->last_sent = global_sec_timer;
 	} else {
 	    my_log("Sendto: %s\n", strerror(errno));
 	}
@@ -147,11 +151,13 @@ struct	peer	*peer;
 	peer = peer->next;
     }
     xfree(buf);
-    if ( !succ ) return(-1);
+    if ( !succ ) {
+   	return(-1);
+    }
     /* requests was sent */
     qe->requests_sent = succ;
     /* put qe in list	 */
-    list_add(&icp_requests_list, &qe->ll);
+    list_add(&icp_requests_list, qe);
     return(0);
 }
 
@@ -159,11 +165,11 @@ void
 icp_request_destroy(struct icp_queue_elem *icpr)
 {
     /* unlink it from list */
-    list_unlink_item(&icp_requests_list, &icpr->ll);
+    list_remove(&icp_requests_list, icpr);
     pthread_cond_destroy(&icpr->icpr_cond);
     pthread_mutex_destroy(&icpr->icpr_mutex);
-    xfree(icpr);
 }
+
 void
 process_icp_msg(int so, char *buf, int len, struct sockaddr_in *sa)
 {
@@ -265,13 +271,14 @@ struct	icp_lookup	icp_lookup;
 		/* here update peer statistics			*/
 		peer->an_recvd++;
 		peer->hits_recvd++;
+		peer->last_recv = global_sec_timer;
 		icp_lookup.sa  = *sa;
 		icp_lookup.sa.sin_port = htons(peer->http_port);
 		icp_lookup.type= peer->type;
 		my_log("ICP_PEER_HIT from %s\n", peer->name);
 		UNLOCK_CONFIG;
+		icp_lookup.rq_n= icp_rq_n;
 		/* looking up queue elem with the same rq_n	*/
-		icp_lookup.buf = buf;
 		list_traverse(&icp_requests_list, process_hit, &icp_lookup);
 		break;
 	case ICP_OP_MISS:
@@ -289,12 +296,13 @@ struct	icp_lookup	icp_lookup;
 		}
 		/* here update peer statistics			*/
 		peer->an_recvd++;
+		peer->last_recv = global_sec_timer;
 		icp_lookup.sa  = *sa;
 		icp_lookup.sa.sin_port = htons(peer->http_port);
 		icp_lookup.type= peer->type;
 		my_log("ICP_PEER_MISS from %s\n", peer->name);
 		UNLOCK_CONFIG;
-		icp_lookup.buf = buf;
+		icp_lookup.rq_n= icp_rq_n;
 		/* looking up queue elem with the same rq_n	*/
 		list_traverse(&icp_requests_list, process_miss, &icp_lookup);
 		break;
@@ -472,37 +480,34 @@ int
 process_miss(void *le, void *arg)
 {
 struct	icp_lookup		*icp_lookup = arg;
-struct	icp_hdr			*icp_hdr = (struct icp_hdr*)icp_lookup->buf;
 struct	icp_queue_elem		*qe = le;
-int		rq_n;
+int				rq_n;
 
-    my_log("process_miss called\n");
-    rq_n = icp_rq_n;
+    if ( !qe || !icp_lookup ) return(0);
+    rq_n = icp_lookup->rq_n;
+    my_log("miss called\n");
+    pthread_mutex_lock(&qe->icpr_mutex);
     if ( rq_n == qe->rq_n ) {
-	my_log("ICP our request still here...\n");
-	qe->requests_sent--;
-	if ( !qe->requests_sent ) {
-	    /* we will wait no answers more, so signal to start	*
-	     * direct fetch					*
-	     * that is: leave qe->status as is: clear		*/
-	    pthread_mutex_lock(&qe->icpr_mutex);
-	    if ( qe->waitors) {
-		if ( icp_lookup->type == PEER_PARENT ) {
-		    if ( !qe->peer_sa.sin_port ) {
-			qe->type    = icp_lookup->type;
-			/* store address of first parent 	*/
-			qe->peer_sa = icp_lookup->sa;
-			/* we don't change status to indicate	*
-			 * this is not a hit			*/
-		    }
-		}
-		my_log("Signalling\n");
-		pthread_cond_signal(&qe->icpr_cond);
-	    }
-	    pthread_mutex_unlock(&qe->icpr_mutex);
+	my_log("icp_req still here\n");
+	if ( (icp_lookup->type == PEER_PARENT) && !qe->status) {
+	    qe->type    = icp_lookup->type;
+	    /* store address of first parent 	*/
+	    qe->peer_sa = icp_lookup->sa;
+	    qe->status = TRUE;
 	}
+	qe->requests_sent--;
+	if ( qe->requests_sent <= 0 ) {
+	    /* we will wait no answers more, so signal to start	*/
+	    if ( qe->waitors) {
+#if	!defined(LINUX)
+		pthread_cond_signal(&qe->icpr_cond);
+#endif
+	    }
+	}
+	pthread_mutex_unlock(&qe->icpr_mutex);
 	return(1);
     }
+    pthread_mutex_unlock(&qe->icpr_mutex);
     return(0);
 }
 
@@ -510,25 +515,27 @@ int
 process_hit(void *le, void *arg)
 {
 struct	icp_lookup		*icp_lookup = arg;
-struct	icp_hdr			*icp_hdr = (struct icp_hdr*)icp_lookup->buf;
 struct	icp_queue_elem		*qe = le;
 int				rq_n;
 
-    my_log("process_hit called\n");
-    rq_n = icp_rq_n;
+    if ( !qe || !icp_lookup ) return(0);
+    rq_n = icp_lookup->rq_n;
+    my_log("hit called\n");
+    pthread_mutex_lock(&qe->icpr_mutex);
     if ( rq_n == qe->rq_n ) {
-	my_log("ICP our request still here...\n");
+	my_log("icp_req still here\n");
 	qe->requests_sent--;
-	pthread_mutex_lock(&qe->icpr_mutex);
 	if ( qe->waitors) {
 	    qe->type    = icp_lookup->type;
 	    qe->peer_sa = icp_lookup->sa;
-	    qe->status = TRUE;
-	    my_log("Signalling\n");
+	    qe->status  = TRUE;
+#if	!defined(LINUX)
 	    pthread_cond_signal(&qe->icpr_cond);
+#endif
 	}
 	pthread_mutex_unlock(&qe->icpr_mutex);
 	return(1);
     }
+    pthread_mutex_unlock(&qe->icpr_mutex);
     return(0);
 }

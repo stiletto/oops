@@ -73,6 +73,7 @@ void*
 statistics(void *arg)
 {
 struct group 	 *group;
+struct peer	 *peer;
 struct oops_stat temp_stat;
 int		 counter = 0;
 int		 hits, reqs;
@@ -104,6 +105,15 @@ int		 hits, reqs;
 	}
 
 	RDLOCK_CONFIG;
+	peer = peers;
+	while ( peer ) {
+	    if ( ABS(peer->last_recv - peer->last_sent) > peer_down_interval ) {
+		peer->state |=  PEER_DOWN ;
+	    } else {
+		peer->state &= ~PEER_DOWN ;
+	    }
+	    peer = peer->next;
+	}
 	/* run over all groups and move statistics */
 	group = groups ;
 	if ( group ) {
@@ -125,8 +135,8 @@ int		 hits, reqs;
 	    if ( statl ) {
 		fprintf(statl,"clients      : %d\n", temp_stat.clients);
 		fprintf(statl,"uptime       : %d sec. (%d day(s))\n",
-			global_sec_timer-start_time,
-			(global_sec_timer-start_time)/86400);
+			(unsigned int)global_sec_timer-start_time,
+			(unsigned int)(global_sec_timer-start_time)/86400);
 		fprintf(statl,"http_requests: %d\n", temp_stat.requests_http);
 		fprintf(statl,"http_hits    : %d\n", temp_stat.hits);
 		fprintf(statl,"icp_requests : %d\n", temp_stat.requests_icp);

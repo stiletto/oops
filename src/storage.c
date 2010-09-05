@@ -2,6 +2,7 @@
 #include	<stdlib.h>
 #include	<unistd.h>
 #include	<errno.h>
+#include	<string.h>
 #include	<strings.h>
 #include	<stdarg.h>
 #include	<netdb.h>
@@ -12,6 +13,7 @@
 #include	<sys/socket.h>
 #include	<sys/socketvar.h>
 #include	<sys/resource.h>
+#include	<sys/time.h>
 #include	<fcntl.h>
 
 #include	<netinet/in.h>
@@ -367,7 +369,7 @@ free_storage(struct storage_st *storage)
 char*
 request_free_blks(struct storage_st * storage, uint32_t n)
 {
-uint32_t	current, next, o=n, *p, *po;
+uint32_t	current, o=n, *p, *po;
 int		i;
 char		*allocated = NULL;
 

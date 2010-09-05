@@ -39,7 +39,6 @@ struct	storage_st	*storage;
 uint32_t		blk;
 struct	disk_ref	*chain;
 time_t			now;
-struct dhs_hash		*dns_hash_curr;
 
     for(i=0;i<HASH_SIZE;i++) hash_ptr[i] = h++;
 

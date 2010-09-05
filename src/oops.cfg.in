@@ -151,6 +151,11 @@ group	paco	{
 	badports	[0:79],110,138,139,513,[6000:6010];
 	miss		allow;
 ##
+# denytime - when deny access to proxy server for this group
+##
+#	denytime	Sat,Sun		0642:1000
+#	denytime	Mon,Thu:Fri,Sun	0900:2100
+##
 # Authentication modules for this group (seprated by space)
 ##
 #	auth_mods	passwd_file;

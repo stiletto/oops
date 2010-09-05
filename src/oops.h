@@ -99,6 +99,9 @@ typedef	unsigned	uint32_t;
 
 
 #define MID(A)		((40*group->cs0.A + 30*group->cs1.A + 30*group->cs2.A)/100)
+#if	!defined(ABS)
+#define	ABS(x)		((x)>0?(x):(-(x)))
+#endif
 #define	ROUND(x,b)	((x)%(b)?(((x)/(b)+1)*(b)):(x))
 #define	TRUE		(1)
 #define	FALSE		(0)
@@ -403,9 +406,17 @@ struct	group_ops_struct {
 #define	OP_MISS		6
 #define	OP_AUTH_MODS	7
 #define	OP_REDIR_MODS	8
+#define	OP_DENYTIME	9
 	int				op;
 	void				*val;
 	struct	group_ops_struct	*next;
+};
+
+struct	denytime {
+	char			days;
+	int			start_minute;
+	int			end_minute;
+	struct	denytime	*next;
 };
 
 struct	range {
@@ -448,6 +459,7 @@ struct	group	{
 	struct	group_stat	cs2;		/* pre-prev sec */
 	struct	group_stat	cs_total;	/* total	*/
 	struct  group		*next;
+	struct	denytime	*denytimes;
 };
 
 struct	domain {
@@ -496,6 +508,8 @@ struct	peer	{
 	int			an_recvd;	/* tot. answers		*/
 	int			hits_recvd;	/* tot. hits received	*/
 	int			rq_recvd;	/* tot. reqs received	*/
+	time_t			last_sent;	/* time when last rq sent  */
+	time_t			last_recv;	/* time when last rq recvd */
 };
 
 struct	icp_queue_elem {
@@ -587,6 +601,7 @@ int		accesslog_num, accesslog_size;
 int		log_num, log_size;
 int		maxresident;
 int		icp_so;
+int		peer_down_interval;
 char    	icons_path[MAXPATHLEN];
 char    	icons_port[64];
 char    	icons_host[MAXPATHLEN];
@@ -756,8 +771,10 @@ void		free_dns_hash_entry(struct dns_cache*);
 char		*attr_value(struct av*, char*);
 char		*lookup_mime_type(char*);
 struct	peer	*peer_by_http_addr(struct sockaddr_in*);
+void		base_64_init(void);
 char		*base64_encode(char*);
 char		*base64_decode(char*);
+int		load_modules(void);
 struct	charset	*lookup_charset_by_name(struct charset *, char*);
 struct	charset	*lookup_charset_by_Agent(struct charset *, char*);
 struct	charset	*add_new_charset(struct charset **, char *);
@@ -770,3 +787,14 @@ int		poll_descriptors(int, struct pollarg*, int);
 int		poll_descriptors_S(int, struct pollarg*, int);
 #endif
 int		add_socket_to_listen_list(int, int, void* (*f)(void*));
+char		daybit(char*);
+int		denytime_check(struct denytime*);
+int             send_data_from_buff_no_wait(int, struct buff **, int *, int *, int*, int);
+void		update_transfer_rate(struct request*, int size);
+int		group_traffic_load(struct group *group);
+
+#ifdef		MODULES
+int	check_output_mods(int so, struct output_object *obj, struct request *rq, int *mod_flags);
+int	check_redirect(int so, struct request *rq, struct group *group, int *flag);
+int	check_auth(int so, struct request *rq, struct group *group, int *flag);
+#endif

@@ -279,6 +279,9 @@ int			last_min_req_rate, last_min_hit_rate;
 	write(so, buf, strlen(buf));
         sprintf(buf, "Reqs recvd   : %d\n", peer->rq_recvd);
 	write(so, buf, strlen(buf));
+        sprintf(buf, "Status       : %s\n",
+        	TEST(peer->state, PEER_DOWN)?"DOWN":"UP");
+	write(so, buf, strlen(buf));
 
 	peer = peer->next;
     }
@@ -408,6 +411,9 @@ int			last_min_req_rate, last_min_hit_rate;
         sprintf(buf, "<tr><td>Hits recvd<td>%d\n", peer->hits_recvd);
 	write(so, buf, strlen(buf));
         sprintf(buf, "<tr><td>Reqs recvd<td>%d\n", peer->rq_recvd);
+	write(so, buf, strlen(buf));
+        sprintf(buf, "<tr><td>Status<td>%s\n",
+        	TEST(peer->state, PEER_DOWN)?"DOWN":"UP");
 	write(so, buf, strlen(buf));
 
 	peer = peer->next;

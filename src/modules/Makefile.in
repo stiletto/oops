@@ -5,28 +5,28 @@ SOFLAGS = @SOFLAGS@
 
 all:	log_dummy.so err.so passwd_file.so lang.so redir.so oopsctl_mod.so oopsctl
 
-log_dummy.so:	log_dummy.c ../modules.h
+log_dummy.so:	log_dummy.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) log_dummy.c -o log_dummy.so
 
-err.so:	err.c ../modules.h
+err.so:	err.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) err.c -o err.so
 
-lang.so:	lang.c ../modules.h
+lang.so:	lang.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) lang.c -o lang.so
 
-oopsctl_mod.so:	oopsctl_mod.c ../modules.h
+oopsctl_mod.so:	oopsctl_mod.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) oopsctl_mod.c -o oopsctl_mod.so
 
-oopsctl: oopsctl.c ../modules.h ../config.h
+oopsctl: oopsctl.c ../modules.h ../config.h  ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} oopsctl.c $(LIBS) -o oopsctl
 
-passwd_file.so:	passwd_file.c ../modules.h
+passwd_file.so:	passwd_file.c ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) passwd_file.c -o passwd_file.so
 
 gnu_regex.o:
 	${CC} -c -DREGEX ${CFLAGS} gnu_regex.c -o gnu_regex.o
 
-redir.so:	redir.c gnu_regex.o ../modules.h
+redir.so:	redir.c gnu_regex.o ../modules.h ../oops.h
 	${CC} ${CFLAGS} ${CDEFS} $(SOFLAGS) $(LIBS) redir.c gnu_regex.o -o redir.so
 
 clean:

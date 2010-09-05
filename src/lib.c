@@ -33,6 +33,8 @@
 
 FILE	*logf, *accesslogf;
 void	flush_log();
+int	lookup_dns_cache(char* name, struct dns_cache_item *items, int counter);
+int	free_charset(struct charset *charsets);
 
 int	readt(int, char*, int, int);
 int	my_gethostbyname(char *name);
@@ -197,7 +199,7 @@ u_char		tmpname[MAXHOSTNAMELEN+1];
     /* remove last '.' if need */
     if ( *d == '.' )
 	*d = 0;
-    if ( result = lookup_dns_cache(tmpname, NULL, 0) )
+    if ( (result = lookup_dns_cache((char*)tmpname, NULL, 0)) )
 	return(result);
     bzero(answers, sizeof(answers));
 
@@ -363,7 +365,6 @@ lookup_dns_cache(char* name, struct dns_cache_item *items, int counter)
 {
 int			result = 0;
 int			hash,stamp;
-char			*c = name;
 struct	dns_cache	*cp;
 struct	dns_cache_item	*ci;
 unsigned		use;
@@ -1291,7 +1292,6 @@ void
 analyze_header(char *p, struct server_answ *a)
 {
 char	*t;
-time_t	now;
 
     /*my_log("--->'%s'\n", p);*/
     if ( !a->status_code ) {
@@ -2184,12 +2184,11 @@ free_charset(struct charset *charset)
     if ( charset->CharsetAgent ) free_string_list(charset->CharsetAgent);
     if ( charset->Table ) xfree(charset->Table);
     xfree(charset);
+    return(0);
 }
+void
 free_output_obj(struct output_object *obj)
 {
-struct	av	*headers, *next_av;
-struct	buff	*body, *next_b;
-
     if ( !obj )
 	return;
     free_avlist(obj->headers);
@@ -2213,7 +2212,7 @@ struct	av *next;
 void
 process_output_object(int so, struct output_object *obj, struct request *rq)
 {
-int		rc = 0,r, sended, ssended, to_send, send_hot_pos;
+int		rc = 0,r, sended, ssended, send_hot_pos;
 struct	av	*av;
 struct	timeval	tv;
 struct	buff	*send_hot_buff;
@@ -2261,3 +2260,19 @@ done:;
     return;
 }
 
+char
+daybit(char *day)
+{
+char	res;
+
+    if ( !strcasecmp(day, "sun") ) res =   1; else
+    if ( !strcasecmp(day, "mon") ) res =   2; else
+    if ( !strcasecmp(day, "tue") ) res =   4; else
+    if ( !strcasecmp(day, "wed") ) res =   8; else
+    if ( !strcasecmp(day, "thu") ) res =  16; else
+    if ( !strcasecmp(day, "fri") ) res =  32; else
+    if ( !strcasecmp(day, "sat") ) res =  64; else
+    if ( !strcasecmp(day, "all") ) res = 127; else
+    res = -1;
+    return(res);
+}

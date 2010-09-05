@@ -258,3 +258,61 @@ struct	cidr_net	*net;
 	return(TRUE);
     return(FALSE);
 }
+int
+denytime_check(struct denytime *dt)
+{
+int		reverse, sm,em,cm;
+struct	tm	tm;
+char		todaybit, dmask,yestdbit;
+
+    if ( !dt ) return(0);
+
+    localtime_r(&global_sec_timer, &tm);
+    cm = tm.tm_hour * 60 + tm.tm_min;
+    todaybit = 1 << tm.tm_wday;
+
+    while(dt) {
+
+	sm = dt->start_minute;
+	em = dt->end_minute;
+	dmask = dt->days;
+
+
+	if ( sm < em ) reverse = FALSE;
+	   else	       reverse = TRUE;
+
+	my_log("Denytime check 0x%0x/0x%0x, %d-%d, %d\n", dmask,todaybit, sm, em, cm);
+	if ( !reverse ) {
+	    /* simple case of normal interval, like 09:00 - 18:00 */
+	    if ( TEST(todaybit, dmask) ) {
+		   /* this denytime cover this day */
+		if ( sm <= cm && cm <= em )
+			return(1);
+		  else
+			goto check_next_dt;
+	    } else /* this denytime don't cover this day */
+		goto check_next_dt;
+	} else {
+	    /* case of reverse interval, like 21:00 - 09:00 */
+	    if ( TEST(todaybit, dmask) ) {
+		if ( cm >= sm )
+		    return(1);
+		yestdbit = todaybit >> 1;
+		/* if today is sunday, make yestd - sat */
+		if ( !yestdbit ) yestdbit = 0x40;
+		/* if this denytime record cover previous day? */
+		if ( !TEST(yestdbit, dmask) )
+		    goto check_next_dt;
+		/* if we get in interval that started yesterday? */
+		if ( cm <= em ) /* yes, we get */
+		    return(1);
+		/* no it finished earlier */
+		goto check_next_dt;
+	    }
+	}
+
+ check_next_dt:;
+	dt = dt->next;
+    }
+    return(0);
+}

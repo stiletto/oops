@@ -8,22 +8,25 @@
 %token	ALLOW DENY BADPORTS_T MISS_T AUTH_MODS_T REDIR_MODS_T
 %token	DSTDOMAIN
 %token	STORAGE SIZE PATH DBNAME DBHOME
-%token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T
+%token	PEER_PARENT_T PEER_SIBLING_T BANDWIDTH_T DENYTIME_T
 %token	L_EOS ICP_TIMEOUT MODULE LOGS_BUFFERED_T
 
 %type	<NETPTR>	network_list network
-%type	<STRPTR>	group_name string module_name
+%type	<STRPTR>	group_name string module_name day
 %type	<STRING_LIST>	mod_op mod_ops string_list string_list_e
 %type	<GROUPOPS>	group_op group_ops
 %type	<GROUPOPS>	http icp badports bandwidth miss auth_mods redir_mods
+%type	<GROUPOPS>	denytime
 %type	<STORAGEST>	st_op st_ops
 %type	<INT>		num
 %type	<ACL>		allow_acl deny_acl allow_acls deny_acls
 %type	<DOMAIN>	domain domainlist
+%type	<CHAR>		dayset
 
 %union	{
 	int				INT;
 	char				*STRPTR;
+	char				CHAR;
 	struct	cidr_net		*NETPTR;
 	struct	group_ops_struct	*GROUPOPS;
 	struct	acl			*ACL;
@@ -464,6 +467,7 @@ peer		: PEER_T string num num '{' peerops '}' L_EOS {
 			peer->name      = $2;
 			peer->http_port = $3;
 			peer->icp_port  = $4;
+			peer->state	= PEER_DOWN;
 			if ( peerc_ptr ) {
 			    peer->type = peerc_ptr->type;
 			    peer->acls = peerc_ptr->acls;
@@ -527,6 +531,11 @@ group		: GROUP group_name '{' group_ops '}' L_EOS {
 				case OP_REDIR_MODS:
 					new_grp->redir_mods = ops->val;
 					break;
+				case OP_DENYTIME:
+					((struct denytime*)(ops->val))->next = 
+						new_grp->denytimes;
+					new_grp->denytimes = ops->val;
+					break;
 				default:
 					printf("Unknown OP\n");
 					break;
@@ -558,9 +567,91 @@ group_op	: NETWORKS network_list ';' {
 		| http		{ $$ = $1; }
 		| icp		{ $$ = $1; }
 		| miss		{ $$ = $1; }
+		| denytime	{ $$ = $1; }
 		| auth_mods	{ $$ = $1; }
 		| redir_mods	{ $$ = $1; }
 
+day		: string {
+		    $$ = $1;
+		}
+dayset		: day {
+		    char day = daybit($1);
+		    if ( day < 0 ) {
+			fprintf(stderr, "%s - unrecognized day\n", $1);
+			yyerror();
+		    }
+		    free($1);
+		    $$ = day;
+		}
+		| day ',' dayset {
+		    char day = daybit($1);
+		    if ( day < 0 ) {
+			fprintf(stderr, "%s - unrecognized day\n", $1);
+			yyerror();
+		    }
+		    free($1);
+		    $$ = day | $3 ;
+		}
+		| day ':' day {
+		    unsigned char d1, d2, i, res = 0;
+		    d1 = daybit($1);
+		    d2 = daybit($3);
+		    if ( TEST(d1, 0x80) || TEST(d2, 0x80) ) {
+			fprintf(stderr, "%s or %s - unrecognized day\n", $1,$3);
+			yyerror();
+		    }
+		    if ( d1 > d2 ) {
+			fprintf(stderr, "Days can't be in reverse order\n");
+			yyerror();
+		    }
+		    i = d1;
+		    while(i<=d2) {
+			res |= i;
+			i <<= 1;
+		    }
+		    free($1); free($3);
+		    $$ = res;
+		}
+		| day ':' day ',' dayset {
+		    unsigned char d1, d2, i, res;
+		    d1 = daybit($1);
+		    d2 = daybit($3);
+		    res= $5;
+		    if ( d1 > d2 ) {
+			fprintf(stderr, "Days can't be in reverse order\n");
+			yyerror();
+		    }
+		    i = d1;
+		    while(i<=d2) {
+			res |= i;
+			i <<= 1;
+		    }
+		    free($1); free($3);
+		    $$ = res;
+		}
+denytime	: DENYTIME_T dayset num ':' num {
+		    struct	group_ops_struct	*new_op;
+		    struct	denytime		*denytime;
+		    int		start_m, end_m;
+			printf("Denytime 0x%0X %d %d\n", $2, $3, $5);
+			new_op = xmalloc(sizeof(*new_op), "");
+			denytime = xmalloc(sizeof(*denytime), "");
+			if ( !new_op || !denytime ) {
+				yyerror();
+				$$ = NULL;
+			} else {
+			    new_op->op = OP_DENYTIME;
+			    bzero(denytime, sizeof(*denytime));
+			    start_m = 60*($3/100) + $3%100;
+			    end_m = 60*($5/100) + $5%100;
+			    denytime->days = $2;
+			    denytime->start_minute = start_m;
+			    denytime->end_minute = end_m;
+			    new_op->val= (void*)denytime;
+			    new_op->next=NULL;
+			    $$ = new_op;
+			}
+		}
 miss		: MISS_T DENY ';' {
 		    struct	group_ops_struct	*new_op;
 
@@ -1029,7 +1120,8 @@ int		code;
     yyin = cf;
     atline = 1;
     ns_curr = 0;
-    bzero(&peer_c, sizeof(peer_c)); peer_c.type = PEER_SIBLING;
+    bzero(&peer_c, sizeof(peer_c));
+    peer_c.type  = PEER_SIBLING;
     peerc_ptr = NULL;
     bzero((void*)&badports, sizeof(badports));
     code = yyparse();

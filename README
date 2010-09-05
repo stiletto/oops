@@ -9,8 +9,7 @@ It's main fetures
 2) stable operation.
 
 3) clean reconfiguration on SIGHUP - no broken sessions, new settings
-   applyed to new connections. (Under FreeBSD sessions closed after SIGHUP -
-   looks like it is a problem with FreeBSD threads)
+   applyed to new connections.
 
 4) easy-to-read/understand config file and acl's
 

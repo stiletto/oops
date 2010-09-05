@@ -1,3 +1,17 @@
+11.08.99 version 1.2b
+	   icp:
+		Correct relations with PARENT/SIBLIG - now send requests to 
+		all peers.
+		When received HIT from any peer - use it.
+		When received only MISSes - send request to first answered
+			 PARENT
+		if no answers, or only MISSes from SIBLING - go direct
+	   acl:	
+		New acl - denytime - access deny on day/time basis.
+	   config:
+		looking up libdb and db.h in current '.' directory.
+	   bugs and workarounds:
+		Yet another bug in linuxthreads and yet another workaround.
 		FreeBSD threads bug workaround: now under FreeBSD
 		sessions will not be broken after SIGHUP
 19.07.99 version 1.2a ---------------------------------------------

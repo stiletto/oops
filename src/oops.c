@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include	<errno.h>
 #include	<stdarg.h>
 #include	<strings.h>
+#include	<string.h>
 #include	<netdb.h>
 #include	<unistd.h>
 #include	<ctype.h>
@@ -68,6 +69,8 @@ void	print_networks(struct cidr_net **, int, int), print_acls(), free_acl(struct
 void	free_dom_list(struct domain_list *);
 void	print_dom_list(struct domain_list *);
 void	free_peers(struct peer *);
+void	free_denytimes(struct denytime *);
+int	close_listen_so_list(struct listen_so_list *list);
 extern	int	str_to_sa(char*, struct sockaddr *);
 
 size_t	db_cachesize = 4*1024*1024;	/* 4M */
@@ -158,19 +161,19 @@ int	format_storages = 0;
 
 #ifdef	LINUX
     if ( !use_workers ) use_workers = 10;
+    if ( !max_workers ) {
 #ifdef	RLIM_NPROC
-    {
 	if ( !getrlimit(RLIMIT_NPROC, &rl) ) {
 	    max_workers = rl.rlim_cur;
 	} else
 	    max_workers = 250;
-    }
 #else
-    max_workers = 256;
+	max_workers = 250;
 #endif
+    }
 #endif
     if ( (use_workers > 0) && (max_workers <= 0) ) {
-	max_workers = 512;
+	max_workers = 250;
     }
     remove_limits();
     for(i=0;i<HASH_SIZE;i++) {
@@ -201,6 +204,7 @@ int	format_storages = 0;
     total_alloc = 0;
     clients_number = 0;
     peers = NULL;
+    peer_down_interval = 10 ;			/* default 10 sec. */
     local_domains = NULL;
     local_networks	= NULL;
     local_networks_sorted = NULL;
@@ -455,6 +459,7 @@ struct	cidr_net	*nets, *next_net;
 	    free(nets);
 	    nets = next_net;
 	}
+	if ( groups->denytimes ) free_denytimes(groups->denytimes);
 	if ( groups->badports ) free(groups->badports);
 	if ( groups->auth_mods ) free_string_list(groups->auth_mods);
 	if ( groups->redir_mods ) free_string_list(groups->redir_mods);
@@ -467,6 +472,18 @@ struct	cidr_net	*nets, *next_net;
     if ( sorted_networks_ptr ) {
 	free(sorted_networks_ptr);
 	sorted_networks_ptr = NULL;
+    }
+}
+
+void
+free_denytimes(struct denytime *dt)
+{
+struct	denytime *next;
+
+    while(dt) {
+	next = dt->next;
+	free(dt);
+	dt = next;
     }
 }
 
@@ -770,6 +787,7 @@ struct listen_so_list *next;
 	xfree(list);
 	list = next;
     }
+    return(0);
 }
 int
 add_socket_to_listen_list(int so, int flags, void* (*f)(void*))

@@ -184,8 +184,14 @@ re: /* here we go if client want persistent connection */
 	UNLOCK_CONFIG ;
 	goto done;
     }
-#ifdef	MODULES
     group = inet_to_group(&request.client_sa.sin_addr);
+    if ( group->denytimes && (rc = denytime_check(group->denytimes)) ) {
+	say_bad_request(so, "<font color=red>Your access to proxy service denied at this time.\n</font>", "",
+		ERR_ACC_DENIED, &request);
+	UNLOCK_CONFIG ;
+	goto done;
+    }
+#ifdef	MODULES
     /* check for redirects */
     if ( check_redirect(so, &request, group, &mod_flags) ) {
 	UNLOCK_CONFIG;

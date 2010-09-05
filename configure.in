@@ -9,10 +9,12 @@ AC_CHECK_HEADER(unistd.h)
 AC_CHECK_HEADER(pthread.h)
 AC_CHECK_HEADER(crypt.h, HAVE_CRYPT_H="-DHAVE_CRYPT_H", HAVE_CRYPT_H="")
 
-
+pwd=`pwd`
 AC_MSG_CHECKING(for libdb.a)
 if test -r "/usr/local/BerkeleyDB/lib/libdb.a"; then
     LIBDB_PATH="/usr/local/BerkeleyDB/lib"
+elif test -r "$pwd/libdb.a"; then
+    LIBDB_PATH="$pwd"
 elif test -r "/usr/local/lib/libdb.a"; then
     LIBDB_PATH="/usr/local/lib"
 elif test -r "/usr/lib/libdb.a"; then
@@ -24,6 +26,12 @@ else
 fi
 AC_MSG_RESULT($LIBDB_PATH)
 
+if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
+    CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
+fi
+if test "$LIBDB_PATH" = "$pwd"; then
+    CFLAGS="$CFLAGS -I$pwd -L$pwd"
+fi
 if test "$LIBDB_PATH" = "/usr/local/BerkeleyDB/lib"; then
     CFLAGS="$CFLAGS -I/usr/local/BerkeleyDB/include -L/usr/local/BerkeleyDB/lib"
 fi
